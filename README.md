@@ -188,7 +188,7 @@ WaLiAPI-Python/
 └── README.md
 ```
 
-**代码规模**：40 个 Python 文件，约 5,400 行代码
+仓库包含 FastAPI 后端、React/TypeScript 管理端、版本化数据库迁移和 Python/前端自动化测试。当前能力边界及未完成事项见 [`docs/part1-review.md`](docs/part1-review.md)。
 
 ---
 
@@ -213,7 +213,7 @@ WaLiAPI-Python/
 | OpenAI | POST /v1/images/generations | 图片生成 |
 | OpenAI | POST /v1/audio/transcriptions | 语音转文字 |
 | OpenAI | POST /v1/audio/speech | 文字转语音 |
-| — | GET /v1/models | 模型列表（返回 gpt-4o） |
+| — | GET /v1/models | 根据启用渠道和 Provider 映射动态聚合；按 API Key 权限过滤 |
 | — | GET /health | 健康检查 |
 
 ### 2. 渠道调度（Channel & Dispatcher）
@@ -224,9 +224,9 @@ WaLiAPI-Python/
     重试（可配置次数）→ 下一渠道
 ```
 
-**10 种渠道类型：** openai / claude / gemini / ollama / azure / custom / qwen / deepseek / moonshot / zhipu
+配置可选择 OpenAI 兼容、Anthropic、Gemini、Ollama 等渠道类型；除专用实现外，其他类型按 OpenAI 兼容格式处理，特殊供应商需确认其上游 API 是否兼容。
 
-每种渠道有独立的 HTTP 适配器（`infrastructure/adapters/http_adaptors.py`），处理不同的 API 格式和鉴权方式。
+适配逻辑集中在 `app/infrastructure/adapters/channel_adapters.py`。当前有 OpenAI 兼容、Anthropic、Gemini 和 Ollama 适配器；不要将配置项存在误解为已完成每家供应商的协议验证。
 
 ### 3. 安全扫描（Security）
 
@@ -375,14 +375,23 @@ docker-compose -f docker-compose-environment-aliyun.yml up -d
 
 ```bash
 # 数据库
-DB_HOST=192.168.1.108
-DB_PORT=13306
+DB_HOST=127.0.0.1
+DB_PORT=3306
 DB_NAME=waliapi
-DB_USER=root
-DB_PASSWORD=123456
+DB_USER=waliapi
+DB_PASSWORD=<set-in-deployment>
 
 # 服务
 SERVER_PORT=9900
+APP_ENV=development
+
+# 管理员（首次启动 ADMIN_PASSWORD 用于初始化；生产建议预先配置密码哈希）
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=<temporary-bootstrap-password>
+ADMIN_TOKEN=<long-random-token>
+ADMIN_SESSION_SECRET=<at-least-32-random-characters>
+PROVIDER_TOKEN_KEY=<long-random-encryption-key>
+CORS_ALLOWED_ORIGINS=http://localhost:9900
 
 # 安全
 SECURITY_ENABLED=true
@@ -412,13 +421,11 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 9900 --reload
 curl http://localhost:9900/health
 # {"status":"ok","service":"WaLiAPI-Python","version":"1.0.0"}
 
-# 知识库列表
-curl http://localhost:9900/api/v1/kb
+# 登录管理后台后在浏览器使用管理员界面。管理 API 要求管理员会话或 ADMIN_TOKEN。
+# 网关请求使用已创建的下游 API Key，例如：
+curl http://localhost:9900/v1/models -H "Authorization: Bearer <downstream-api-key>"
 
-# 仪表盘
-curl http://localhost:9900/api/v1/dashboard
-
-# 浏览器打开 http://localhost:9900 进入管理后台
+# 标准 MCP 使用 POST /mcp；配置 MCP_TOKEN 后通过 Authorization: Bearer <mcp-token> 调用。
 ```
 
 ---
@@ -500,61 +507,26 @@ LOG_LEVEL=info              # 日志级别
 | GET/POST/PUT/DELETE | /api/v1/agents | Agent 管理 |
 | GET/PUT | /api/v1/security/rules/* | 安全规则 |
 | GET | /api/v1/security/findings | 安全发现 |
-| GET/POST | /api/mcp/* | MCP 工具 |
+| GET/POST/PUT/DELETE | /api/v1/wiki/* | Wiki 项目、页面、来源、附件、图谱与备份 |
+| GET/POST/PUT/DELETE | /api/v1/software/* | Software 实例、工具、启停、调用与调用记录 |
+| GET/POST/PUT/DELETE | /api/v1/providers/* | Provider 账户、OAuth、Token、配额与模型 |
+| GET/POST/PUT/DELETE | /api/v1/platform/* | Prompt、语义缓存和客户端配置 |
+| GET/POST/DELETE | /api/v1/access/* | 按资源和主体配置授权 |
+| POST | /api/v1/auth/login | 管理员登录并建立会话 |
+| POST | /mcp | 标准 MCP JSON-RPC Streamable HTTP 入口 |
+| GET/POST | /api/mcp/* | MCP 兼容 REST 入口与审计查询 |
 
 ---
 
 ## 数据库设计
 
-与 Java 版完全相同，14 张表：
+新库初始化使用 `docs/waliapi.sql`。现有库升级由 `docs/migrations/` 下带版本与校验和的迁移完成；迁移覆盖渠道及多 Key、管理员和 API Key 配额、请求日志与网关尝试、安全发现、KB/Wiki、资源授权、Software、Provider、Prompt 和语义缓存等数据域。Python 与其他语言版本使用的 SQL/schema 不应假定完全相同。
 
-| 表名 | 用途 |
-|------|------|
-| channels | 渠道配置 |
-| api_keys | API Key 管理 |
-| request_logs | 请求日志 |
-| security_findings | 安全发现记录 |
-| security_builtin_rules | 内置安全规则 |
-| security_custom_rules | 自定义安全规则 |
-| kb_knowledge_bases | 知识库 |
-| kb_documents | 知识库文档 |
-| kb_chunks | 文档分块（向量用 LONGBLOB 存储） |
-| kb_tasks | 导入任务 |
-| kb_conversations | 对话记录 |
-| kb_sources | 文档来源 |
-| kb_index_meta | HNSW 索引元数据 |
-| agent_configs | Agent 配置 |
+## 与其他 WaLiAPI 实现的关系
 
-SQL 文件：`docs/waliapi.sql`（与 Java 版共用）
+本仓库提供可独立运行的 Python 实现，不承诺与 Rust/Java 版本的功能或 API 完全对等。已实现范围、测试证据及尚未完成项见 [`docs/part1-review.md`](docs/part1-review.md) 和 [`docs/part1-progress.md`](docs/part1-progress.md)。
 
----
-
-## 与 Java 版对照
-
-### 功能对照
-
-| 功能 | Java | Python | 状态 |
-|------|------|--------|------|
-| 网关代理（同步+流式） | ✅ ProxyService | ✅ GatewayService | 对等 |
-| 协议检测 | ✅ ProtocolDetector | ✅ protocol.py | 对等 |
-| Anthropic 转换 | ✅ AnthropicConverter | ✅ protocol.py 内置 | 对等 |
-| Responses 转换 | ✅ ResponsesConverter | ✅ responses_converter.py | 对等 |
-| 渠道调度 | ✅ Dispatcher | ✅ dispatcher.py | 对等 |
-| 安全扫描（6 扫描器） | ✅ SecurityScanner | ✅ security.py | 对等 |
-| 文本分块 | ✅ TextSplitter | ✅ knowledge.py | 对等 |
-| 向量化 | ✅ EmbedderService | ✅ knowledge.py | 对等 |
-| 检索（vector/keyword/hybrid） | ✅ RetrieverService | ✅ knowledge.py | 对等 |
-| 搜索回退 | ✅ SearchStrategyFactory | ✅ knowledge.py | 对等 |
-| HNSW 索引 | ✅ HnswIndex + IndexService | ✅ index_service.py | 对等 |
-| 导入策略 | ✅ 3 策略 + FileWalker | ✅ importer.py | 对等 |
-| RAG 问答 | ✅ RagService | ✅ knowledge.py | 对等 |
-| 深度研究 | ✅ RagService.deepResearch | ✅ knowledge.py | 对等 |
-| Agent 对话 | ✅ AgentChatService | ✅ agent_service.py | 对等 |
-| Agent 装配框架 | ✅ AgentArmoryService + 4 Builder | ❌ 简单实现 | 差异 |
-| 健康评分 | ✅ StatsService | ✅ channel_dashboard.py | 对等 |
-| MCP 工具 | ✅ McpServiceCase | ✅ McpService | 对等 |
-
-### 技术对照
+### 技术信息
 
 | 方面 | Java 版 | Python 版 |
 |------|---------|-----------|
@@ -563,11 +535,11 @@ SQL 文件：`docs/waliapi.sql`（与 Java 版共用）
 | ORM | MyBatis 3.0.4 | SQLAlchemy 2.0 (raw SQL) |
 | HTTP 客户端 | OkHttp | httpx |
 | JSON | Fastjson 2.0.28 | 标准库 json |
-| DTO | 32 个 Java 类 | 1 个 models.py |
+| DTO | Java 数据类 | app/types/ 下按功能拆分的 Pydantic 模型 |
 | 依赖注入 | Spring @Bean | 手动 Container + lru_cache |
-| 线程池 | Spring @Async | threading |
-| 流式响应 | WebFlux SSE | sse-starlette |
-| 代码规模 | 220 文件 / 15,800 行 | 40 文件 / 5,400 行 |
+| 异步工作 | Spring @Async | asyncio 与 `asyncio.to_thread` |
+| 流式响应 | WebFlux SSE | SSE codec 与异步流转发 |
+| 架构状态 | 与 Python 项目分别维护 | FastAPI、SQLAlchemy、React/TypeScript |
 
 ---
 

@@ -332,7 +332,9 @@ class KbRepository:
 
     def fail_or_retry_task(self, task_id: str, message: str, max_attempts: int):
         with get_db() as db:
-            row=db.execute(text("SELECT attempt_count, doc_id FROM kb_tasks WHERE id=:id FOR UPDATE"), {"id":task_id}).mappings().first()
+            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
+            row=db.execute(text("SELECT attempt_count, doc_id FROM kb_tasks WHERE id=:id" + lock_suffix), {"id":task_id}).mappings().first()
             if not row:
                 return False
             status="failed" if int(row["attempt_count"] or 0)>=max_attempts else "pending"
@@ -413,7 +415,8 @@ class KbRepository:
                 "(SELECT COALESCE(SUM(total_tokens), 0) FROM kb_documents WHERE kb_id = :kb_id) AS total_tokens, "
                 "(SELECT COUNT(*) FROM kb_chunks WHERE kb_id = :kb_id) AS chunk_count, "
                 "(SELECT COUNT(*) FROM kb_conversations WHERE kb_id = :kb_id) AS conversation_count, "
-                "(SELECT COALESCE(index_status, 'none') FROM kb_knowledge_bases WHERE id = :kb_id) AS index_status"
+                "(SELECT COALESCE(index_status, 'none') FROM kb_knowledge_bases WHERE id = :kb_id) AS index_status "
+                "FROM kb_knowledge_bases WHERE id = :kb_id"
             ), {"kb_id": kb_id}).mappings().first()
             if not row:
                 return None

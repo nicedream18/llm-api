@@ -1,29 +1,31 @@
-# 第一阶段可靠性改造
+# 第一阶段工程质量与回归门禁
 
 ## 本地验证
 
+GitHub Actions 全量测试命令执行 85% 行覆盖率门槛，项目依赖包含 `pytest-cov`。本地提交前运行：
+
 ```bash
-python3 -m compileall -q app tests
-pytest -q
-python3 -m app.migrations validate
-python3 -m app.migrations upgrade
+python -m pytest --cov=app --cov-fail-under=85 -q
+ruff check app tests
+mypy --follow-imports=silent app
+python -m compileall -q app tests
+node --test tests/frontend/*.test.cjs
+cd frontend && npm test && npm run build
+git diff --check
 ```
 
-迁移执行器使用 MySQL advisory lock、版本号和 SHA-256 校验和。重复执行 `upgrade` 是幂等的；`docs/waliapi.sql` 用于新库初始化，旧库由兼容迁移补齐字段。
+当前完整 Python 回归：**306 passed, 2 skipped，覆盖率 86.33%**。两项跳过测试是隔离 MySQL 集成测试；本机没有可用的 MySQL 测试服务。另有一条来自已安装 Starlette/AnyIO 依赖的弃用警告。
 
-## 运行配置
+隔离 MySQL 测试通过 `WALIAPI_TEST_MYSQL_SOCKET` 显式启用。测试会创建随机名称的临时库并在结束后清理，不应指向应用或生产数据库。远程模型服务没有参与上述自动化测试；网关和 Provider HTTP 行为由模拟响应覆盖。
 
-复制 `.env.example` 并在部署环境填写真实值。生产环境必须设置 `DB_PASSWORD`、`ADMIN_TOKEN`、至少 32 字符的 `ADMIN_SESSION_SECRET`，以及 `ADMIN_PASSWORD_HASH` 或首次初始化用的 `ADMIN_PASSWORD`。
+## 已有回归范围
 
-管理员接口使用会话 Cookie 或 `Authorization: Bearer <ADMIN_TOKEN>`。网关和只读知识库接口使用下游 API Key；知识库写操作始终需要管理员权限。
+- 管理员会话、密码哈希、登录限流、API Key 到期和模型/渠道授权。
+- 配额预占、重复请求幂等、结算、超限结算回退和释放。
+- 请求 ID、网关重试计划、SSE 流、协议转换、安全扫描和日志持久化。
+- KB 文档/分块/来源/任务仓储、导入边界、索引一致性、Worker 租约与失败恢复。
+- Wiki 页面、附件、备份恢复、授权、MCP 工具、Software connector 和 Provider OAuth 生命周期。
+- 迁移 SQL 解析、校验和及部分 SQLite/隔离 MySQL 行为验证。
+- React 管理端 API 客户端及 Markdown 渲染安全测试；前端类型检查与生产构建。
 
-## 已覆盖的关键路径
-
-- 管理员会话、密码哈希、失败限流和审计。
-- API Key 启用、过期、模型/渠道权限和 Token 配额预占、结算、释放。
-- 请求 ID、统一错误结构、网关候选渠道、重试退避、SSE 转发和流生命周期。
-- 安全扫描净化结果接入、响应扫描开关、自定义规则校验和 finding 持久化。
-- 数据库任务 worker、租约续期、重启恢复、有限重试和取消。
-- 迁移状态、升级、校验和详细健康检查。
-
-当前仓库测试在本机通过；Docker daemon 未启动，因此 Docker MySQL/testcontainers 场景需要在 CI 或部署环境中执行。当前全仓覆盖率仍低于计划中的 85% 门槛，后续应继续为已有 KB、Agent、Importer、Index 和完整路由补齐集成测试后再将覆盖率门禁设为 85%。
+85% 是全仓总覆盖率门槛，不代表每个模块均达到 85%。高风险和仍较低覆盖模块需在后续节点继续单独补测。没有 MySQL 服务时，不能将 SQLite 测试描述为真实 MySQL 验收。
