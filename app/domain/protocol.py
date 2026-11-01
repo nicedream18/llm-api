@@ -6,6 +6,12 @@ from app.types.enums import ProtocolFormat
 
 class ProtocolDetector:
     @staticmethod
+    def detect_endpoint(headers: dict, body: str, endpoint: str = "") -> str:
+        if str(endpoint).rstrip("/") == "/v1/completions":
+            return "completions"
+        return ProtocolDetector.detect(headers, body)
+
+    @staticmethod
     def detect(headers: dict, body: str) -> str:
         if headers and "anthropic-version" in headers:
             return ProtocolFormat.ANTHROPIC.value
@@ -15,7 +21,7 @@ class ProtocolDetector:
             j = json.loads(body)
             if "input" in j and "messages" not in j:
                 return ProtocolFormat.RESPONSES.value
-        except Exception:
+        except (TypeError, ValueError, json.JSONDecodeError):
             pass
         return ProtocolFormat.OPENAI.value
 

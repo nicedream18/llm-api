@@ -194,7 +194,7 @@ class ProxyService:
     def forward(self, body: str, headers: dict, client_ip: str | None = None, auth_context: AuthContext | None = None, endpoint: str = "/v1/chat/completions", request_id: str | None = None):
         start = time.time()
         request_id = request_id or str(uuid.uuid4()).replace("-", "")
-        protocol = ProtocolDetector.detect(headers, body)
+        protocol = ProtocolDetector.detect_endpoint(headers, body, endpoint)
         try:
             body_json = json.loads(body)
         except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
@@ -202,6 +202,10 @@ class ProxyService:
         if protocol == "responses":
             from app.domain.responses_converter import ResponsesConverter
             converted = ResponsesConverter.responses_to_openai(body)
+            body_json, body = json.loads(converted), converted
+        elif protocol == "completions":
+            from app.domain.completion_converter import CompletionConverter
+            converted = CompletionConverter.completions_to_chat(body)
             body_json, body = json.loads(converted), converted
         model = body_json.get("model")
         if not model:
@@ -233,7 +237,8 @@ class ProxyService:
             reservation_id = self.quota_repo.reserve(context.principal_id, request_id, self._estimate_tokens(body_json))
             if not reservation_id:
                 return 429, {"error": {"message": "API key quota exceeded", "type": "quota_error", "code": "quota_exceeded"}}
-        proxy_request = ProxyRequestEntity(model=model, body=body_json, stream=bool(body_json.get("stream")), api_key=None, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset(), endpoint=endpoint)
+        upstream_endpoint = "/v1/chat/completions" if protocol in {"responses", "anthropic", "completions"} else endpoint
+        proxy_request = ProxyRequestEntity(model=model, body=body_json, stream=bool(body_json.get("stream")), api_key=None, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset(), endpoint=upstream_endpoint)
         attempts = []
         try:
             if hasattr(self.gateway, "forward_with_attempts"):
@@ -297,6 +302,9 @@ class ProxyService:
             if protocol == "anthropic":
                 from app.domain.anthropic_converter import AnthropicConverter
                 result = json.loads(AnthropicConverter.chat_to_messages(proxy_response.body, model))
+            if protocol == "completions":
+                from app.domain.completion_converter import CompletionConverter
+                result = json.loads(CompletionConverter.chat_to_completions(proxy_response.body, model))
             if protocol == "responses":
                 from app.domain.responses_converter import ResponsesConverter
                 result = json.loads(ResponsesConverter.openai_to_responses(proxy_response.body, model))
@@ -305,7 +313,7 @@ class ProxyService:
 
     async def forward_stream_async(self, body: str, headers: dict, client_ip: str | None = None, auth_context: AuthContext | None = None, endpoint: str = "/v1/chat/completions", request_id: str | None = None):
         request_id = request_id or str(uuid.uuid4()).replace("-", "")
-        protocol = ProtocolDetector.detect(headers, body)
+        protocol = ProtocolDetector.detect_endpoint(headers, body, endpoint)
         try:
             body_json = json.loads(body)
         except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
@@ -317,6 +325,13 @@ class ProxyService:
                 body_json, body = json.loads(converted), converted
             except (ValueError, TypeError, json.JSONDecodeError):
                 yield 'data: {"error":{"message":"Invalid Responses request","type":"invalid_request_error"}}\n\n'; return
+        elif protocol == "completions":
+            from app.domain.completion_converter import CompletionConverter
+            try:
+                converted = CompletionConverter.completions_to_chat(body)
+                body_json, body = json.loads(converted), converted
+            except (ValueError, TypeError, json.JSONDecodeError):
+                yield 'data: {"error":{"message":"Invalid Completions request","type":"invalid_request_error"}}\n\n'; return
         model = body_json.get("model")
         if not model:
             yield 'data: {"error":{"message":"Missing model field","type":"invalid_request_error"}}\n\n'; return
@@ -368,7 +383,8 @@ class ProxyService:
                     pass
             event_name = None; data_lines = []
         try:
-            request = ProxyRequestEntity(model=model, body=body_json, stream=True, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset(), endpoint=endpoint)
+            upstream_endpoint = "/v1/chat/completions" if protocol in {"responses", "anthropic", "completions"} else endpoint
+            request = ProxyRequestEntity(model=model, body=body_json, stream=True, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset(), endpoint=upstream_endpoint)
             def record_attempt(attempt):
                 attempt_records.append(attempt)
                 try:

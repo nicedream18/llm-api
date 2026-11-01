@@ -69,7 +69,7 @@ class OpenAICompatibleAdapter(ChannelAdapter):
         configured_path = (channel.config or {}).get("path")
         if configured_path:
             path = str(configured_path)
-        elif getattr(request, "protocol_type", "") in {"responses", "anthropic"}:
+        elif getattr(request, "protocol_type", "") in {"responses", "anthropic", "completions"}:
             # Non-OpenAI public requests are converted before the compatible
             # upstream call, so use the Chat Completions endpoint.
             path = "/chat/completions"

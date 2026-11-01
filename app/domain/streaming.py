@@ -215,6 +215,8 @@ class StreamCodec:
             return self._openai_to_anthropic(payload)
         if self.target_protocol == "responses":
             return self._openai_to_responses(payload)
+        if self.target_protocol == "completions":
+            return self._openai_to_completions(payload)
         return [encode_sse(SSEEvent(data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")), event=event_name, event_id=event_id))]
 
     def _anthropic_to_target(self, event: SSEEvent) -> list[str]:
@@ -339,6 +341,27 @@ class StreamCodec:
         if finish:
             output.append(_event({"type": "response.output_text.done", "response_id": self.response_id, "item_id": f"msg_{self.response_id}", "output_index": 0, "content_index": 0, "text": self.text_buffer}, "response.output_text.done"))
         return output
+
+    def _openai_to_completions(self, payload: dict[str, Any]) -> list[str]:
+        choices = []
+        for choice in payload.get("choices") or []:
+            delta = choice.get("delta") or {}
+            choices.append({
+                "index": choice.get("index", len(choices)),
+                "text": delta.get("content") or "",
+                "logprobs": None,
+                "finish_reason": choice.get("finish_reason"),
+            })
+        result = {
+            "id": payload.get("id") or self.response_id,
+            "object": "text_completion",
+            "created": payload.get("created"),
+            "model": payload.get("model") or self.model,
+            "choices": choices,
+        }
+        if payload.get("usage"):
+            result["usage"] = payload["usage"]
+        return [encode_sse(SSEEvent(data=json.dumps(result, ensure_ascii=False, separators=(",", ":"))))]
 
     def _finish_protocol(self) -> list[str]:
         if self.done:
