@@ -456,9 +456,17 @@ class ImporterService:
             return
         documents = self.repo.find_doc_by_kb_id(kb_id)
         chunks = self.repo.find_chunk_by_kb_id(kb_id)
-        kb.doc_count = sum(1 for document in documents if document.status == "ready")
-        kb.chunk_count = len(chunks)
-        kb.total_tokens = sum(document.total_tokens for document in documents if document.status == "ready")
-        if kb.index_status == "ready":
+        doc_count = sum(1 for document in documents if document.status == "ready")
+        chunk_count = len(chunks)
+        total_tokens = sum(document.total_tokens for document in documents if document.status == "ready")
+        content_changed = (
+            kb.doc_count != doc_count
+            or kb.chunk_count != chunk_count
+            or kb.total_tokens != total_tokens
+        )
+        kb.doc_count = doc_count
+        kb.chunk_count = chunk_count
+        kb.total_tokens = total_tokens
+        if kb.index_status == "ready" and content_changed:
             kb.index_status = "stale"
         self.repo.update_kb(kb)

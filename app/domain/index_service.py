@@ -362,7 +362,8 @@ class IndexService:
             return {}
         import json
         try:
-            return json.loads(metadata_str)
+            metadata = json.loads(metadata_str)
+            return metadata if isinstance(metadata, dict) else {}
         except (TypeError, ValueError):
             return {}
 
@@ -372,7 +373,7 @@ class IndexService:
             import json
             try:
                 meta = json.loads(chunk.metadata)
-                filename = meta.get("filename") or meta.get("filePath")
+                filename = (meta.get("filename") or meta.get("filePath")) if isinstance(meta, dict) else None
                 if filename:
                     return filename
             except (TypeError, ValueError):
