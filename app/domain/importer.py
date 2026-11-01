@@ -30,7 +30,7 @@ IGNORED_DIRS = {
 }
 
 SUPPORTED_EXTS = {
-    "md", "markdown", "txt", "rst",
+    "md", "markdown", "txt", "rst", "pdf",
     "java", "kt", "scala", "py", "rs", "go", "c", "cpp", "h", "hpp",
     "ts", "tsx", "js", "jsx", "mjs",
     "cs", "rb", "php", "swift", "dart",

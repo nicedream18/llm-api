@@ -4,6 +4,7 @@ import binascii
 import logging
 import uuid
 from datetime import UTC, datetime
+from io import BytesIO
 
 from app.domain.entities import (
     KbDocumentEntity,
@@ -28,6 +29,25 @@ logger = logging.getLogger(__name__)
 
 def _now():
     return datetime.now(UTC).isoformat()
+
+
+def extract_pdf_text(content: bytes) -> str:
+    """Extract text from a PDF without invoking shell tools or OCR services."""
+    if not content.startswith(b"%PDF"):
+        raise ValueError("Invalid PDF content")
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise ValueError("PDF parsing support is not installed") from exc
+    try:
+        reader = PdfReader(BytesIO(content), strict=False)
+        pages = [(page.extract_text() or "").strip() for page in reader.pages]
+    except Exception as exc:
+        raise ValueError("PDF parsing failed") from exc
+    text = "\n\n".join(page for page in pages if page)
+    if not text.strip():
+        raise ValueError("PDF contains no extractable text")
+    return text
 
 
 class KbService:
@@ -96,9 +116,21 @@ class KbService:
             if not kb:
                 raise ValueError("KB not found: " + kb_id)
             raw_content = dto.content
+            decoded_bytes = None
             try:
-                content = base64.b64decode(raw_content).decode("utf-8")
-            except (binascii.Error, UnicodeDecodeError, ValueError, TypeError):
+                decoded_bytes = base64.b64decode(raw_content, validate=True)
+            except (binascii.Error, ValueError, TypeError):
+                pass
+            if (dto.file_type or "").lower() == "pdf":
+                if decoded_bytes is None:
+                    raise ValueError("PDF content must be Base64 encoded")
+                content = extract_pdf_text(decoded_bytes)
+            elif decoded_bytes is not None:
+                try:
+                    content = decoded_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    content = raw_content
+            else:
                 content = raw_content
             from app.domain.knowledge import ChunkConfig
             chunk_config = ChunkConfig(chunk_size=kb.chunk_size, chunk_overlap=kb.chunk_overlap)
