@@ -79,8 +79,11 @@ class OpenAICompatibleAdapter(ChannelAdapter):
 
     def build_headers(self, channel, request) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        if channel.api_key:
-            headers["Authorization"] = f"Bearer {channel.api_key}"
+        api_key = getattr(request, "upstream_api_key", None)
+        if api_key is None:
+            api_key = channel.api_key
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         headers.update(_copy_headers(channel.config))
         return headers
 
@@ -99,8 +102,11 @@ class AnthropicAdapter(ChannelAdapter):
             "Content-Type": "application/json",
             "anthropic-version": str((channel.config or {}).get("anthropic_version", "2023-06-01")),
         }
-        if channel.api_key:
-            headers["x-api-key"] = channel.api_key
+        api_key = getattr(request, "upstream_api_key", None)
+        if api_key is None:
+            api_key = channel.api_key
+        if api_key:
+            headers["x-api-key"] = api_key
         headers.update(_copy_headers(channel.config))
         return headers
 

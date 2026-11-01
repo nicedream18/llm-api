@@ -5,10 +5,12 @@ from datetime import UTC, datetime
 
 from app.domain.entities import (
     ApiKeyEntity,
+    ChannelApiKeyEntity,
     ChannelEntity,
 )
 from app.types.models import (
     ApiKeyDTO,
+    ChannelApiKeyDTO,
     ChannelDTO,
     DashboardStatsDTO,
     RequestLogDTO,
@@ -78,6 +80,8 @@ class ChannelService:
             api_key=source.api_key, models=list(source.models or []), status=source.status,
             priority=source.priority, weight=source.weight,
             config=dict(source.config or {}), model_mapping=dict(source.model_mapping or {}),
+            api_keys=[ChannelApiKeyEntity(name=key.name, api_key=key.api_key, status=key.status, weight=key.weight)
+                      for key in (source.api_keys or [])],
         )
         return self._to_dto(self.repo.create_channel(clone))
 
@@ -95,6 +99,21 @@ class ChannelService:
         entity.models = models
         self.repo.update_channel(entity)
         return self._to_dto(entity)
+
+    def list_channel_api_keys(self, channel_id):
+        return [self._to_channel_key_dto(key) for key in self.repo.get_channel_api_keys(channel_id)]
+
+    def create_channel_api_key(self, channel_id, dto: ChannelApiKeyDTO):
+        entity = self._to_channel_key_entity(channel_id, dto)
+        return self._to_channel_key_dto(self.repo.create_channel_api_key(entity), expose_secret=True)
+
+    def update_channel_api_key(self, channel_id, key_id, dto: ChannelApiKeyDTO):
+        entity = self._to_channel_key_entity(channel_id, dto)
+        entity.id = key_id
+        return self.repo.update_channel_api_key(entity)
+
+    def delete_channel_api_key(self, channel_id, key_id):
+        return self.repo.delete_channel_api_key(channel_id, key_id)
 
     def list_api_keys(self):
         return [self._to_apikey_dto(e) for e in self.repo.get_all_api_keys()]
@@ -123,17 +142,45 @@ class ChannelService:
         return ChannelDTO(id=e.id, name=e.name, type=e.type, base_url=e.base_url, api_key=_mask_secret(e.api_key),
                           models=e.models or [], status=e.status, priority=e.priority, weight=e.weight,
                           config=e.config, model_mapping=e.model_mapping, last_test_at=e.last_test_at,
-                          last_test_ok=e.last_test_ok, created_at=e.created_at, updated_at=e.updated_at)
+                          last_test_ok=e.last_test_ok, created_at=e.created_at, updated_at=e.updated_at,
+                          api_keys=[self._to_channel_key_dto(key) for key in (e.api_keys or [])])
 
     def _to_entity(self, dto, existing=None):
         api_key = dto.api_key
         if existing and (api_key is None or _is_masked_secret(api_key)):
             api_key = existing.api_key
+        api_keys = existing.api_keys if existing and dto.api_keys is None else [self._to_channel_key_entity(dto.id, key) for key in (dto.api_keys or [])]
         return ChannelEntity(id=dto.id, name=dto.name, type=dto.type, base_url=dto.base_url,
                              api_key=api_key, models=dto.models, status=dto.status,
                              priority=dto.priority, weight=dto.weight, config=dto.config,
                              model_mapping=dto.model_mapping, last_test_at=dto.last_test_at,
-                             last_test_ok=dto.last_test_ok, created_at=dto.created_at, updated_at=dto.updated_at)
+                             last_test_ok=dto.last_test_ok, created_at=dto.created_at, updated_at=dto.updated_at,
+                             api_keys=api_keys)
+
+    def _to_channel_key_dto(self, entity, expose_secret=False):
+        return ChannelApiKeyDTO(
+            id=entity.id, channel_id=entity.channel_id, name=entity.name,
+            api_key=entity.api_key if expose_secret else _mask_secret(entity.api_key),
+            status=entity.status, weight=entity.weight, last_error=entity.last_error,
+            cooldown_until=entity.cooldown_until, last_used_at=entity.last_used_at,
+            created_at=entity.created_at, updated_at=entity.updated_at,
+        )
+
+    def _to_channel_key_entity(self, channel_id, dto):
+        secret = dto.api_key
+        existing = None
+        if dto.id and hasattr(self.repo, "get_channel_api_keys"):
+            existing = next((key for key in self.repo.get_channel_api_keys(channel_id) if key.id == dto.id), None)
+        if existing and (secret is None or _is_masked_secret(secret)):
+            secret = existing.api_key
+        if not secret:
+            raise ValueError("Upstream API key is required")
+        return ChannelApiKeyEntity(
+            id=dto.id, channel_id=channel_id, name=dto.name, api_key=secret,
+            status=dto.status, weight=dto.weight, last_error=dto.last_error,
+            cooldown_until=dto.cooldown_until, last_used_at=dto.last_used_at,
+            created_at=dto.created_at, updated_at=dto.updated_at,
+        )
 
     def _to_apikey_dto(self, e, expose_secret=False):
         if not e: return None

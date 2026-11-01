@@ -3,7 +3,7 @@ import asyncio
 import httpx
 import pytest
 
-from app.domain.entities import ChannelEntity, DispatchResult, ProxyRequestEntity
+from app.domain.entities import ChannelApiKeyEntity, ChannelEntity, DispatchResult, ProxyRequestEntity
 from app.domain.gateway import GatewayService
 
 
@@ -120,6 +120,36 @@ async def test_gateway_cools_down_retryable_channel(monkeypatch):
     assert response.status_code == 503
     assert len(attempts) == 2
     assert calls == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_fails_over_to_second_channel_key(monkeypatch):
+    key_one = ChannelApiKeyEntity(id="k1", api_key="one", weight=1)
+    key_two = ChannelApiKeyEntity(id="k2", api_key="two", weight=1)
+    channel = ChannelEntity(id="c1", name="one-channel", base_url="http://one", models=["demo"], api_keys=[key_one, key_two])
+
+    class SingleDispatcher:
+        def candidates(self, _model, _excluded=None):
+            return [DispatchResult(channel, "demo")]
+
+    calls = []
+
+    async def handler(request):
+        calls.append(request.headers.get("authorization"))
+        if request.headers.get("authorization") == "Bearer one":
+            return httpx.Response(503, json={"error": "busy"}, request=request)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    service = GatewayService(SingleDispatcher(), None)
+    monkeypatch.setattr(service, "_select_api_key", lambda _channel: ("one", "k1") if not calls else ("two", "k2"))
+    monkeypatch.setattr(service, "_backoff_with_hint", lambda *_args: asyncio.sleep(0))
+    await service.aclose()
+    service.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    response, attempts = await service.forward_with_attempts(ProxyRequestEntity("demo", {"model": "demo"}))
+    await service.aclose()
+    assert response.success is True
+    assert calls == ["Bearer one", "Bearer two"]
+    assert len(attempts) == 2
 
 
 def test_channel_test_targets_the_passed_channel():

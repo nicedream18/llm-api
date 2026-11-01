@@ -1,11 +1,11 @@
 from app.application.services.channel_dashboard import ChannelService
-from app.domain.entities import ApiKeyEntity, ChannelEntity
-from app.types.models import ApiKeyDTO, ChannelDTO
+from app.domain.entities import ApiKeyEntity, ChannelApiKeyEntity, ChannelEntity
+from app.types.models import ApiKeyDTO, ChannelApiKeyDTO, ChannelDTO
 
 
 class FakeRepository:
     def __init__(self):
-        self.channel = ChannelEntity(id="channel-1", name="provider", api_key="provider-secret-123456")
+        self.channel = ChannelEntity(id="channel-1", name="provider", api_key="provider-secret-123456", api_keys=[ChannelApiKeyEntity(id="up-1", channel_id="channel-1", name="secondary", api_key="upstream-secret-123456")])
         self.api_key = ApiKeyEntity(id="key-1", name="client", key="sk-waliapi-secret-123456")
         self.updated_channel = None
         self.updated_api_key = None
@@ -33,6 +33,19 @@ class FakeRepository:
     def create_channel(self, entity):
         self.channel = entity
         return entity
+
+    def get_channel_api_keys(self, _channel_id):
+        return self.channel.api_keys
+
+    def create_channel_api_key(self, entity):
+        self.channel.api_keys.append(entity)
+        return entity
+
+    def update_channel_api_key(self, entity):
+        return True
+
+    def delete_channel_api_key(self, _channel_id, _key_id):
+        return True
 
 
 def test_channel_credentials_are_masked_and_masked_update_preserves_secret():
@@ -68,3 +81,13 @@ def test_clone_channel_copies_configuration_without_reusing_id():
     assert clone.name == "provider (copy)"
     assert clone.id != "channel-1"
     assert clone.api_key.startswith("prov")
+
+
+def test_channel_upstream_keys_are_masked_and_preserve_secret_on_update():
+    repo = FakeRepository()
+    service = ChannelService(repo, None)
+    listed = service.list_channel_api_keys("channel-1")
+    assert listed[0].api_key.startswith("upst")
+    assert set(listed[0].api_key[4:-4]) == {"*"}
+    service.update_channel_api_key("channel-1", "up-1", ChannelApiKeyDTO(id="up-1", api_key=listed[0].api_key))
+    assert repo.channel.api_keys[0].api_key == "upstream-secret-123456"

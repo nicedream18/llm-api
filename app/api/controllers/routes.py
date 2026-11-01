@@ -15,6 +15,7 @@ from app.types.models import (
     AgentChatRequestDTO,
     AgentConfigDTO,
     ApiKeyDTO,
+    ChannelApiKeyDTO,
     ChannelDTO,
     CreateKbDTO,
     KbAskRequestDTO,
@@ -107,18 +108,18 @@ async def health_details():
             db.execute(__import__("sqlalchemy").text("SELECT 1"))
         rows = migration_status()
         details["migration"] = "ok" if all(item["checksum_valid"] for item in rows) else "invalid"
-    except Exception:
+    except Exception:  # noqa: BLE001 - health endpoint must report degraded state
         details["database"] = "error"
         details["migration"] = "error"
     try:
         details["enabled_channels"] = len(container.channel_repo.get_enabled_channels())
-    except Exception:
+    except Exception:  # noqa: BLE001 - health endpoint must report degraded state
         details["enabled_channels"] = None
     try:
         with engine.connect() as db:
             task_counts = db.execute(__import__("sqlalchemy").text("SELECT status, COUNT(*) AS total FROM kb_tasks GROUP BY status")).mappings().all()
         details["tasks"] = {row["status"]: int(row["total"]) for row in task_counts}
-    except Exception:
+    except Exception:  # noqa: BLE001 - health endpoint must report degraded state
         details["tasks"] = None
     details["security_rules"] = "loaded" if config.security.enabled else "disabled"
     details["http_client"] = "closed" if container.gateway.client.is_closed else "open"
@@ -179,6 +180,27 @@ async def sync_channel_models(channel_id: str):
     if result is None:
         raise HTTPException(status_code=404, detail="Channel not found")
     return _success(result)
+
+
+@channel_router.get("/{channel_id}/api-keys")
+async def list_channel_api_keys(channel_id: str):
+    return _success(get_container().channel_service.list_channel_api_keys(channel_id))
+
+
+@channel_router.post("/{channel_id}/api-keys")
+async def create_channel_api_key(channel_id: str, dto: ChannelApiKeyDTO):
+    return _success(get_container().channel_service.create_channel_api_key(channel_id, dto))
+
+
+@channel_router.put("/{channel_id}/api-keys/{key_id}")
+async def update_channel_api_key(channel_id: str, key_id: str, dto: ChannelApiKeyDTO):
+    dto.id = key_id
+    return _success(get_container().channel_service.update_channel_api_key(channel_id, key_id, dto))
+
+
+@channel_router.delete("/{channel_id}/api-keys/{key_id}")
+async def delete_channel_api_key(channel_id: str, key_id: str):
+    return _success(get_container().channel_service.delete_channel_api_key(channel_id, key_id))
 
 
 # ==================== ApiKey Controller ====================

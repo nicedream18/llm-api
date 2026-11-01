@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from app.domain.entities import ChannelEntity, ProxyRequestEntity
+from app.domain.entities import ChannelApiKeyEntity, ChannelEntity, ProxyRequestEntity
 from app.domain.gateway import GatewayService
 from app.infrastructure.adapters.channel_adapters import adapter_for
 
@@ -21,6 +21,12 @@ def test_openai_compatible_adapter_builds_url_headers_and_model_mapping():
         "Authorization": "Bearer secret",
     }
     assert adapter.prepare_body(channel, request(), "upstream-model")["model"] == "upstream-model"
+
+
+def test_openai_adapter_uses_selected_upstream_key():
+    channel = ChannelEntity(type="openai", base_url="https://provider.example/v1", api_key="primary")
+    req = ProxyRequestEntity("m", {"model": "m"}, upstream_api_key="secondary")
+    assert adapter_for(channel).build_headers(channel, req)["Authorization"] == "Bearer secondary"
 
 
 @pytest.mark.parametrize("endpoint, path", [

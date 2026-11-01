@@ -19,6 +19,22 @@ class ChannelEntity:
     last_test_ok: int | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    api_keys: list["ChannelApiKeyEntity"] = field(default_factory=list)
+
+
+@dataclass
+class ChannelApiKeyEntity:
+    id: str | None = None
+    channel_id: str | None = None
+    name: str = ""
+    api_key: str = ""
+    status: int = 1
+    weight: int = 1
+    last_error: str | None = None
+    cooldown_until: str | None = None
+    last_used_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 @dataclass
@@ -53,6 +69,7 @@ class ProxyRequestEntity:
     headers: dict = field(default_factory=dict)
     allowed_channels: frozenset[str] = frozenset()
     endpoint: str = "/v1/chat/completions"
+    upstream_api_key: str | None = None
 
 
 @dataclass

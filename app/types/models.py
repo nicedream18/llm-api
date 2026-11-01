@@ -36,6 +36,20 @@ class HealthDetailDTO(BaseModel):
     checks: dict
 
 
+class ChannelApiKeyDTO(BaseModel):
+    id: str | None = None
+    channel_id: str | None = None
+    name: str = ""
+    api_key: str | None = None
+    status: int = 1
+    weight: int = Field(default=1, ge=1, le=1000)
+    last_error: str | None = None
+    cooldown_until: str | None = None
+    last_used_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
 class ChannelDTO(BaseModel):
     id: str | None = None
     name: str = ""
@@ -52,6 +66,7 @@ class ChannelDTO(BaseModel):
     last_test_ok: int | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    api_keys: list["ChannelApiKeyDTO"] | None = None
 
 
 class ApiKeyDTO(BaseModel):

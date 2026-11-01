@@ -9,6 +9,7 @@ from sqlalchemy import text
 from app.domain.entities import (
     ApiKeyEntity,
     ApiKeyStatsEntity,
+    ChannelApiKeyEntity,
     ChannelEntity,
     ChannelStatsEntity,
 )
@@ -64,6 +65,7 @@ class ChannelRepository:
                 "VALUES (:id, :name, :type, :base_url, :api_key, :models, :status, :priority, :weight, "
                 ":config, :model_mapping, :last_test_at, :last_test_ok, :created_at, :updated_at)"
             ), self._to_params(entity))
+            self._replace_channel_keys(db, entity.id, entity.api_keys)
         return entity
 
     def update_channel(self, entity: ChannelEntity) -> bool:
@@ -74,6 +76,8 @@ class ChannelRepository:
                 "models=:models, status=:status, priority=:priority, weight=:weight, "
                 "config=:config, model_mapping=:model_mapping, updated_at=:updated_at WHERE id=:id"
             ), self._to_params(entity))
+            if entity.api_keys is not None:
+                self._replace_channel_keys(db, entity.id, entity.api_keys)
             return result.rowcount > 0
 
     def delete_channel(self, channel_id: str) -> bool:
@@ -94,6 +98,56 @@ class ChannelRepository:
             result = db.execute(text(
                 "UPDATE channels SET last_test_at=:t, last_test_ok=:ok, updated_at=:t WHERE id=:id"
             ), {"id": channel_id, "t": now, "ok": 1 if ok else 0})
+            return result.rowcount > 0
+
+    def get_channel_api_keys(self, channel_id: str) -> list[ChannelApiKeyEntity]:
+        with get_db() as db:
+            rows = db.execute(text(
+                "SELECT id, channel_id, name, api_key, status, weight, last_error, cooldown_until, "
+                "last_used_at, created_at, updated_at FROM channel_api_keys "
+                "WHERE channel_id=:channel_id ORDER BY created_at ASC"
+            ), {"channel_id": channel_id}).mappings().all()
+            return [self._to_channel_key(r) for r in rows]
+
+    def create_channel_api_key(self, entity: ChannelApiKeyEntity) -> ChannelApiKeyEntity:
+        if not entity.id:
+            entity.id = str(uuid.uuid4())
+        now = _now()
+        entity.created_at = entity.created_at or now
+        entity.updated_at = now
+        with get_db() as db:
+            db.execute(text(
+                "INSERT INTO channel_api_keys (id, channel_id, name, api_key, status, weight, last_error, "
+                "cooldown_until, last_used_at, created_at, updated_at) VALUES "
+                "(:id, :channel_id, :name, :api_key, :status, :weight, :last_error, :cooldown_until, "
+                ":last_used_at, :created_at, :updated_at)"
+            ), self._channel_key_params(entity))
+        return entity
+
+    def update_channel_api_key(self, entity: ChannelApiKeyEntity) -> bool:
+        entity.updated_at = _now()
+        with get_db() as db:
+            result = db.execute(text(
+                "UPDATE channel_api_keys SET name=:name, api_key=:api_key, status=:status, weight=:weight, "
+                "last_error=:last_error, cooldown_until=:cooldown_until, last_used_at=:last_used_at, "
+                "updated_at=:updated_at WHERE id=:id AND channel_id=:channel_id"
+            ), self._channel_key_params(entity))
+            return result.rowcount > 0
+
+    def delete_channel_api_key(self, channel_id: str, key_id: str) -> bool:
+        with get_db() as db:
+            result = db.execute(text(
+                "DELETE FROM channel_api_keys WHERE id=:id AND channel_id=:channel_id"
+            ), {"id": key_id, "channel_id": channel_id})
+            return result.rowcount > 0
+
+    def update_channel_api_key_result(self, key_id: str, ok: bool, error: str | None = None, cooldown_until: str | None = None) -> bool:
+        with get_db() as db:
+            result = db.execute(text(
+                "UPDATE channel_api_keys SET last_error=:last_error, cooldown_until=:cooldown_until, "
+                "last_used_at=:last_used_at, updated_at=:last_used_at WHERE id=:id"
+            ), {"id": key_id, "last_error": None if ok else error, "cooldown_until": cooldown_until,
+                "last_used_at": _now()})
             return result.rowcount > 0
 
     def get_channel_stats(self) -> list[ChannelStatsEntity]:
@@ -212,7 +266,44 @@ class ChannelRepository:
             model_mapping=json.loads(row["model_mapping"]) if row["model_mapping"] else None,
             last_test_at=row["last_test_at"], last_test_ok=row["last_test_ok"],
             created_at=row["created_at"], updated_at=row["updated_at"],
+            api_keys=self.get_channel_api_keys(row["id"]),
         )
+
+    @staticmethod
+    def _to_channel_key(row) -> ChannelApiKeyEntity:
+        return ChannelApiKeyEntity(
+            id=row["id"], channel_id=row["channel_id"], name=row["name"], api_key=row["api_key"],
+            status=row["status"], weight=row["weight"], last_error=row["last_error"],
+            cooldown_until=row["cooldown_until"], last_used_at=row["last_used_at"],
+            created_at=row["created_at"], updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _channel_key_params(entity: ChannelApiKeyEntity) -> dict:
+        return {
+            "id": entity.id, "channel_id": entity.channel_id, "name": entity.name,
+            "api_key": entity.api_key, "status": entity.status, "weight": entity.weight,
+            "last_error": entity.last_error, "cooldown_until": entity.cooldown_until,
+            "last_used_at": entity.last_used_at, "created_at": entity.created_at,
+            "updated_at": entity.updated_at,
+        }
+
+    @classmethod
+    def _replace_channel_keys(cls, db, channel_id: str, keys: list[ChannelApiKeyEntity]) -> None:
+        db.execute(text("DELETE FROM channel_api_keys WHERE channel_id=:channel_id"), {"channel_id": channel_id})
+        for key in keys or []:
+            key.channel_id = channel_id
+            if not key.id:
+                key.id = str(uuid.uuid4())
+            now = _now()
+            key.created_at = key.created_at or now
+            key.updated_at = now
+            db.execute(text(
+                "INSERT INTO channel_api_keys (id, channel_id, name, api_key, status, weight, last_error, "
+                "cooldown_until, last_used_at, created_at, updated_at) VALUES "
+                "(:id, :channel_id, :name, :api_key, :status, :weight, :last_error, :cooldown_until, "
+                ":last_used_at, :created_at, :updated_at)"
+            ), cls._channel_key_params(key))
 
     def _to_params(self, e: ChannelEntity) -> dict:
         return {
