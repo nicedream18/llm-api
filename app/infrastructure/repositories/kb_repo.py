@@ -78,6 +78,24 @@ class KbRepository:
                 "embedding_dim=:embedding_dim, doc_count=:doc_count, chunk_count=:chunk_count, total_tokens=:total_tokens, index_status=:index_status, updated_at=:updated_at WHERE id=:id"
             ), self._kb_params(entity))
 
+    def set_index_state_if_unchanged(self, kb_id: str, expected_updated_at: str | None,
+                                     status: str, embedding_dim: int | None = None) -> bool:
+        """Publish an index state only if KB contents were not changed mid-build."""
+        with get_db() as db:
+            result = db.execute(text("""UPDATE kb_knowledge_bases SET
+                index_status=:status,
+                embedding_dim=COALESCE(:embedding_dim, embedding_dim),
+                updated_at=:updated_at
+                WHERE id=:kb_id AND (updated_at=:expected_updated_at
+                    OR (updated_at IS NULL AND :expected_updated_at IS NULL))"""), {
+                "kb_id": kb_id,
+                "expected_updated_at": expected_updated_at,
+                "status": status,
+                "embedding_dim": embedding_dim,
+                "updated_at": _now(),
+            })
+            return affected_rows(result) == 1
+
     def delete_kb_by_id(self, kb_id: str):
         with get_db() as db:
             dialect = getattr(getattr(db, "bind", None), "dialect", None)

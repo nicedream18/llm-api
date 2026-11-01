@@ -170,3 +170,27 @@ def test_task_claim_cancels_work_for_a_deleted_document(monkeypatch):
     assert KbRepository().claim_next_task("worker", 30) is None
     with engine.connect() as connection:
         assert connection.execute(text("SELECT status FROM kb_tasks WHERE id='task-1'")).scalar_one() == "cancelled"
+
+
+def test_index_state_is_published_only_for_the_kb_revision_that_was_built(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE kb_knowledge_bases (id TEXT, updated_at TEXT, index_status TEXT, embedding_dim INTEGER)"))
+        connection.execute(text("INSERT INTO kb_knowledge_bases VALUES ('kb-1', 'rev-1', 'stale', 0)"))
+
+    @contextmanager
+    def sqlite_session():
+        from sqlalchemy.orm import Session
+
+        with Session(engine) as session, session.begin():
+            yield session
+
+    monkeypatch.setattr(kb_repo_module, "get_db", sqlite_session)
+    repo = KbRepository()
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE kb_knowledge_bases SET updated_at='rev-2', index_status='stale' WHERE id='kb-1'"))
+
+    assert repo.set_index_state_if_unchanged("kb-1", "rev-1", "ready", 2) is False
+    with engine.connect() as connection:
+        row = connection.execute(text("SELECT updated_at, index_status, embedding_dim FROM kb_knowledge_bases WHERE id='kb-1'")).mappings().one()
+        assert (row["updated_at"], row["index_status"], row["embedding_dim"]) == ("rev-2", "stale", 0)

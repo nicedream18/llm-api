@@ -355,13 +355,23 @@ class KbService:
     def build_index(self, kb_id):
         """Build HNSW index for KB. Route entry for POST /{id}/index."""
         from app.domain.index_service import IndexService
+        kb = self.repo.find_kb_by_id(kb_id)
+        if not kb:
+            return {"success": False, "message": "Knowledge base not found"}
+        expected_updated_at = kb.updated_at
         index_service = IndexService(self.repo)
         result = index_service.build_index(kb_id)
-        kb = self.repo.find_kb_by_id(kb_id)
-        if kb:
-            kb.index_status = "ready" if result.get("success") else "error"
-            if result.get("success") and result.get("embeddingDim"):
-                kb.embedding_dim = int(result["embeddingDim"])
+        status = "ready" if result.get("success") else "error"
+        embedding_dim = int(result["embeddingDim"]) if result.get("success") and result.get("embeddingDim") else None
+        if hasattr(self.repo, "set_index_state_if_unchanged"):
+            updated = self.repo.set_index_state_if_unchanged(kb_id, expected_updated_at, status, embedding_dim)
+            if not updated and result.get("success"):
+                index_service.remove_index_file(kb_id)
+                result["indexStatus"] = "stale"
+        else:
+            kb.index_status = status
+            if embedding_dim is not None:
+                kb.embedding_dim = embedding_dim
             self.repo.update_kb(kb)
         return result
 

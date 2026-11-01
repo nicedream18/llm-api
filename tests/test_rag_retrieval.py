@@ -134,3 +134,29 @@ def test_build_index_marks_kb_ready_and_records_embedding_dimension(monkeypatch,
     assert result["embeddingDim"] == 2
     assert repo.kb.index_status == "ready"
     assert repo.kb.embedding_dim == 2
+
+
+def test_index_build_does_not_publish_ready_after_concurrent_kb_change(monkeypatch):
+    from app.domain.index_service import IndexService
+
+    class Repo:
+        def __init__(self):
+            self.kb = KbKnowledgeBaseEntity(id="kb-1", updated_at="before", index_status="stale")
+            self.expected = None
+
+        def find_kb_by_id(self, _kb_id):
+            return self.kb
+
+        def set_index_state_if_unchanged(self, _kb_id, expected, _status, _dimension):
+            self.expected = expected
+            return False
+
+    monkeypatch.setattr(IndexService, "build_index", lambda _self, _kb_id: {"success": True, "embeddingDim": 2})
+    repo = Repo()
+    kb_service = KbService(repo, None, None, None)
+
+    result = kb_service.build_index("kb-1")
+
+    assert repo.expected == "before"
+    assert result["indexStatus"] == "stale"
+    assert repo.kb.index_status == "stale"
