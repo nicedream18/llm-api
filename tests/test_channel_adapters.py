@@ -1,0 +1,117 @@
+import json
+
+import httpx
+import pytest
+
+from app.domain.entities import ChannelEntity, ProxyRequestEntity
+from app.domain.gateway import GatewayService
+from app.infrastructure.adapters.channel_adapters import adapter_for
+
+
+def request(body=None):
+    return ProxyRequestEntity("public-model", body or {"model": "public-model", "messages": [{"role": "user", "content": "hi"}]})
+
+
+def test_openai_compatible_adapter_builds_url_headers_and_model_mapping():
+    channel = ChannelEntity(type="openai", base_url="https://provider.example/v1", api_key="secret")
+    adapter = adapter_for(channel)
+    assert adapter.build_url(channel, request()) == "https://provider.example/v1/chat/completions"
+    assert adapter.build_headers(channel, request()) == {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer secret",
+    }
+    assert adapter.prepare_body(channel, request(), "upstream-model")["model"] == "upstream-model"
+
+
+def test_anthropic_adapter_converts_chat_request_and_response():
+    channel = ChannelEntity(type="claude", base_url="https://api.anthropic.com/v1", api_key="secret")
+    adapter = adapter_for(channel)
+    req = request({
+        "model": "public-model",
+        "messages": [
+            {"role": "system", "content": "Be concise"},
+            {"role": "user", "content": "hi"},
+        ],
+        "max_tokens": 20,
+        "temperature": 0.2,
+    })
+    assert adapter.build_url(channel, req) == "https://api.anthropic.com/v1/messages"
+    headers = adapter.build_headers(channel, req)
+    assert headers["x-api-key"] == "secret"
+    assert "Authorization" not in headers
+    body = adapter.prepare_body(channel, req, "claude-model")
+    assert body["model"] == "claude-model"
+    assert body["system"] == "Be concise"
+    assert body["messages"] == [{"role": "user", "content": "hi"}]
+    assert body["max_tokens"] == 20
+
+    normalized = json.loads(adapter.normalize_response(json.dumps({
+        "id": "msg_1", "model": "claude-model", "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": "hello"}],
+        "usage": {"input_tokens": 4, "output_tokens": 2},
+    }), "public-model"))
+    assert normalized["choices"][0]["message"]["content"] == "hello"
+    assert normalized["usage"]["total_tokens"] == 6
+
+
+def test_ollama_native_adapter_maps_openai_options():
+    channel = ChannelEntity(type="ollama", base_url="http://localhost:11434", config={"native_api": True})
+    adapter = adapter_for(channel)
+    req = request({
+        "model": "public-model", "messages": [], "max_tokens": 32, "temperature": 0.4,
+    })
+    assert adapter.build_url(channel, req) == "http://localhost:11434/api/chat"
+    body = adapter.prepare_body(channel, req, "llama3")
+    assert body["model"] == "llama3"
+    assert body["options"] == {"num_predict": 32, "temperature": 0.4}
+
+
+def test_custom_adapter_honors_configured_path_and_headers():
+    channel = ChannelEntity(type="custom", base_url="https://example.test/api", api_key="secret", config={"path": "/generate", "headers": {"X-Provider": "demo"}})
+    adapter = adapter_for(channel)
+    assert adapter.build_url(channel, request()) == "https://example.test/api/generate"
+    headers = adapter.build_headers(channel, request())
+    assert headers["Authorization"] == "Bearer secret"
+    assert headers["X-Provider"] == "demo"
+
+
+@pytest.mark.asyncio
+async def test_gateway_uses_anthropic_adapter_for_upstream_wire_request():
+    channel = ChannelEntity(type="claude", base_url="https://api.anthropic.com", api_key="secret", models=["public-model"])
+
+    class Dispatcher:
+        def candidates(self, _model, _excluded=None):
+            from app.domain.entities import DispatchResult
+            return [DispatchResult(channel, "claude-model")]
+
+    captured = {}
+
+    async def handler(request):
+        captured["headers"] = dict(request.headers)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "id": "msg_1", "model": "claude-model", "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "hello"}],
+            "usage": {"input_tokens": 3, "output_tokens": 2},
+        }, request=request)
+
+    service = GatewayService(Dispatcher(), None)
+    await service.aclose()
+    service.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    response = await service.forward(ProxyRequestEntity("public-model", {
+        "model": "public-model",
+        "messages": [{"role": "system", "content": "Be concise"}, {"role": "user", "content": "hi"}],
+        "max_tokens": 12,
+    }))
+    await service.aclose()
+
+    assert captured["headers"]["x-api-key"] == "secret"
+    assert "authorization" not in captured["headers"]
+    assert captured["body"] == {
+        "model": "claude-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 12,
+        "system": "Be concise",
+    }
+    assert json.loads(response.body)["choices"][0]["message"]["content"] == "hello"
+    assert response.total_tokens == 5

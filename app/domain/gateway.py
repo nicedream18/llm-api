@@ -13,6 +13,7 @@ import httpx
 
 from app.config import config
 from app.domain.entities import ProxyRequestEntity, ProxyResponseEntity
+from app.infrastructure.adapters.channel_adapters import adapter_for
 
 logger = logging.getLogger(__name__)
 
@@ -30,26 +31,11 @@ class GatewayAttempt:
 
 
 def _build_url(channel, request: ProxyRequestEntity) -> str:
-    base = (channel.base_url or "").rstrip("/")
-    if channel.type == "claude":
-        return f"{base}/v1/messages"
-    if channel.type == "ollama" and (channel.config or {}).get("native_api"):
-        return f"{base}/api/chat"
-    if channel.type == "custom":
-        return f"{base}{(channel.config or {}).get('path', '/chat/completions')}"
-    return f"{base}/chat/completions"
+    return adapter_for(channel).build_url(channel, request)
 
 
 def _build_headers(channel, request: ProxyRequestEntity) -> dict:
-    headers = {"Content-Type": "application/json"}
-    if channel.type == "claude":
-        headers.update({"x-api-key": channel.api_key or "", "anthropic-version": "2023-06-01"})
-    else:
-        headers["Authorization"] = f"Bearer {channel.api_key or ''}"
-    custom = (channel.config or {}).get("headers")
-    if isinstance(custom, dict):
-        headers.update({str(k): str(v) for k, v in custom.items()})
-    return headers
+    return adapter_for(channel).build_headers(channel, request)
 
 
 def _extract_tokens(response_body: str) -> tuple[int, int, int]:
@@ -105,8 +91,7 @@ class GatewayService:
             channel = dispatch_result.channel
             excluded.add(channel.id or channel.name)
             upstream_model = dispatch_result.upstream_model
-            body = dict(request.body)
-            body["model"] = upstream_model
+            body = adapter_for(channel).prepare_body(channel, request, upstream_model)
             started = time.monotonic()
             item = GatewayAttempt(attempt_no + 1, channel.id, channel.name)
             try:
@@ -120,6 +105,8 @@ class GatewayService:
                 content_type = response.headers.get("content-type")
                 is_text = (content_type or "").lower().startswith(("application/json", "text/"))
                 response_body = response.text if is_text else ""
+                if response_body:
+                    response_body = adapter_for(channel).normalize_response(response_body, request.model)
                 raw_body = None if is_text else response.content
                 pt, ct, tt = _extract_tokens(response_body)
                 last_response = ProxyResponseEntity(
@@ -170,8 +157,7 @@ class GatewayService:
             dispatch_result = candidates[0]
             channel = dispatch_result.channel
             excluded.add(channel.id or channel.name)
-            body = dict(request.body)
-            body["model"] = dispatch_result.upstream_model
+            body = adapter_for(channel).prepare_body(channel, request, dispatch_result.upstream_model)
             body["stream"] = True
             stream_started = False
             started = time.monotonic()
