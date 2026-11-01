@@ -1,8 +1,13 @@
 """HNSW index service for knowledge base vector search."""
 import heapq
 import logging
+import math
 import os
+import pickle
+import re
 import struct
+import tempfile
+import threading
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -12,6 +17,8 @@ INDEX_DIR = os.path.join(os.getcwd(), "data", "index")
 DEFAULT_MAX_M = 16
 DEFAULT_EF_CONSTRUCTION = 200
 DEFAULT_EF_SEARCH = 50
+INDEX_FORMAT_VERSION = 1
+_INDEX_IO_LOCK = threading.RLock()
 
 
 class HnswIndex:
@@ -20,6 +27,11 @@ class HnswIndex:
     def __init__(self, dim: int, max_m: int = DEFAULT_MAX_M,
                  ef_construction: int = DEFAULT_EF_CONSTRUCTION,
                  ef_search: int = DEFAULT_EF_SEARCH):
+        if dim <= 0:
+            raise ValueError("Index dimension must be positive")
+        if max_m <= 0 or ef_construction <= 0 or ef_search <= 0:
+            raise ValueError("HNSW parameters must be positive")
+        self.format_version = INDEX_FORMAT_VERSION
         self.dim = dim
         self.max_m = max_m
         self.ef_construction = ef_construction
@@ -31,14 +43,19 @@ class HnswIndex:
     def build(self, ids: list[int], vectors: list[list[float]]):
         if len(ids) != len(vectors):
             raise ValueError("ids and vectors length mismatch")
+        self.nodes.clear()
+        self.entry_point = -1
+        self.initialized = False
         if not ids:
             return
 
-        self.nodes.clear()
         for i, idx in enumerate(ids):
+            vector = vectors[i]
+            if not self._valid_vector(vector, self.dim):
+                raise ValueError(f"Invalid vector at index {i}")
             self.nodes.append({
                 "id": idx,
-                "vector": vectors[i],
+                "vector": vector,
                 "neighbours": [],
             })
 
@@ -60,8 +77,10 @@ class HnswIndex:
         logger.info(f"HNSW index built: {len(self.nodes)} nodes, dim={self.dim}, maxM={self.max_m}")
 
     def search(self, query_vector: list[float], top_k: int) -> list[dict[str, Any]]:
-        if not self.initialized or not self.nodes:
+        if top_k <= 0 or not self.initialized or not self.nodes:
             return []
+        if not self._valid_vector(query_vector, self.dim):
+            raise ValueError("Query vector dimension or values are invalid")
 
         visited = set()
         # Use a min-heap for candidates (distance, node_index)
@@ -106,23 +125,51 @@ class HnswIndex:
         return search_results
 
     def save(self, path: str):
-        import pickle
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as f:
-            pickle.dump(self, f)
+        directory = os.path.dirname(os.path.abspath(path)) or "."
+        os.makedirs(directory, exist_ok=True)
+        temporary = None
+        with _INDEX_IO_LOCK:
+            try:
+                with tempfile.NamedTemporaryFile(prefix=".hnsw-", suffix=".tmp", dir=directory, delete=False) as f:
+                    temporary = f.name
+                    pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temporary, path)
+            finally:
+                if temporary and os.path.exists(temporary):
+                    os.unlink(temporary)
         logger.info(f"HNSW index saved: {path}")
 
     @staticmethod
     def load(path: str) -> Optional["HnswIndex"]:
-        import pickle
         try:
-            with open(path, "rb") as f:
+            with _INDEX_IO_LOCK, open(path, "rb") as f:
                 index = pickle.load(f)
+            if isinstance(index, HnswIndex) and not hasattr(index, "format_version"):
+                index.format_version = INDEX_FORMAT_VERSION
+            if not isinstance(index, HnswIndex) or not index._valid_index():
+                raise ValueError("Invalid HNSW index format")
             logger.info(f"HNSW index loaded: {path}")
             return index
-        except Exception as e:
+        except (OSError, EOFError, pickle.UnpicklingError, ValueError, TypeError, AttributeError) as e:
             logger.error(f"HNSW index load failed: {path}: {e}")
             return None
+
+    def _valid_index(self) -> bool:
+        if getattr(self, "format_version", None) != INDEX_FORMAT_VERSION:
+            return False
+        if self.dim <= 0 or self.entry_point < 0 or self.entry_point >= len(self.nodes):
+            return False
+        return all(self._valid_vector(node.get("vector"), self.dim) for node in self.nodes)
+
+    @staticmethod
+    def _valid_vector(vector: Any, dim: int) -> bool:
+        return bool(
+            isinstance(vector, (list, tuple))
+            and len(vector) == dim
+            and all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in vector)
+        )
 
     @staticmethod
     def _cosine_distance(a: list[float], b: list[float]) -> float:
@@ -145,6 +192,15 @@ class IndexService:
         os.makedirs(INDEX_DIR, exist_ok=True)
         logger.info(f"HNSW index directory: {INDEX_DIR}")
 
+    @staticmethod
+    def _safe_kb_id(kb_id: str) -> str:
+        if not isinstance(kb_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", kb_id):
+            raise ValueError("Invalid knowledge base id")
+        return kb_id
+
+    def _index_path(self, kb_id: str) -> str:
+        return os.path.join(INDEX_DIR, f"{self._safe_kb_id(kb_id)}.index")
+
     def build_index(self, kb_id: str) -> dict[str, Any]:
         logger.info(f"Building index: kbId={kb_id}")
         chunks = self.repo.find_chunk_by_kb_id(kb_id)
@@ -155,9 +211,11 @@ class IndexService:
         vectors = []
         skipped = 0
 
+        dim = None
         for i, chunk in enumerate(chunks):
             vector = self._deserialize_vector(chunk.embedding)
-            if vector and len(vector) > 0:
+            if vector and len(vector) > 0 and (dim is None or len(vector) == dim) and all(math.isfinite(float(value)) for value in vector):
+                dim = dim or len(vector)
                 ids.append(i)
                 vectors.append(vector)
             else:
@@ -170,7 +228,7 @@ class IndexService:
         index = HnswIndex(dim, DEFAULT_MAX_M, DEFAULT_EF_CONSTRUCTION, DEFAULT_EF_SEARCH)
         index.build(ids, vectors)
 
-        index_path = os.path.join(INDEX_DIR, f"{kb_id}.index")
+        index_path = self._index_path(kb_id)
         index.save(index_path)
 
         # Update index metadata
@@ -192,10 +250,11 @@ class IndexService:
         }
 
     def get_index_status(self, kb_id: str) -> dict[str, str]:
+        self._safe_kb_id(kb_id)
         return self.repo.find_index_meta_by_kb_id(kb_id)
 
     def drop_index(self, kb_id: str) -> dict[str, Any]:
-        index_path = os.path.join(INDEX_DIR, f"{kb_id}.index")
+        index_path = self._index_path(kb_id)
         file_deleted = False
         if os.path.exists(index_path):
             os.remove(index_path)
@@ -209,13 +268,19 @@ class IndexService:
         return {"success": True, "fileDeleted": file_deleted}
 
     def search_with_index(self, kb_id: str, query_vector: list[float], top_k: int):
-        index_path = os.path.join(INDEX_DIR, f"{kb_id}.index")
+        if top_k <= 0:
+            return []
+        index_path = self._index_path(kb_id)
         index = HnswIndex.load(index_path)
         if not index or not index.initialized:
             logger.warning(f"Index not found or not initialized: kbId={kb_id}")
             return []
 
-        search_results = index.search(query_vector, top_k)
+        try:
+            search_results = index.search(query_vector, top_k)
+        except ValueError as exc:
+            logger.warning("Index query rejected: kbId=%s error=%s", kb_id, exc)
+            return []
         if not search_results:
             return []
 
@@ -241,6 +306,8 @@ class IndexService:
     def _deserialize_vector(data: bytes) -> list[float] | None:
         if not data:
             return None
+        if len(data) % 4:
+            return None
         float_count = len(data) // 4
         return list(struct.unpack(f"<{float_count}f", data[:float_count * 4]))
 
@@ -251,7 +318,7 @@ class IndexService:
         import json
         try:
             return json.loads(metadata_str)
-        except Exception:
+        except (TypeError, ValueError):
             return {}
 
     @staticmethod
@@ -263,6 +330,6 @@ class IndexService:
                 filename = meta.get("filename") or meta.get("filePath")
                 if filename:
                     return filename
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                logger.debug("Invalid chunk metadata for filename extraction", exc_info=True)
         return chunk.doc_id
