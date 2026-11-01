@@ -11,6 +11,9 @@ export const get = <T>(path: string) => api<T>(path);
 export const post = <T>(path: string, body: unknown) => api<T>(path, { method: "POST", body: JSON.stringify(body) });
 export const put = <T>(path: string, body: unknown) => api<T>(path, { method: "PUT", body: JSON.stringify(body) });
 export const del = <T>(path: string) => api<T>(path, { method: "DELETE" });
+export async function askWiki<T>(projectId: string, request: { question: string; model: string; top_k: number }): Promise<T> {
+  return post<T>(`/api/v1/wiki/projects/${encodeURIComponent(projectId)}/ask`, request);
+}
 export async function upload<T>(path: string, file: File): Promise<T> {
   const body = new FormData();
   body.append("file", file);

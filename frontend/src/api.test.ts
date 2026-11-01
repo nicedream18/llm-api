@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, downloadFile, upload, uploadRaw } from "./api";
+import { api, askWiki, downloadFile, upload, uploadRaw } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -57,5 +57,19 @@ describe("api client", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/wiki/projects/p/backup", { credentials: "include" });
     expect(anchor.download).toBe("wiki-backup.json");
     expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("builds the Wiki ask request with an encoded project id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      code: "ok", info: "", data: { answer: "Use the guide", sources: [] },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(askWiki("project/one", { question: "How?", model: "gpt-4o", top_k: 3 }))
+      .resolves.toEqual({ answer: "Use the guide", sources: [] });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/wiki/projects/project%2Fone/ask",
+      expect.objectContaining({ method: "POST", credentials: "include", body: JSON.stringify({ question: "How?", model: "gpt-4o", top_k: 3 }) }),
+    );
   });
 });

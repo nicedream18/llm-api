@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { del, downloadFile, get, post, put, uploadRaw } from "./api";
-import type { WikiAttachment, WikiGraph, WikiPage, WikiProject, WikiSource } from "./types";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { askWiki, del, downloadFile, get, post, put, uploadRaw } from "./api";
+import type { WikiAnswer, WikiAttachment, WikiGraph, WikiPage, WikiProject, WikiSource } from "./types";
 import { renderWikiMarkdown } from "./markdown";
 import "./wiki.css";
 
@@ -35,6 +35,11 @@ export function WikiManager({ onError }: Props) {
   const [sourceContent, setSourceContent] = useState("");
   const [attachments, setAttachments] = useState<WikiAttachment[]>([]);
   const [graph, setGraph] = useState<WikiGraph>({ nodes: [], edges: [] });
+  const [askQuestion, setAskQuestion] = useState("");
+  const [askModel, setAskModel] = useState("gpt-4o");
+  const [askTopK, setAskTopK] = useState("5");
+  const [askResult, setAskResult] = useState<WikiAnswer | null>(null);
+  const [askBusy, setAskBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const pageLoadSequence = useRef(0);
   const base = `/api/v1/wiki/projects/${encode(projectId)}`;
@@ -186,6 +191,24 @@ export function WikiManager({ onError }: Props) {
     catch (error) { onError(error instanceof Error ? error.message : "删除来源失败"); }
   };
 
+  const askProject = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const question = askQuestion.trim();
+    const model = askModel.trim();
+    if (!question || !model || !projectId) return;
+    setAskBusy(true);
+    setAskResult(null);
+    try {
+      const result = await askWiki<WikiAnswer>(projectId, {
+        question,
+        model,
+        top_k: Math.min(20, Math.max(1, Number.parseInt(askTopK, 10) || 5)),
+      });
+      setAskResult(result);
+    } catch (error) { onError(error instanceof Error ? error.message : "Wiki 问答失败"); }
+    finally { setAskBusy(false); }
+  };
+
   const exportProject = async () => {
     try { await downloadFile(`${base}/backup`, `wiki-${projectId}.json`); }
     catch (error) { onError(error instanceof Error ? error.message : "导出备份失败"); }
@@ -235,6 +258,8 @@ export function WikiManager({ onError }: Props) {
         <div className="panel wiki-sources"><div className="panel-head"><div><h2>来源摄入</h2><p className="muted">支持 Markdown 和 UTF-8 文本。</p></div></div><div className="wiki-source-form"><input aria-label="来源文件名" placeholder="文件名.md" value={sourceFilename} onChange={event => setSourceFilename(event.target.value)} /><label className="secondary file-button">读取文本文件<input type="file" accept=".md,.markdown,.txt,text/plain,text/markdown" onChange={importSourceFile} /></label><textarea aria-label="来源内容" placeholder="粘贴来源文本…" value={sourceContent} maxLength={1_000_000} onChange={event => setSourceContent(event.target.value)} /><button className="primary" onClick={createSource} disabled={!sourceFilename.trim() || !sourceContent.trim()}>添加来源</button></div><div className="wiki-source-list">{sources.map(source => <article className="wiki-source" key={source.id}><span><strong>{source.filename}</strong><small>状态：{source.status}{source.error_message ? ` · ${source.error_message}` : ""}</small></span><button className="secondary" onClick={() => void ingestSource(source)} disabled={source.status === "ingested"}>摄入</button><button className="danger" onClick={() => void removeSource(source)}>删除</button></article>)}{sources.length === 0 && <p className="muted">暂无来源。</p>}</div></div>
 
         <div className="panel wiki-graph"><div className="panel-head"><div><h2>页面关系图</h2><p className="muted">由正文中的 [[wikilinks]] 生成。</p></div><button className="secondary" onClick={() => void reloadProjectData()}>刷新关系</button></div><div className="wiki-graph-grid">{graph.nodes.map(node => <article className="wiki-graph-node" key={node.id}><strong>{node.title}</strong><small>{node.path}</small><ul>{graph.edges.filter(edge => edge.source === node.id).map((edge, index) => <li key={`${node.id}-${index}`}>{edge.resolved ? "→" : "↗"} {edge.path}{!edge.resolved && "（未解析）"}</li>)}</ul></article>)}{graph.nodes.length === 0 && <p className="muted">项目中还没有页面关系。</p>}</div></div>
+
+        <div className="panel wiki-ask"><div className="panel-head"><div><h2>Wiki 问答</h2><p className="muted">只使用当前项目中检索到的页面内容回答，并返回引用来源。</p></div></div><form className="wiki-ask-form" onSubmit={askProject}><label className="field-label wiki-ask-question">问题<textarea aria-label="Wiki 问题" value={askQuestion} maxLength={32768} placeholder="例如：入门流程有哪些步骤？" onChange={event => setAskQuestion(event.target.value)} /></label><label className="field-label">模型<input aria-label="问答模型" value={askModel} maxLength={128} onChange={event => setAskModel(event.target.value)} /></label><label className="field-label">引用页面数<input aria-label="引用页面数" type="number" min="1" max="20" value={askTopK} onChange={event => setAskTopK(event.target.value)} /></label><button className="primary wiki-ask-submit" type="submit" disabled={askBusy || !askQuestion.trim() || !askModel.trim()}>{askBusy ? "检索并回答中…" : "开始问答"}</button></form>{askResult && <div className="wiki-answer" aria-live="polite"><h3>回答</h3>{renderWikiMarkdown(askResult.answer, `/api/v1/wiki/projects/${encode(projectId)}/attachments/`)}{askResult.sources.length > 0 && <div className="wiki-answer-sources"><h3>引用来源</h3>{askResult.sources.map(source => <details key={source.page_id}><summary>{source.title} · {source.path}</summary><pre>{source.content}</pre></details>)}</div>}</div>}</div>
       </div>
     </div>
   </section>;

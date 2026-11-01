@@ -10,5 +10,6 @@ export type WikiPage = { id: string; project_id?: string; path: string; title: s
 export type WikiSource = { id: string; filename: string; status: "pending" | "ingested" | "failed"; page_id?: string | null; error_message?: string | null };
 export type WikiAttachment = { id: string; filename: string; media_type: string; page_id: string; created_at: string };
 export type WikiGraph = { nodes: Array<{ id: string; path: string; title: string }>; edges: Array<{ source: string; target?: string; path: string; resolved: boolean }> };
+export type WikiAnswer = { answer: string; sources: Array<{ page_id: string; path: string; title: string; content: string }>; usage?: Record<string, unknown> | null };
 export type PromptTemplate = { id: string; name: string; template: string; enabled: number; description?: string };
 export type ClientConfig = { target: string; path: string; size: number; updated_at: number };
