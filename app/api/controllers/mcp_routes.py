@@ -1,16 +1,17 @@
 """MCP Streamable HTTP endpoint with optional authenticated sessions.
 
 JSON responses are used for client requests. Sessions provide lifecycle and
-identity continuity; server-initiated SSE notifications are not emitted.
+identity continuity; an optional SSE stream carries server notifications.
 """
 import asyncio
 import json
 import logging
 import secrets
 import time
+from typing import cast
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app.config import config
 from app.container import get_container
@@ -21,6 +22,9 @@ PROTOCOL_VERSION = "2025-06-18"
 MAX_REQUEST_BYTES = 1024 * 1024
 SESSION_TTL_SECONDS = 3600
 _sessions: dict[str, tuple[float, tuple[str | None, str | None]]] = {}
+_session_events: dict[str, asyncio.Queue[str]] = {}
+_cancelled_requests: set[tuple[str | None, str | int]] = set()
+_running_requests: dict[tuple[str | None, str | int], asyncio.Task] = {}
 
 
 def _principal(request: Request) -> tuple[str | None, str | None]:
@@ -33,6 +37,7 @@ def _cleanup_sessions(now: float | None = None) -> None:
     for session_id, (expires, _owner) in list(_sessions.items()):
         if expires <= current:
             _sessions.pop(session_id, None)
+            _session_events.pop(session_id, None)
 
 
 def _validate_session(request: Request) -> bool:
@@ -51,7 +56,25 @@ def _new_session(request: Request) -> str:
     _cleanup_sessions()
     session_id = secrets.token_urlsafe(32)
     _sessions[session_id] = (time.monotonic() + SESSION_TTL_SECONDS, _principal(request))
+    _session_events[session_id] = asyncio.Queue(maxsize=64)
     return session_id
+
+
+def publish_session_event(session_id: str, method: str, params: dict | None = None) -> bool:
+    """Queue a server notification for a connected Streamable HTTP client.
+
+    The queue is bounded so a disconnected client cannot grow process memory.
+    Events are best effort; the request path never waits for an SSE consumer.
+    """
+    queue = _session_events.get(session_id)
+    if queue is None:
+        return False
+    payload = json.dumps({"jsonrpc": "2.0", "method": method, "params": params or {}}, ensure_ascii=False, separators=(",", ":"))
+    try:
+        queue.put_nowait(f"event: message\ndata: {payload}\n\n")
+    except asyncio.QueueFull:
+        return False
+    return True
 
 
 def _error(request_id, code, message, status=200):
@@ -63,6 +86,24 @@ def _error(request_id, code, message, status=200):
 
 @router.api_route("/mcp", methods=["GET", "DELETE"])
 async def mcp_no_session(request: Request):
+    if request.method == "GET":
+        session_id = request.headers.get("mcp-session-id")
+        if not session_id or not _validate_session(request):
+            return Response(status_code=405, headers={"Allow": "POST, DELETE"})
+        accept = {part.split(";", 1)[0].strip().lower() for part in request.headers.get("accept", "").split(",")}
+        if "text/event-stream" not in accept:
+            return Response(status_code=406)
+        queue = _session_events.setdefault(session_id, asyncio.Queue(maxsize=64))
+
+        async def event_stream():
+            yield f"event: ready\ndata: {json.dumps({'sessionId': session_id}, separators=(',', ':'))}\n\n"
+            while not await request.is_disconnected():
+                try:
+                    yield await asyncio.wait_for(queue.get(), timeout=15)
+                except TimeoutError:
+                    yield ": keepalive\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
     if request.method == "DELETE":
         session_id = request.headers.get("mcp-session-id")
         if not session_id:
@@ -73,6 +114,7 @@ async def mcp_no_session(request: Request):
         if not _validate_session(request):
             return Response(status_code=403)
         _sessions.pop(session_id, None)
+        _session_events.pop(session_id, None)
         return Response(status_code=204)
     return Response(status_code=405, headers={"Allow": "POST"})
 
@@ -107,6 +149,8 @@ async def mcp_post(request: Request):
     rpc_id = message.get("id")
     if "id" in message and (isinstance(rpc_id, bool) or not isinstance(rpc_id, (str, int))):
         return _error(None, -32600, "Invalid Request", 400)
+    if "id" in message:
+        rpc_id = cast(str | int, rpc_id)
     method = message.get("method")
     if not isinstance(method, str) or "result" in message or "error" in message:
         return _error(rpc_id, -32600, "Invalid Request", 400)
@@ -115,6 +159,16 @@ async def mcp_post(request: Request):
         return _error(rpc_id, -32602, "Invalid params", 400) if "id" in message else Response(status_code=400)
     # Notifications never execute tools or produce JSON-RPC responses.
     if "id" not in message:
+        if method == "notifications/cancelled":
+            cancelled_id = params.get("requestId")
+            session_id = request.headers.get("mcp-session-id")
+            if isinstance(cancelled_id, (str, int)) and not isinstance(cancelled_id, bool):
+                key = (session_id, cancelled_id)
+                task = _running_requests.get(key)
+                if task is not None:
+                    task.cancel()
+                else:
+                    _cancelled_requests.add(key)
         return Response(status_code=202)
     if method == "initialize":
         if request.headers.get("mcp-session-id"):
@@ -150,9 +204,21 @@ async def mcp_post(request: Request):
             "tool": params["name"],
             "principal_id": getattr(getattr(request.state, "auth_context", None), "principal_id", None),
         })
-        result = await asyncio.to_thread(service.call_tool, params["name"], arguments,
-                                         getattr(request.state, "auth_context", None),
-                                         getattr(request.state, "request_id", None))
+        session_id = request.headers.get("mcp-session-id")
+        task = asyncio.create_task(asyncio.to_thread(service.call_tool, params["name"], arguments,
+                                                     getattr(request.state, "auth_context", None),
+                                                     getattr(request.state, "request_id", None)))
+        request_key = (session_id, cast(str | int, rpc_id))
+        _running_requests[request_key] = task
+        try:
+            result = await task
+        except asyncio.CancelledError:
+            return _error(rpc_id, -32800, "Request cancelled")
+        finally:
+            _running_requests.pop(request_key, None)
+        if (session_id, cast(str | int, rpc_id)) in _cancelled_requests:
+            _cancelled_requests.discard((session_id, cast(str | int, rpc_id)))
+            return _error(rpc_id, -32800, "Request cancelled")
     else:
         return _error(rpc_id, -32601, "Method not found")
     response = JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "result": result})

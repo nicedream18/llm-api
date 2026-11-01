@@ -156,6 +156,22 @@ def test_mcp_session_is_bound_to_principal_and_can_be_closed(setup_mcp):
     assert client.post("/mcp", headers=session_headers, json={"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}).status_code == 404
 
 
+def test_mcp_session_sse_replays_notifications_and_accepts_cancellation(setup_mcp):
+    client, _, _ = setup_mcp
+    import app.api.controllers.mcp_routes as mcp_module
+
+    session_id = rpc(client, "initialize", INITIALIZE, rpc_id="init").headers["mcp-session-id"]
+    headers = {**HEADERS, "Mcp-Session-Id": session_id}
+    assert mcp_module.publish_session_event(session_id, "notifications/message", {"text": "ready"})
+    queued = mcp_module._session_events[session_id].get_nowait()
+    assert "notifications/message" in queued and '"text":"ready"' in queued
+    assert client.get("/mcp", headers={**headers, "Accept": "application/json"}).status_code == 406
+    cancelled = client.post("/mcp", headers=headers, json={
+        "jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "request-1"},
+    })
+    assert cancelled.status_code == 202 and not cancelled.content
+
+
 def test_mcp_session_cannot_be_reused_by_a_different_principal(setup_mcp, monkeypatch):
     client, _, _ = setup_mcp
     session_id = rpc(client, "initialize", INITIALIZE, rpc_id="init").headers["mcp-session-id"]
