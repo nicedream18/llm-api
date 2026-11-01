@@ -9,7 +9,7 @@
 | Wiki | 项目/页面编辑、来源/附件、搜索标签、图谱、问答、备份恢复、资源授权、REST/MCP；管理台支持 Markdown 编辑、安全预览和问答来源 | 真实浏览器移动布局与长文档交互验收待做 |
 | MCP | MCP 2025-06-18 JSON-RPC HTTP、TTL 会话和主体绑定、KB/Wiki/Software 工具、权限校验、审计；管理台工具调试、审计和权限配置；会话 SSE 通知与取消 | 不支持断线事件重放或跨进程会话队列 |
 | Software | CLI/HTTP/MCP connector、OpenAPI 3.0/3.1 JSON 预览与选择导入、参数映射、schema 校验、启停、服务端审批队列、调用调试、本机工具白名单扫描、dry-run 安装计划、脱敏调用记录、MCP 聚合 | 扫描范围固定；真实安装需显式环境变量；不支持外部 `$ref`、header/cookie 参数、表单请求体或认证密钥配置 UI |
-| Auth Provider | 账户、PKCE OAuth 流程、Token 加密/刷新/退出、配额和模型端点、HTTP adapter；管理台生命周期操作；显式配置 `gateway_url`/`base_url` 的 active 账号可进入网关候选池 | 厂商专属端点未做真实联调；未实现厂商专属协议、自动 Token 轮换和账号级故障统计 |
+| Auth Provider | 账户、PKCE OAuth 流程、Token 加密/刷新/退出、过期 Token 自动刷新、账号失败计数/冷却、配额和模型端点、HTTP adapter；管理台生命周期操作；显式配置 `gateway_url`/`base_url` 的 active 账号可进入网关候选池 | 厂商专属端点未做真实联调；未实现厂商专属协议 |
 | 平台 | Prompt、语义缓存、客户端配置预览/写入/删除 | 客户端支持范围和真实安装探测仍有限，界面缺少配置差异预览和更多目标 |
 | 网关与安全 | API Key/管理员认证、权限、配额预占结算、重试、响应协议转换、安全扫描与日志 | MySQL 并发语义和真实上游链路仍须隔离环境验收；流中断后不能安全地从上游继续重试 |
 
