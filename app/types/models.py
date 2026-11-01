@@ -1,4 +1,6 @@
 """DTO definitions for API contracts."""
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -208,13 +210,13 @@ class KbDocumentDTO(BaseModel):
 
 class KbAskRequestDTO(BaseModel):
     kb_id: str | None = None
-    question: str = ""
-    model: str | None = None
-    top_k: int | None = 5
-    search_mode: str | None = "hybrid"
-    vector_weight: float | None = 0.7
-    keyword_weight: float | None = 0.3
-    max_rounds: int | None = 3
+    question: str = Field(default="", max_length=32_000)
+    model: str | None = Field(default=None, max_length=128)
+    top_k: int | None = Field(default=5, ge=1, le=100)
+    search_mode: Literal["hybrid", "vector", "keyword"] | None = "hybrid"
+    vector_weight: float | None = Field(default=0.7, ge=0, le=1)
+    keyword_weight: float | None = Field(default=0.3, ge=0, le=1)
+    max_rounds: int | None = Field(default=3, ge=1, le=10)
     history: list[dict] | None = None
 
 
@@ -227,9 +229,9 @@ class KbAskResponseDTO(BaseModel):
 
 class KbSearchRequestDTO(BaseModel):
     kb_id: str | None = None
-    query: str = ""
-    top_k: int | None = 5
-    search_mode: str | None = "keyword"
+    query: str = Field(default="", max_length=32_000)
+    top_k: int | None = Field(default=5, ge=1, le=100)
+    search_mode: Literal["hybrid", "vector", "keyword"] | None = "keyword"
 
 
 class KbSearchResultDTO(BaseModel):
