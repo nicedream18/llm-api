@@ -6,3 +6,4 @@ export type KnowledgeBase = { id: string; name: string; description?: string; do
 export type WikiProject = { id: string; name: string; description?: string; page_count?: number };
 export type WikiPage = { id: string; path: string; title: string; summary?: string; tags?: string[]; updated_at?: string };
 export type PromptTemplate = { id: string; name: string; template: string; enabled: number; description?: string };
+export type ClientConfig = { target: string; path: string; size: number; updated_at: number };

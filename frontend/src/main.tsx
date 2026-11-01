@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { del, get, post, put } from "./api";
-import type { Dashboard, KnowledgeBase, PromptTemplate, Provider, SoftwareTool, WikiPage, WikiProject } from "./types";
+import type { ClientConfig, Dashboard, KnowledgeBase, PromptTemplate, Provider, SoftwareTool, WikiPage, WikiProject } from "./types";
 import "./styles.css";
 
 type Page = "dashboard" | "channels" | "software" | "providers" | "wiki" | "knowledge" | "settings";
@@ -93,13 +93,15 @@ function ProviderPage({ onError }: { onError: (message: string) => void }) {
 
 function SettingsPage({ onError }: { onError: (message: string) => void }) {
   const [prompts, setPrompts] = useState<PromptTemplate[]>([]);
+  const [configs, setConfigs] = useState<ClientConfig[]>([]);
   const [target, setTarget] = useState("codex");
   const [message, setMessage] = useState("");
-  const load = () => get<PromptTemplate[]>("/api/v1/platform/prompts").then(setPrompts).catch((error: Error) => onError(error.message));
+  const load = () => Promise.all([get<PromptTemplate[]>("/api/v1/platform/prompts"), get<ClientConfig[]>("/api/v1/platform/config")]).then(([promptRows, configRows]) => { setPrompts(promptRows); setConfigs(configRows); }).catch((error: Error) => onError(error.message));
   useEffect(() => { load(); }, []);
   const preview = () => post<{ path: string }>("/api/v1/platform/config/preview", { target, values: {} }).then(result => setMessage(`配置预览：${result.path}`)).catch((error: Error) => onError(error.message));
   const clearCache = () => del("/api/v1/platform/cache").then(() => setMessage("语义缓存已清理")).catch((error: Error) => onError(error.message));
-  return <section><div className="panel"><h2>平台设置</h2><div className="inline-form"><select value={target} onChange={event => setTarget(event.target.value)}><option value="codex">Codex CLI</option><option value="claude">Claude Code</option><option value="gemini">Gemini CLI</option></select><button className="primary" onClick={preview}>预览配置</button><button className="secondary" onClick={clearCache}>清理语义缓存</button></div>{message && <p className="success">{message}</p>}<h3>Prompt 模板</h3><div className="card-list">{prompts.map(prompt => <article className="subcard" key={prompt.id}><strong>{prompt.name}</strong><span>{prompt.description || prompt.template}</span><small>{prompt.enabled ? "已启用" : "已停用"}</small></article>)}</div>{prompts.length === 0 && <p className="muted">暂无 Prompt 模板。</p>}</div></section>;
+  const removeConfig = (config: ClientConfig) => del(`/api/v1/platform/config/${encodeURIComponent(config.target)}`).then(load).catch((error: Error) => onError(error.message));
+  return <section><div className="panel"><h2>平台设置</h2><div className="inline-form"><select value={target} onChange={event => setTarget(event.target.value)}><option value="codex">Codex CLI</option><option value="claude">Claude Code</option><option value="gemini">Gemini CLI</option></select><button className="primary" onClick={preview}>预览配置</button><button className="secondary" onClick={clearCache}>清理语义缓存</button></div>{message && <p className="success">{message}</p>}<h3>已生成客户端配置</h3><div className="card-list">{configs.map(config => <article className="subcard" key={config.target}><strong>{config.target}</strong><span>{config.path}</span><small>{config.size} bytes</small><button className="secondary" onClick={() => removeConfig(config)}>删除</button></article>)}</div>{configs.length === 0 && <p className="muted">暂无客户端配置。</p>}<h3>Prompt 模板</h3><div className="card-list">{prompts.map(prompt => <article className="subcard" key={prompt.id}><strong>{prompt.name}</strong><span>{prompt.description || prompt.template}</span><small>{prompt.enabled ? "已启用" : "已停用"}</small></article>)}</div>{prompts.length === 0 && <p className="muted">暂无 Prompt 模板。</p>}</div></section>;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
