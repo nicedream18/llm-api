@@ -90,7 +90,8 @@ class SecurityRepository:
                 params["severity"] = severity
             if not updates:
                 return False
-            updates.append("updated_at=UTC_TIMESTAMP()")
+            updates.append("updated_at=:updated_at")
+            params["updated_at"] = _now()
             result = db.execute(text(
                 f"UPDATE security_builtin_rules SET {', '.join(updates)} WHERE id=:id"
             ), params)

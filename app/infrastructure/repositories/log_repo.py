@@ -105,7 +105,7 @@ class LogRepository:
         if model: sql += " AND model = :model"; params["model"] = model
         if date_from: sql += " AND created_at >= :df"; params["df"] = date_from
         if date_to: sql += " AND created_at <= :dt"; params["dt"] = date_to
-        if trace_id: sql += " AND id = :tid"; params["tid"] = trace_id
+        if trace_id: sql += " AND trace_id = :tid"; params["tid"] = trace_id
         sql += " ORDER BY created_at DESC LIMIT :offset, :limit"
         with get_db() as db:
             rows = db.execute(text(sql), params).mappings().all()
