@@ -64,6 +64,7 @@ class Container:
         self.quota_repo = QuotaRepository()
         self.admin_repo = AdminRepository()
         self.admin_service = AdminService(self.admin_repo)
+        self.provider_service = ProviderService(self.provider_repo)
 
         # Stats repository reuses log_repo
         class StatsRepository:
@@ -74,7 +75,7 @@ class Container:
         self.stats_repo = StatsRepository(self.log_repo)
 
         # Domain services
-        self.dispatcher = Dispatcher(self.channel_repo)
+        self.dispatcher = Dispatcher(self.channel_repo, self.provider_service)
         self.gateway = GatewayService(self.dispatcher, self.channel_repo)
         self.security_scanner = SecurityScanner()
         self.security_settings = config.security
@@ -98,7 +99,6 @@ class Container:
         self.access_service = AccessService(AccessRepository())
         self.wiki_service = WikiService(WikiRepository(), self.proxy_service)
         self.software_service = SoftwareService(self.software_repo)
-        self.provider_service = ProviderService(self.provider_repo)
         self.platform_service = PlatformService(self.platform_repo)
         self.mcp_service = McpService(self.kb_service, self.access_service, self.wiki_service, self.mcp_audit_repo, self.software_service)
 

@@ -1,8 +1,9 @@
 import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { del, get, post, put, upload } from "./api";
-import type { ClientConfig, Dashboard, KnowledgeBase, OpenApiPreview, PromptTemplate, Provider, SoftwareTool } from "./types";
+import type { ClientConfig, Dashboard, KnowledgeBase, OpenApiPreview, PromptTemplate, SoftwareTool } from "./types";
 import { WikiManager } from "./WikiManager";
+import { ProviderManager } from "./ProviderManager";
 import "./styles.css";
 import "./software.css";
 
@@ -31,7 +32,7 @@ function PageView({ page, onError }: { page: Page; onError: (message: string) =>
   if (page === "dashboard") return <DashboardPage onError={onError} />;
   if (page === "channels") return <ListPage title="渠道" path="/api/v1/channels" columns={["name", "type", "status"]} onError={onError} />;
   if (page === "software") return <SoftwarePage onError={onError} />;
-  if (page === "providers") return <ProviderPage onError={onError} />;
+  if (page === "providers") return <ProviderManager onError={onError} />;
   if (page === "knowledge") return <KnowledgePage onError={onError} />;
   if (page === "wiki") return <WikiManager onError={onError} />;
   return <SettingsPage onError={onError} />;
@@ -113,13 +114,6 @@ function SoftwarePage({ onError }: { onError: (message: string) => void }) {
     </div>
     <div className="panel"><div className="panel-head"><h2>已注册工具</h2><button className="secondary" onClick={load}>刷新</button></div><div className="card-list">{tools.map(tool => <article className="subcard" key={tool.id}><strong>{tool.name}</strong><span>{tool.description || "暂无描述"}</span><small>风险：{tool.risk_level} · {tool.enabled ? "已启用" : "已停用"}</small><button className="secondary" onClick={() => toggle(tool)}>{tool.enabled ? "停用" : "启用"}</button></article>)}</div>{tools.length === 0 && <p className="muted">暂无工具。</p>}</div>
   </section>;
-}
-
-function ProviderPage({ onError }: { onError: (message: string) => void }) {
-  const [providers, setProviders] = useState<Provider[]>([]);
-  const load = () => get<Provider[]>("/api/v1/providers").then(setProviders).catch((error: Error) => onError(error.message));
-  useEffect(() => { load(); }, []);
-  return <section><div className="panel"><div className="panel-head"><h2>Auth Provider 账号</h2><button className="primary" onClick={load}>刷新</button></div><Table rows={providers as unknown as Record<string, unknown>[]} columns={["provider", "name", "status", "priority"]} /></div></section>;
 }
 
 function SettingsPage({ onError }: { onError: (message: string) => void }) {

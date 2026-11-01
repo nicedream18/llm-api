@@ -9,8 +9,9 @@ from app.types.response import AppException
 
 
 class Dispatcher:
-    def __init__(self, channel_repository):
+    def __init__(self, channel_repository, provider_source=None):
         self.channel_repository = channel_repository
+        self.provider_source = provider_source
 
     def _supports_model(self, channel: ChannelEntity, model: str) -> bool:
         return not channel.models or model in channel.models or bool(channel.model_mapping and model in channel.model_mapping)
@@ -21,6 +22,8 @@ class Dispatcher:
     def candidates(self, model: str, excluded: set[str] | None = None) -> list[DispatchResult]:
         excluded = excluded or set()
         channels = self.channel_repository.get_enabled_channels()
+        if self.provider_source is not None:
+            channels = [*channels, *self.provider_source.routing_channels(model)]
         eligible = [c for c in channels if (c.id or c.name) not in excluded and self._supports_model(c, model)]
         if not eligible:
             return []

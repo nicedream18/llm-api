@@ -11,6 +11,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from app.application.errors import ApplicationError
 from app.config import config
+from app.domain.entities import ChannelEntity
 from app.domain.provider_adapters import adapter_for
 
 
@@ -127,6 +128,58 @@ class ProviderService:
 
     def models(self, account_id):
         return self._provider_data(account_id, "models")
+
+    def routing_channels(self, model: str):
+        """Expose explicitly configured OAuth accounts as gateway candidates.
+
+        A provider account participates in routing only after it has a token and
+        a configured ``gateway_url`` (or ``base_url``). This keeps OAuth account
+        management independent from arbitrary upstream discovery.
+        """
+        result = []
+        for row in self.repo.list_accounts():
+            if row.get("status") != "active":
+                continue
+            account = self.repo.get_account(row.get("id")) or row
+            token_row = self.repo.get_token(row.get("id"))
+            if not token_row:
+                continue
+            try:
+                client_config = account.get("client_config") or {}
+                if isinstance(client_config, str):
+                    client_config = json.loads(client_config)
+                if not isinstance(client_config, dict):
+                    continue
+                base_url = client_config.get("gateway_url") or client_config.get("base_url")
+                if not isinstance(base_url, str) or not base_url.strip():
+                    continue
+                mapping = account.get("model_mapping") or {}
+                if isinstance(mapping, str):
+                    mapping = json.loads(mapping)
+                if not isinstance(mapping, dict):
+                    mapping = {}
+                upstream_model = mapping.get(model, model)
+                models = [str(key) for key in mapping if key]
+                if models and model not in models:
+                    continue
+                access_token = self._decrypt(token_row.get("access_token"))
+                if not access_token:
+                    continue
+                result.append(ChannelEntity(
+                    id=f"provider:{account['id']}",
+                    name=f"provider:{account.get('name') or account['id']}",
+                    type=str(client_config.get("channel_type") or "openai"),
+                    base_url=base_url.rstrip("/"),
+                    api_key=access_token,
+                    models=models,
+                    priority=int(account.get("priority") or 0),
+                    weight=1,
+                    model_mapping={model: upstream_model} if upstream_model != model else {},
+                    config={"provider_account_id": account["id"]},
+                ))
+            except (ApplicationError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+        return result
 
     def _provider_data(self, account_id, operation):
         account = self.repo.get_account(account_id)

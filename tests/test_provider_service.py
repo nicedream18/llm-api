@@ -165,3 +165,31 @@ def test_provider_service_rejects_missing_accounts_tokens_and_failed_upstream(mo
     with pytest.raises(ApplicationError, match="cannot be decrypted"):
         service.quota(account["id"])
 
+
+def test_provider_accounts_become_gateway_candidates_only_when_explicitly_configured():
+    repo = MemoryProviderRepository()
+    service = ProviderService(repo)
+    account = service.create_account(ProviderAccountInput(
+        provider="codex", name="Routeable", client_config={"gateway_url": "https://gateway.example", "channel_type": "openai"},
+        model_mapping={"public-model": "upstream-model"}, priority=7,
+    ))
+    assert service.routing_channels("public-model") == []
+    service.set_token(account["id"], ProviderTokenInput(access_token="oauth-access"))
+    channels = service.routing_channels("public-model")
+    assert len(channels) == 1
+    assert channels[0].id == f"provider:{account['id']}"
+    assert channels[0].base_url == "https://gateway.example"
+    assert channels[0].api_key == "oauth-access"
+    assert channels[0].model_mapping == {"public-model": "upstream-model"}
+    assert service.routing_channels("other-model") == []
+
+
+def test_provider_routing_skips_accounts_without_gateway_or_with_invalid_token():
+    repo = MemoryProviderRepository()
+    service = ProviderService(repo)
+    no_gateway = service.create_account(ProviderAccountInput(provider="gemini", name="No route"))
+    service.set_token(no_gateway["id"], ProviderTokenInput(access_token="token"))
+    assert service.routing_channels("any") == []
+    repo.tokens[no_gateway["id"]]["access_token"] = "tampered"
+    assert service.routing_channels("any") == []
+
