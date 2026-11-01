@@ -25,8 +25,8 @@ Vitest 11 项、TypeScript 和 Vite 构建通过。完整覆盖数据在本机
 | N6 | 运营统计、时间窗口、下钻和站内告警 | 自动化完成；MySQL/浏览器待验收 |
 | N7 | React 导航、渠道/API Key/日志操作流程 | 自动化完成；真实浏览器全流程在 N10 验收 |
 | N8 | 可撤销会话、审计、轮换和运行诊断 | 自动化完成；MySQL/真实 OTLP 收集器待验收 |
-| N9 | 本机客户端配置和受管服务 CLI | 待实施 |
-| N10 | 浏览器全链路、压测、容器和升级验收 | 待实施 |
+| N9 | 本机客户端配置和受管服务 CLI | 自动化完成；真实客户端和容器验收待环境 |
+| N10 | 浏览器全链路、压测、容器和升级验收 | 代码/可选测试完成；MySQL、浏览器、Docker 待环境 |
 | N11 | 支持边界、部署恢复文档和最终验收记录 | 待实施 |
 
 ## 已确认能力边界
@@ -75,6 +75,24 @@ MySQL DDL 不承诺事务回滚；迁移必须可恢复，既有 checksum 不可
 - 新认证/会话仓储/轮换定向覆盖率 100%；后端 492 passed / 11 skipped、88.15%，Node 4、Vitest 33，全部静态检查与构建通过。
 - 失败尝试：同秒会话测试依赖列表位置导致失败，改为独立 ID 判断；Mypy 发现认证实现分支类型推断问题，添加共同基类类型后重验。
 - DevBugKB 无可用案例源，未命中案例 ID。
+
+### N9
+
+- `app.local_config` 支持 Codex TOML、Claude Code JSON、Gemini/Claude Desktop MCP 配置的检测、脱敏预览、统一差异、哈希乐观锁、原子写、备份和恢复。
+- 拒绝路径穿越、符号链接/联接点、非普通文件、超过 2 MB 文件、带凭据或查询串的 URL；远程网关必须显式 HTTPS+allow-remote。凭据仅以环境变量引用出现。
+- `app.local_service` 仅管理由自身写入随机 nonce、PID、启动时间、命令和工作目录均匹配的进程；固定 loopback、独立锁文件、日志权限、停止超时和异常回收。不会按 PID 猜测或终止其他进程。
+- `scripts/waliapi_local.py` 提供显式 `config detect/preview/apply/restore`、`service start/status/stop`、MCP stdio bridge 和显式 `rotate-provider-keys --execute`；错误输出不包含输入正文或密钥。
+- MCP bridge 限制 1 MiB 请求、2 MiB 响应，固定协议版本和 Token Header，支持 JSON/SSE、会话 ID和通知，错误统一脱敏。
+- 本地配置、桥接、服务身份、竞争写入、备份篡改、CLI 参数和管理 API 定向测试 40 项，其中符号链接与浏览器/真实客户端环境按条件跳过；Ruff/Mypy 通过。
+- 真实客户端未在用户目录写入，真实服务进程和 MCP Server 未启动验收；不得将临时 fixture 结果视为客户端已配置。
+
+### N10
+
+- Dockerfile 改为 Node 24 前端构建 + Python 3.12 运行时多阶段镜像；本机无 Docker，镜像构建待 CI/部署主机验收。
+- Wiki 浏览器用例覆盖移动端 Wiki/渠道导航，提供带管理员凭据的登录、权限和页面回归入口；没有 URL、账号或 Playwright 浏览器时明确跳过。
+- `scripts/platform_benchmark.py` 提供固定 5000 节点长文档 fixture、重复测量、P95 预算和 JSON 基线输出；本机 P95 约 0.65ms（仅解析基准，不代表上游问答延迟）。
+- MySQL 8.4 集成、真实 Provider、浏览器全链路和容器构建仍依赖外部环境；CI service 配置是验收入口，未在本机虚报通过。
+- 本节点定向测试 21 passed / 3 skipped；Docker 未安装，浏览器未配置，均保留环境限制记录。
 
 ### N1
 
