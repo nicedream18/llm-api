@@ -206,6 +206,7 @@ def test_provider_failure_cooldown_is_persisted_and_cleared(tmp_path):
     with engine.begin() as db:
         execute_migration(db, Path("docs/migrations/014_provider_accounts.sql"))
         execute_migration(db, Path("docs/migrations/017_provider_resilience.sql"))
+        execute_migration(db, Path("docs/migrations/020_provider_operations.sql"))
     repo = ProviderRepository(engine)
     service = ProviderService(repo)
     account = service.create_account(ProviderAccountInput(provider="codex", name="Routeable", client_config={"gateway_url": "https://gateway.example"}))

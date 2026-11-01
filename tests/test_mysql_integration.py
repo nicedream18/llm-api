@@ -165,3 +165,26 @@ def test_mysql_migration_lock_and_quota_accounting(mysql_engine, monkeypatch):
     with mysql_engine.connect() as db:
         row = db.execute(text("SELECT quota_used FROM api_keys WHERE id=:id"), {"id": key_id}).scalar_one()
         assert row == 50
+
+
+def test_mysql_provider_account_operations(mysql_engine):
+    from app.application.services.provider_service import ProviderService
+    from app.infrastructure.repositories.provider_repo import ProviderRepository
+    from app.types.provider import (
+        ProviderAccountInput,
+        ProviderAccountQuery,
+        ProviderOperationInput,
+        ProviderTokenInput,
+    )
+
+    migrations.apply_migrations()
+    service = ProviderService(ProviderRepository(mysql_engine))
+    account_id = service.create_account(ProviderAccountInput(provider="codex", name="MySQL account"))["id"]
+    service.set_token(account_id, ProviderTokenInput(access_token="synthetic-test-token"))
+    service.operate_account(account_id, ProviderOperationInput(operation="tags", tags=["a%b_"]))
+    assert service.query_accounts(ProviderAccountQuery(tag="a%b_"))["total"] == 1
+    service.operate_account(account_id, ProviderOperationInput(operation="archive"))
+    assert service.repo.get_token(account_id) is None
+    assert service.query_accounts(ProviderAccountQuery(archived=True))["total"] == 1
+    service.operate_account(account_id, ProviderOperationInput(operation="restore"))
+    assert service.repo.get_token(account_id) is None

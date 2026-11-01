@@ -9,13 +9,16 @@ from datetime import UTC, datetime
 from sqlalchemy import text
 
 from app.infrastructure.database.connection import engine as default_engine
+from app.infrastructure.repositories.provider_operations_repo import (
+    ProviderOperationsRepository,
+)
 
 
 def _now():
     return datetime.now(UTC).isoformat()
 
 
-class ProviderRepository:
+class ProviderRepository(ProviderOperationsRepository):
     def __init__(self, engine=None):
         self.engine = engine if engine is not None else default_engine
 
@@ -45,6 +48,9 @@ class ProviderRepository:
         return self.get_account(row["id"])
 
     def update_account(self, account_id, values):
+        allowed = {"provider", "name", "status", "client_config", "model_mapping", "priority"}
+        if not set(values) <= allowed:
+            raise ValueError("Invalid provider account fields")
         values = {**values, "id": account_id, "updated_at": _now()}
         for key in ("client_config", "model_mapping"):
             if key in values:

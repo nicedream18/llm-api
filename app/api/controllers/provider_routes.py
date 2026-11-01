@@ -1,13 +1,47 @@
 """Administrator provider account management routes."""
 
 import asyncio
+from typing import Annotated
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Query
 
 from app.container import get_container
-from app.types.provider import ProviderAccountInput, ProviderTokenInput
+from app.types.provider import (
+    ProviderAccountInput,
+    ProviderAccountQuery,
+    ProviderBulkInput,
+    ProviderOperationInput,
+    ProviderTokenInput,
+)
 
 router = APIRouter(prefix="/api/v1/providers", tags=["Providers"])
+
+
+@router.get("/accounts")
+async def query_accounts(query: Annotated[ProviderAccountQuery, Depends()]):
+    return {"code": "0000", "info": "成功", "data": await asyncio.to_thread(get_container().provider_service.query_accounts, query)}
+
+
+@router.post("/bulk")
+async def bulk_accounts(dto: ProviderBulkInput):
+    return {"code": "0000", "info": "成功", "data": await asyncio.to_thread(get_container().provider_service.bulk_accounts, dto)}
+
+
+@router.post("/{account_id}/operations")
+async def operate_account(account_id: str, dto: ProviderOperationInput):
+    return {"code": "0000", "info": "成功", "data": await asyncio.to_thread(get_container().provider_service.operate_account, account_id, dto)}
+
+
+@router.get("/{account_id}/events")
+async def account_events(account_id: str, limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)):
+    service = get_container().provider_service
+    await asyncio.to_thread(service.account_detail, account_id)
+    return {"code": "0000", "info": "成功", "data": await asyncio.to_thread(service.repo.account_events, account_id, limit, offset)}
+
+
+@router.get("/{account_id}")
+async def account_detail(account_id: str):
+    return {"code": "0000", "info": "成功", "data": await asyncio.to_thread(get_container().provider_service.account_detail, account_id)}
 
 
 @router.get("")

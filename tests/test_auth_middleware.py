@@ -68,6 +68,13 @@ def test_admin_routes_require_authentication(protected_app):
     assert response.headers["X-Request-ID"] == "req-test-1"
 
 
+def test_provider_operations_reject_anonymous_and_data_plane_keys(protected_app):
+    client = TestClient(protected_app)
+    for path in ("/api/v1/providers/accounts", "/api/v1/providers/bulk", "/api/v1/providers/a/operations"):
+        for headers in ({}, {"Authorization": "Bearer valid"}):
+            assert client.post(path, headers=headers).status_code == 401
+
+
 def test_public_and_static_paths_bypass_authentication():
     app = Starlette(routes=[Route("/health", endpoint), Route("/static/app.js", endpoint)])
     app.add_middleware(ApiKeyAuthMiddleware)

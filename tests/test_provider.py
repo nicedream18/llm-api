@@ -14,6 +14,7 @@ def test_provider_account_token_is_encrypted_and_oauth_flow_is_mockable(monkeypa
     engine = create_engine("sqlite://")
     with engine.begin() as db:
         execute_migration(db, Path("docs/migrations/014_provider_accounts.sql"))
+        execute_migration(db, Path("docs/migrations/020_provider_operations.sql"))
     repo = ProviderRepository(engine)
     service = ProviderService(repo)
     account = service.create_account(ProviderAccountInput(provider="gemini", name="Gemini", client_config={"authorization_url": "https://accounts.example/authorize", "client_id": "client"}))
@@ -76,6 +77,7 @@ def test_provider_account_delete_removes_encrypted_token(tmp_path):
     engine = create_engine("sqlite://")
     with engine.begin() as db:
         execute_migration(db, Path("docs/migrations/014_provider_accounts.sql"))
+        execute_migration(db, Path("docs/migrations/020_provider_operations.sql"))
     repo = ProviderRepository(engine)
     account = repo.create_account({"provider": "codex", "name": "Delete me", "client_config": {}, "model_mapping": {}, "priority": 0})
     repo.save_token(account["id"], {"access_token": "cipher", "refresh_token": None, "expires_at": None})

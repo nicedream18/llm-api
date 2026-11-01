@@ -37,7 +37,7 @@ class ProviderService:
         if row is None:
             return None
         result = dict(row)
-        for key in ("client_config", "model_mapping"):
+        for key in ("client_config", "model_mapping", "tags"):
             if key in result and isinstance(result[key], str):
                 try:
                     result[key] = json.loads(result[key])
@@ -45,6 +45,11 @@ class ProviderService:
                     result[key] = {}
         result.pop("access_token", None)
         result.pop("refresh_token", None)
+        result["enabled"] = bool(result.get("enabled", True))
+        result.setdefault("group_name", "")
+        result.setdefault("tags", [])
+        result["auth_status"] = result.get("status", "pending")
+        result["health_status"] = "cooling" if result.get("cooldown_until") and not ProviderService._expired(result["cooldown_until"]) else "healthy"
         return result
 
     @staticmethod
@@ -72,7 +77,41 @@ class ProviderService:
         self._validate_client_config(dto.client_config)
         return self._decode(self.repo.create_account(dto.model_dump()))
 
+    def query_accounts(self, query):
+        result = self.repo.query_accounts(query)
+        result["items"] = [self._decode(row) for row in result["items"]]
+        return result
+
+    def account_detail(self, account_id):
+        row = self.repo.get_account(account_id)
+        if row is None:
+            raise ApplicationError("Provider account not found", 404, "not_found")
+        return self._decode({**row, **self.repo.account_profile(account_id)})
+
+    def operate_account(self, account_id, dto):
+        try:
+            value = dto.value()
+        except ValueError as exc:
+            raise ApplicationError(str(exc), 422, "invalid_account_operation") from exc
+        changed = self.repo.operate_account(account_id, dto.operation, value)
+        return {"changed": changed, "account": self.account_detail(account_id)}
+
+    def bulk_accounts(self, dto):
+        results = []
+        for account_id in dict.fromkeys(dto.account_ids):
+            try:
+                result = self.operate_account(account_id, dto)
+                results.append({"id": account_id, "success": True, "changed": result["changed"]})
+            except ApplicationError as exc:
+                results.append({"id": account_id, "success": False, "error": exc.code})
+        return {"results": results}
+
     def update_account(self, account_id, dto):
+        account = self.repo.get_account(account_id)
+        if not account:
+            raise ApplicationError("Provider account not found", 404, "not_found")
+        if dto.provider != account["provider"] and self.repo.get_token(account_id):
+            raise ApplicationError("Sign out before changing provider", 409, "provider_connected")
         values = dto.model_dump(exclude_unset=True)
         if "client_config" in values:
             self._validate_client_config(values["client_config"])
@@ -84,6 +123,8 @@ class ProviderService:
     def set_token(self, account_id, dto):
         if not self.repo.get_account(account_id):
             raise ApplicationError("Provider account not found", 404, "not_found")
+        if hasattr(self.repo, "account_profile") and self.repo.account_profile(account_id)["archived_at"]:
+            raise ApplicationError("Provider account is archived", 409, "account_archived")
         self.repo.save_token(account_id, {
             "access_token": self._encrypt(dto.access_token),
             "refresh_token": self._encrypt(dto.refresh_token),
@@ -197,6 +238,10 @@ class ProviderService:
         for row in self.repo.list_accounts():
             if row.get("status") != "active":
                 continue
+            if hasattr(self.repo, "account_profile"):
+                profile = self.repo.account_profile(row["id"])
+                if not profile["enabled"] or profile["archived_at"]:
+                    continue
             account = self.repo.get_account(row.get("id")) or row
             token_row = self.repo.get_token(row.get("id"))
             if not token_row:
