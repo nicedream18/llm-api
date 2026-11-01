@@ -183,7 +183,12 @@ class SoftwareService:
             timeout = min(max(float(config.get("timeout_seconds", 30)), 1.0), 120.0)
         except (TypeError, ValueError):
             timeout = 30.0
-        headers = {**configured_headers, "Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+        headers = {
+            **configured_headers,
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "MCP-Protocol-Version": str(config.get("protocol_version") or "2025-06-18"),
+        }
 
         def call(payload, session_id=None):
             request_headers = dict(headers)
@@ -210,6 +215,17 @@ class SoftwareService:
         if not isinstance(initialize_payload, dict) or initialize_payload.get("error"):
             raise ApplicationError("MCP server initialization failed", 502, "tool_execution_failed")
         session_id = initialize_response.headers.get("mcp-session-id")
+        notify_headers = dict(headers)
+        if session_id:
+            notify_headers["Mcp-Session-Id"] = session_id
+        initialized = {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {},
+        }
+        notification = httpx.post(url, json=initialized, headers=notify_headers, timeout=timeout, follow_redirects=False)
+        if notification.status_code not in {200, 202, 204}:
+            raise ApplicationError("MCP server initialization failed", 502, "tool_execution_failed")
         call_payload = {
             "jsonrpc": "2.0",
             "id": 2,

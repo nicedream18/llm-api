@@ -100,6 +100,10 @@ def test_mcp_connector_initializes_and_calls_tool_with_session(monkeypatch):
         method = kwargs["json"]["method"]
         if method == "initialize":
             return Response({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18"}}, "session-1")
+        if method == "notifications/initialized":
+            response = Response({}, None)
+            response.status_code = 202
+            return response
         return Response({"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": "done"}]}})
 
     monkeypatch.setattr("app.application.services.software_service.ImportGuard.remote_url", lambda url: url)
@@ -119,5 +123,7 @@ def test_mcp_connector_initializes_and_calls_tool_with_session(monkeypatch):
 
     assert result == {"content": [{"type": "text", "text": "done"}]}
     assert calls[0][1]["json"]["method"] == "initialize"
-    assert calls[1][1]["json"]["method"] == "tools/call"
+    assert calls[0][1]["headers"]["MCP-Protocol-Version"] == "2025-06-18"
+    assert calls[1][1]["json"]["method"] == "notifications/initialized"
     assert calls[1][1]["headers"]["Mcp-Session-Id"] == "session-1"
+    assert calls[2][1]["json"]["method"] == "tools/call"
