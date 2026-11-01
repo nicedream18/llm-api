@@ -150,23 +150,29 @@ class SoftwareService:
             if result.returncode != 0:
                 raise ApplicationError("CLI tool returned an error", 502, "tool_execution_failed")
             return {"stdout": result.stdout[:16_384], "returncode": result.returncode}
-        if connector == "http":
+        if connector in {"http", "wechat", "clihub"}:
             url = str(config.get("url") or "")
+            if not url and connector != "http":
+                raise ApplicationError("Connector is registered but not configured", 501, "connector_not_implemented")
             parsed = urlparse(url)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
                 raise ApplicationError("HTTP connector URL is invalid", 422, "invalid_tool_config")
             ImportGuard.remote_url(url)
-            response = httpx.request(str(config.get("method", "POST")).upper(), url, json=arguments, timeout=min(float(config.get("timeout_seconds", 30)), 120), follow_redirects=False)
+            try:
+                timeout = min(max(float(config.get("timeout_seconds", 30)), 1.0), 120.0)
+            except (TypeError, ValueError):
+                timeout = 30.0
+            response = httpx.request(str(config.get("method", "POST")).upper(), url, json=arguments, headers=config.get("headers") or {}, timeout=timeout, follow_redirects=False)
             if response.status_code >= 400:
                 raise ApplicationError("HTTP tool returned an error", 502, "tool_execution_failed")
+            if len(response.content) > 1_048_576:
+                raise ApplicationError("HTTP tool response exceeds the size limit", 502, "response_too_large")
             try:
                 return response.json()
             except ValueError:
                 return {"text": response.text[:16_384]}
         if connector == "mcp":
             return self._invoke_mcp(config, tool["name"], arguments)
-        if connector in {"wechat", "clihub"}:
-            raise ApplicationError("Connector is registered but not configured", 501, "connector_not_implemented")
         raise ApplicationError("Unsupported software connector", 422, "invalid_tool_config")
 
     @staticmethod

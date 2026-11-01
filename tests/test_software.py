@@ -127,3 +127,35 @@ def test_mcp_connector_initializes_and_calls_tool_with_session(monkeypatch):
     assert calls[1][1]["json"]["method"] == "notifications/initialized"
     assert calls[1][1]["headers"]["Mcp-Session-Id"] == "session-1"
     assert calls[2][1]["json"]["method"] == "tools/call"
+
+
+def test_configured_wechat_and_clihub_connectors_use_safe_http_bridge(monkeypatch):
+    class Response:
+        status_code = 200
+        content = b'{"ok":true}'
+        text = '{"ok":true}'
+
+        @staticmethod
+        def json():
+            return {"ok": True}
+
+    calls = []
+    monkeypatch.setattr("app.application.services.software_service.ImportGuard.remote_url", lambda url: url)
+    monkeypatch.setattr("app.application.services.software_service.httpx.request", lambda method, url, **kwargs: calls.append((method, url, kwargs)) or Response())
+
+    class Repo:
+        def __init__(self, connector):
+            self.connector = connector
+
+        def get_tool(self, _id):
+            return {"id": "tool", "name": "send", "instance_id": "instance", "enabled": 1, "approval_mode": "none", "config": '{"url":"https://bridge.example.test/call"}', "input_schema": '{"type":"object"}'}
+
+        def get_instance(self, _id):
+            return {"id": "instance", "enabled": 1, "connector_type": self.connector, "config": "{}"}
+
+        def record_call(self, values):
+            self.call = values
+
+    assert SoftwareService(Repo("wechat")).invoke("tool", {"message": "hi"}) == {"ok": True}
+    assert SoftwareService(Repo("clihub")).invoke("tool", {"message": "hi"}) == {"ok": True}
+    assert [call[1] for call in calls] == ["https://bridge.example.test/call", "https://bridge.example.test/call"]
