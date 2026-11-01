@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -23,6 +24,12 @@ def _now():
 
 
 class SoftwareService:
+    _SECRET_KEY = re.compile(
+        r"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret|credential|cookie|private[_-]?key)",
+        re.IGNORECASE,
+    )
+    _ENV_REFERENCE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,255}$")
+
     def __init__(self, repository):
         self.repo = repository
 
@@ -37,16 +44,35 @@ class SoftwareService:
                     result[key] = json.loads(result[key])
                 except (TypeError, ValueError, json.JSONDecodeError):
                     result[key] = {}
+        if isinstance(result.get("config"), dict):
+            result["config"] = SoftwareService._redact_config(result["config"])
         return result
+
+    @classmethod
+    def _redact_config(cls, value):
+        if isinstance(value, dict):
+            return {
+                key: "[REDACTED]" if cls._SECRET_KEY.search(str(key)) and not (isinstance(child, dict) and set(child) == {"env"})
+                else cls._redact_config(child)
+                for key, child in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._redact_config(child) for child in value]
+        if isinstance(value, str):
+            return re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer [REDACTED]", value)
+        return value
 
     def list_instances(self):
         return [self._decode(row) for row in self.repo.list_instances()]
 
     def create_instance(self, dto):
+        self._validate_credential_config(dto.config)
         return self._decode(self.repo.create_instance(dto.model_dump()))
 
     def update_instance(self, instance_id, dto):
         values = dto.model_dump(exclude_unset=True)
+        if "config" in values:
+            self._validate_credential_config(values["config"])
         return self._decode(self.repo.update_instance(instance_id, values))
 
     def delete_instance(self, instance_id):
@@ -75,12 +101,22 @@ class SoftwareService:
         its version. Unknown names are ignored so a UI cannot turn this endpoint
         into arbitrary command execution.
         """
-        candidates = names or ["python", "git", "node", "npm", "docker", "curl"]
+        candidates = names or [
+            "python", "python3", "git", "node", "npm", "bun", "deno", "docker", "curl",
+            "go", "rustc", "cargo", "java", "ollama", "codex", "claude", "gemini",
+        ]
         if not isinstance(candidates, list) or not all(isinstance(name, str) for name in candidates):
             raise ApplicationError("Tool names must be a list of strings", 422, "invalid_scan_request")
-        allowed = {"python", "python3", "git", "node", "npm", "docker", "curl"}
+        allowed = {
+            "python", "python3", "git", "node", "npm", "bun", "deno", "docker", "curl",
+            "go", "rustc", "cargo", "java", "ollama", "codex", "claude", "gemini",
+        }
         result = []
-        for name in candidates[:32]:
+        seen = set()
+        for name in candidates[:64]:
+            if name in seen:
+                continue
+            seen.add(name)
             if name not in allowed:
                 continue
             executable = shutil.which(name)
@@ -131,9 +167,12 @@ class SoftwareService:
     def create_tool(self, dto):
         if not self.repo.get_instance(dto.instance_id):
             raise ApplicationError("Software instance not found", 404, "not_found")
+        self._validate_credential_config(dto.config)
         return self._decode(self.repo.create_tool(dto.model_dump()))
 
     def update_tool(self, tool_id, values):
+        if "config" in values:
+            self._validate_credential_config(values["config"])
         return self._decode(self.repo.update_tool(tool_id, values))
 
     def delete_tool(self, tool_id):
@@ -212,7 +251,9 @@ class SoftwareService:
         if not tool or not tool.get("enabled"):
             raise ApplicationError("Software tool is unavailable", 404, "not_found")
         tool = self._decode(tool)
-        if tool["approval_mode"] != "none" and not approved:
+        if approved and principal is not None and not getattr(principal, "is_admin", False):
+            raise ApplicationError("Only administrators can approve software tools", 403, "permission_error")
+        if self._requires_approval(tool) and not approved:
             raise ApplicationError("Tool approval is required", 403, "approval_required")
         started = time.monotonic()
         status = "failed"
@@ -248,7 +289,7 @@ class SoftwareService:
 
     @staticmethod
     def _safe_summary(value):
-        secret_name = re.compile(r"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret|credential|cookie|private[_-]?key)", re.IGNORECASE)
+        secret_name = SoftwareService._SECRET_KEY
         bearer = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
 
         def redact(item):
@@ -264,6 +305,49 @@ class SoftwareService:
             return item
 
         return json.dumps(redact(value), ensure_ascii=False, default=str)[:16_384]
+
+    @classmethod
+    def _validate_credential_config(cls, value, key_path="config"):
+        """Reject inline credentials; persist only references to environment variables."""
+        if isinstance(value, dict):
+            if set(value) == {"env"}:
+                name = value["env"]
+                if not isinstance(name, str) or not cls._ENV_REFERENCE.fullmatch(name):
+                    raise ApplicationError("Credential environment reference is invalid", 422, "invalid_credential_reference")
+                return
+            for key, child in value.items():
+                if cls._SECRET_KEY.search(str(key)) and isinstance(child, str):
+                    raise ApplicationError(
+                        f"Credential '{key_path}.{key}' must use an environment reference",
+                        422,
+                        "credential_reference_required",
+                    )
+                cls._validate_credential_config(child, f"{key_path}.{key}")
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                cls._validate_credential_config(child, f"{key_path}[{index}]")
+
+    @classmethod
+    def _resolve_credential_config(cls, value, key_path="config"):
+        if isinstance(value, dict):
+            if set(value) == {"env"}:
+                name = value["env"]
+                if not isinstance(name, str) or not cls._ENV_REFERENCE.fullmatch(name):
+                    raise ApplicationError("Credential environment reference is invalid", 422, "invalid_credential_reference")
+                resolved = os.getenv(name)
+                if resolved is None:
+                    raise ApplicationError(f"Credential environment variable '{name}' is not configured", 503, "credential_unavailable")
+                return resolved
+            return {key: cls._resolve_credential_config(child, f"{key_path}.{key}") for key, child in value.items()}
+        if isinstance(value, list):
+            return [cls._resolve_credential_config(child, f"{key_path}[{index}]") for index, child in enumerate(value)]
+        return value
+
+    @staticmethod
+    def _requires_approval(tool):
+        risk = str(tool.get("risk_level") or "medium").lower()
+        mode = str(tool.get("approval_mode") or "per_call").lower()
+        return risk in {"high", "critical"} or mode in {"per_call", "always"}
 
     @staticmethod
     def _validate_arguments(tool, arguments):
@@ -350,7 +434,7 @@ class SoftwareService:
 
     def _invoke_connector(self, instance, tool, arguments):
         connector = instance["connector_type"]
-        config = {**(instance.get("config") or {}), **(tool.get("config") or {})}
+        config = self._resolve_credential_config({**(instance.get("config") or {}), **(tool.get("config") or {})})
         if connector == "cli":
             command = config.get("command")
             if not isinstance(command, list) or not command or not all(isinstance(item, str) for item in command):

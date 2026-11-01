@@ -63,7 +63,7 @@ def test_local_software_scan_is_allowlisted_and_install_has_safe_dry_run(monkeyp
 
     monkeypatch.setattr("app.application.services.software_service.shutil.which", lambda name: f"/bin/{name}")
     monkeypatch.setattr("app.application.services.software_service.subprocess.run", lambda command, **kwargs: type("Result", (), {"returncode": 0, "stdout": f"{command[0]} 1.0", "stderr": ""})())
-    rows = SoftwareService.scan_local_tools(["python", "unknown", "git"])
+    rows = SoftwareService.scan_local_tools(["python", "python", "unknown", "git"])
     assert [row["name"] for row in rows] == ["python", "git"]
     plan = SoftwareService.install_local_tool("example-package", "pip", dry_run=True)
     assert plan["status"] == "planned" and "example-package" in plan["command"]
@@ -87,6 +87,67 @@ def test_http_connector_blocks_private_targets(monkeypatch):
     service = SoftwareService(Repo())
     with pytest.raises(ApplicationError):
         service.invoke("tool", {})
+
+
+def test_software_credentials_require_env_references_and_are_resolved(monkeypatch):
+    monkeypatch.setenv("SOFTWARE_TEST_TOKEN", "secret-token")
+
+    class Repo:
+        def get_tool(self, _id):
+            return {
+                "id": "tool", "instance_id": "instance", "enabled": 1,
+                "approval_mode": "none", "risk_level": "low",
+                "config": '{"headers":{"Authorization":{"env":"SOFTWARE_TEST_TOKEN"}}}',
+                "input_schema": '{"type":"object"}',
+            }
+
+        def get_instance(self, _id):
+            return {"id": "instance", "enabled": 1, "connector_type": "http", "config": '{"url":"https://example.test"}'}
+
+        def record_call(self, values):
+            self.call = values
+
+    class Response:
+        status_code = 200
+        content = b'{"ok":true}'
+        text = '{"ok":true}'
+
+        @staticmethod
+        def json():
+            return {"ok": True}
+
+    calls = []
+    monkeypatch.setattr("app.application.services.software_service.ImportGuard.remote_url", lambda url: url)
+    monkeypatch.setattr("app.application.services.software_service.httpx.request", lambda method, url, **kwargs: calls.append(kwargs) or Response())
+    assert SoftwareService(Repo()).invoke("tool", {}) == {"ok": True}
+    assert calls[0]["headers"]["Authorization"] == "secret-token"
+    assert "secret-token" not in SoftwareService._safe_summary({"Authorization": "Bearer secret-token"})
+
+
+def test_software_rejects_inline_credentials_and_missing_env(monkeypatch):
+    with pytest.raises(ApplicationError, match="environment reference"):
+        SoftwareService._validate_credential_config({"headers": {"Authorization": "Bearer inline"}})
+    monkeypatch.delenv("MISSING_SOFTWARE_TOKEN", raising=False)
+    with pytest.raises(ApplicationError, match="not configured"):
+        SoftwareService._resolve_credential_config({"token": {"env": "MISSING_SOFTWARE_TOKEN"}})
+
+
+def test_high_risk_tool_requires_admin_approval():
+    class Repo:
+        def get_tool(self, _id):
+            return {"id": "tool", "instance_id": "instance", "enabled": 1, "approval_mode": "none", "risk_level": "high", "config": "{}", "input_schema": '{"type":"object"}'}
+
+        def get_instance(self, _id):
+            return {"id": "instance", "enabled": 1, "connector_type": "cli", "config": '{"command":["echo"]}'}
+
+        def record_call(self, values):
+            self.call = values
+
+    service = SoftwareService(Repo())
+    with pytest.raises(ApplicationError, match="approval"):
+        service.invoke("tool", {})
+    with pytest.raises(ApplicationError, match="administrators"):
+        service.invoke("tool", {}, principal=type("Principal", (), {"is_admin": False})(), approved=True)
 
 
 def test_tool_input_schema_rejects_missing_unknown_and_wrong_type_arguments():
