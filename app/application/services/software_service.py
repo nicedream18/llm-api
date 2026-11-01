@@ -72,6 +72,7 @@ class SoftwareService:
         error_type = None
         response_summary = None
         try:
+            self._validate_arguments(tool, arguments)
             instance = self.repo.get_instance(tool["instance_id"])
             if not instance or not instance.get("enabled"):
                 raise ApplicationError("Software instance is unavailable", 404, "not_found")
@@ -97,6 +98,45 @@ class SoftwareService:
                 "request_summary": json.dumps(arguments, ensure_ascii=False, default=str)[:16_384],
                 "response_summary": response_summary,
             })
+
+    @staticmethod
+    def _validate_arguments(tool, arguments):
+        if not isinstance(arguments, dict):
+            raise ApplicationError("Tool arguments must be an object", 422, "invalid_arguments")
+        if len(json.dumps(arguments, ensure_ascii=False, default=str)) > 1_048_576:
+            raise ApplicationError("Tool arguments exceed the size limit", 413, "size_limit")
+        schema = tool.get("input_schema") or {}
+        if not isinstance(schema, dict):
+            raise ApplicationError("Tool input schema is invalid", 422, "invalid_tool_config")
+        properties = schema.get("properties") or {}
+        if not isinstance(properties, dict):
+            raise ApplicationError("Tool input schema is invalid", 422, "invalid_tool_config")
+        required = schema.get("required") or []
+        if not isinstance(required, list) or not all(isinstance(name, str) for name in required):
+            raise ApplicationError("Tool input schema is invalid", 422, "invalid_tool_config")
+        missing = [name for name in required if name not in arguments]
+        if missing:
+            raise ApplicationError("Required tool arguments are missing", 422, "invalid_arguments")
+        if schema.get("additionalProperties") is False:
+            unknown = sorted(set(arguments) - set(properties))
+            if unknown:
+                raise ApplicationError("Unknown tool arguments are not allowed", 422, "invalid_arguments")
+        for name, value in arguments.items():
+            definition = properties.get(name)
+            if not isinstance(definition, dict):
+                continue
+            expected = definition.get("type")
+            valid = {
+                "string": isinstance(value, str),
+                "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+                "integer": isinstance(value, int) and not isinstance(value, bool),
+                "boolean": isinstance(value, bool),
+                "object": isinstance(value, dict),
+                "array": isinstance(value, list),
+                "null": value is None,
+            }.get(expected, True)
+            if not valid:
+                raise ApplicationError(f"Tool argument '{name}' has an invalid type", 422, "invalid_arguments")
 
     def _invoke_connector(self, instance, tool, arguments):
         connector = instance["connector_type"]

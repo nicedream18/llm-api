@@ -50,3 +50,30 @@ def test_http_connector_blocks_private_targets(monkeypatch):
     service = SoftwareService(Repo())
     with pytest.raises(ApplicationError):
         service.invoke("tool", {})
+
+
+def test_tool_input_schema_rejects_missing_unknown_and_wrong_type_arguments():
+    class Repo:
+        def get_tool(self, _id):
+            return {
+                "id": "tool",
+                "instance_id": "instance",
+                "enabled": 1,
+                "approval_mode": "none",
+                "config": "{}",
+                "input_schema": '{"type":"object","required":["query"],"additionalProperties":false,"properties":{"query":{"type":"string"}}}',
+            }
+
+        def get_instance(self, _id):
+            return {"id": "instance", "enabled": 1, "connector_type": "cli", "config": '{"command":["echo"]}'}
+
+        def record_call(self, values):
+            self.call = values
+
+    service = SoftwareService(Repo())
+    with pytest.raises(ApplicationError, match="missing"):
+        service.invoke("tool", {})
+    with pytest.raises(ApplicationError, match="Unknown"):
+        service.invoke("tool", {"query": "ok", "extra": True})
+    with pytest.raises(ApplicationError, match="invalid type"):
+        service.invoke("tool", {"query": 3})
