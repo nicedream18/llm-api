@@ -725,7 +725,7 @@ async def mcp_info(request: Request):
     tools = await asyncio.to_thread(get_container().mcp_service.list_tools,
                                     getattr(request.state, "auth_context", None))
     return {"name": "WaLiAPI MCP Server", "version": "1.0.0", "transport": "streamable-http",
-            "endpoint": "/mcp", "protocolVersion": "2025-06-18", "stateless": True,
+            "endpoint": "/mcp", "protocolVersion": "2025-06-18", "stateless": False,
             "tools": [tool["name"] for tool in tools["tools"]]}
 
 
@@ -747,3 +747,23 @@ async def mcp_call_tool(body: dict, request: Request):
 @dashboard_router.get("/mcp/audit")
 async def mcp_audit(limit: int = 100, offset: int = 0):
     return _success(get_container().mcp_audit_repo.list(limit, offset))
+
+
+@dashboard_router.get("/mcp/tools")
+async def admin_mcp_tools(request: Request):
+    return _success(await asyncio.to_thread(
+        get_container().mcp_service.list_tools,
+        getattr(request.state, "auth_context", None),
+    ))
+
+
+@dashboard_router.post("/mcp/tools/{tool_name:path}/call")
+async def admin_mcp_call_tool(tool_name: str, body: dict, request: Request):
+    arguments = body.get("arguments", {}) if isinstance(body, dict) else {}
+    return _success(await asyncio.to_thread(
+        get_container().mcp_service.call_tool,
+        tool_name,
+        arguments,
+        getattr(request.state, "auth_context", None),
+        getattr(request.state, "request_id", None),
+    ))

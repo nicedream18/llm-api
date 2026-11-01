@@ -1,11 +1,13 @@
-"""Stateless MCP Streamable HTTP endpoint with JSON responses.
+"""MCP Streamable HTTP endpoint with optional authenticated sessions.
 
-No session IDs or server-initiated SSE streams are issued. Each request is
-authenticated by the outer middleware, including notifications and GETs.
+JSON responses are used for client requests. Sessions provide lifecycle and
+identity continuity; server-initiated SSE notifications are not emitted.
 """
 import asyncio
 import json
 import logging
+import secrets
+import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
@@ -17,6 +19,39 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 PROTOCOL_VERSION = "2025-06-18"
 MAX_REQUEST_BYTES = 1024 * 1024
+SESSION_TTL_SECONDS = 3600
+_sessions: dict[str, tuple[float, tuple[str | None, str | None]]] = {}
+
+
+def _principal(request: Request) -> tuple[str | None, str | None]:
+    context = getattr(request.state, "auth_context", None)
+    return getattr(context, "principal_type", None), getattr(context, "principal_id", None)
+
+
+def _cleanup_sessions(now: float | None = None) -> None:
+    current = time.monotonic() if now is None else now
+    for session_id, (expires, _owner) in list(_sessions.items()):
+        if expires <= current:
+            _sessions.pop(session_id, None)
+
+
+def _validate_session(request: Request) -> bool:
+    session_id = request.headers.get("mcp-session-id")
+    if not session_id:
+        return True
+    _cleanup_sessions()
+    record = _sessions.get(session_id)
+    if record is None or record[1] != _principal(request):
+        return False
+    _sessions[session_id] = (time.monotonic() + SESSION_TTL_SECONDS, record[1])
+    return True
+
+
+def _new_session(request: Request) -> str:
+    _cleanup_sessions()
+    session_id = secrets.token_urlsafe(32)
+    _sessions[session_id] = (time.monotonic() + SESSION_TTL_SECONDS, _principal(request))
+    return session_id
 
 
 def _error(request_id, code, message, status=200):
@@ -28,6 +63,17 @@ def _error(request_id, code, message, status=200):
 
 @router.api_route("/mcp", methods=["GET", "DELETE"])
 async def mcp_no_session(request: Request):
+    if request.method == "DELETE":
+        session_id = request.headers.get("mcp-session-id")
+        if not session_id:
+            return Response(status_code=405, headers={"Allow": "POST, DELETE"})
+        _cleanup_sessions()
+        if session_id not in _sessions:
+            return Response(status_code=404)
+        if not _validate_session(request):
+            return Response(status_code=403)
+        _sessions.pop(session_id, None)
+        return Response(status_code=204)
     return Response(status_code=405, headers={"Allow": "POST"})
 
 
@@ -45,6 +91,8 @@ async def mcp_post(request: Request):
     version = request.headers.get("mcp-protocol-version")
     if version is not None and version != PROTOCOL_VERSION:
         return _error(None, -32600, "Unsupported protocol version", 400)
+    if not _validate_session(request):
+        return Response(status_code=404)
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
@@ -69,6 +117,8 @@ async def mcp_post(request: Request):
     if "id" not in message:
         return Response(status_code=202)
     if method == "initialize":
+        if request.headers.get("mcp-session-id"):
+            return _error(rpc_id, -32600, "Initialize must not include a session ID", 400)
         client_info = params.get("clientInfo")
         if (not isinstance(params.get("protocolVersion"), str)
                 or not isinstance(params.get("capabilities"), dict)
@@ -105,4 +155,7 @@ async def mcp_post(request: Request):
                                          getattr(request.state, "request_id", None))
     else:
         return _error(rpc_id, -32601, "Method not found")
-    return JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "result": result})
+    response = JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "result": result})
+    if method == "initialize":
+        response.headers["Mcp-Session-Id"] = _new_session(request)
+    return response

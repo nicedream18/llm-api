@@ -139,6 +139,8 @@ def test_management_routes_dispatch_admin_operations_and_preserve_static_paths(m
     called = client.post("/api/mcp/tools/call", json={"name": "test_tool", "arguments": {"q": "x"}})
     assert called.json()["arguments"] == {"q": "x"}
     client.get("/api/v1/mcp/audit?limit=3&offset=2")
+    client.get("/api/v1/mcp/tools")
+    client.post("/api/v1/mcp/tools/test_tool/call", json={"arguments": {"q": "x"}})
 
     client.get("/api/v1/software/instances")
     client.post("/api/v1/software/instances", json={"name": "cli", "connector_type": "cli"})

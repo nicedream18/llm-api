@@ -516,6 +516,7 @@ LOG_LEVEL=info              # 日志级别
 | GET/POST/DELETE | /api/v1/access/* | 按资源和主体配置授权 |
 | POST | /api/v1/auth/login | 管理员登录并建立会话 |
 | POST | /mcp | 标准 MCP JSON-RPC Streamable HTTP 入口 |
+| GET/POST | /api/v1/mcp/tools、/api/v1/mcp/tools/{name}/call、/api/v1/mcp/audit | 管理员 MCP 工具调试和调用审计 |
 | GET/POST | /api/mcp/* | MCP 兼容 REST 入口与审计查询 |
 
 ---

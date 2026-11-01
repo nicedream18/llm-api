@@ -59,36 +59,39 @@ def rpc(client, method, params=None, rpc_id=1):
 
 def test_initialize_and_notification_then_tool_workflow(setup_mcp):
     client, kb, _ = setup_mcp
-    initialized = rpc(client, "initialize", INITIALIZE, rpc_id="init").json()
+    initialize_response = rpc(client, "initialize", INITIALIZE, rpc_id="init")
+    initialized = initialize_response.json()
+    session_id = initialize_response.headers["mcp-session-id"]
     assert initialized["id"] == "init"
     assert initialized["result"]["protocolVersion"] == PROTOCOL_VERSION
     assert initialized["result"]["capabilities"] == {"tools": {"listChanged": False}}
-    response = client.post("/mcp", headers=HEADERS, json={
+    session_headers = {**HEADERS, "Mcp-Session-Id": session_id}
+    response = client.post("/mcp", headers=session_headers, json={
         "jsonrpc": "2.0", "method": "notifications/initialized",
     })
     assert response.status_code == 202 and not response.content
-    tools = rpc(client, "tools/list").json()["result"]["tools"]
+    tools = client.post("/mcp", headers=session_headers, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}).json()["result"]["tools"]
     assert len(tools) == 16
     tools_by_name = {tool["name"]: tool for tool in tools}
     assert tools_by_name["search_knowledge_base"]["inputSchema"]["properties"]["top_k"]["maximum"] == 100
-    listed = rpc(client, "tools/call", {"name": "list_knowledge_bases"}).json()["result"]
+    listed = client.post("/mcp", headers=session_headers, json={"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_knowledge_bases"}}).json()["result"]
     assert json.loads(listed["content"][0]["text"])[0]["id"] == "kb-1"
-    searched = rpc(client, "tools/call", {"name": "search_knowledge_base", "arguments": {
+    searched = client.post("/mcp", headers=session_headers, json={"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "search_knowledge_base", "arguments": {
         "kb_id": "kb-1", "query": "find", "top_k": 3,
-    }}).json()["result"]
+    }}}).json()["result"]
     assert "Found text" in searched["content"][0]["text"]
     args = kb.search_kb.call_args.args
     assert args[0] == "kb-1" and args[1].top_k == 3
-    asked = rpc(client, "tools/call", {"name": "ask_knowledge_base", "arguments": {
+    asked = client.post("/mcp", headers=session_headers, json={"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "ask_knowledge_base", "arguments": {
         "kb_id": "kb-1", "question": "why?",
-    }}).json()["result"]
+    }}}).json()["result"]
     assert asked["content"][0]["text"] == "Answer"
     assert json.loads(asked["content"][1]["text"])["sources"] == [{"doc_id": "doc-1"}]
-    document = rpc(client, "tools/call", {"name": "get_knowledge_document", "arguments": {"kb_id": "kb-1", "doc_id": "doc-1"}}).json()["result"]
+    document = client.post("/mcp", headers=session_headers, json={"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "get_knowledge_document", "arguments": {"kb_id": "kb-1", "doc_id": "doc-1"}}}).json()["result"]
     assert document["document"]["id"] == "doc-1"
-    documents = rpc(client, "tools/call", {"name": "list_knowledge_documents", "arguments": {"kb_id": "kb-1"}}).json()["result"]
+    documents = client.post("/mcp", headers=session_headers, json={"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "list_knowledge_documents", "arguments": {"kb_id": "kb-1"}}}).json()["result"]
     assert documents["documents"][0]["name"] == "Manual.md"
-    reindexed = rpc(client, "tools/call", {"name": "reindex_knowledge_document", "arguments": {"kb_id": "kb-1", "doc_id": "doc-1"}}).json()["result"]
+    reindexed = client.post("/mcp", headers=session_headers, json={"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "reindex_knowledge_document", "arguments": {"kb_id": "kb-1", "doc_id": "doc-1"}}}).json()["result"]
     assert reindexed["result"]["success"] is True
 
 
@@ -140,6 +143,26 @@ def test_notifications_do_not_execute_tools(setup_mcp):
     })
     assert response.status_code == 202 and not response.content
     kb.list_kbs.assert_not_called()
+
+
+def test_mcp_session_is_bound_to_principal_and_can_be_closed(setup_mcp):
+    client, _, _ = setup_mcp
+    initialized = rpc(client, "initialize", INITIALIZE, rpc_id="init")
+    session_id = initialized.headers["mcp-session-id"]
+    session_headers = {**HEADERS, "Mcp-Session-Id": session_id}
+    assert client.post("/mcp", headers=session_headers, json={"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}).status_code == 200
+    assert client.post("/mcp", headers={**HEADERS, "Mcp-Session-Id": "unknown"}, json={"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}).status_code == 404
+    assert client.delete("/mcp", headers=session_headers).status_code == 204
+    assert client.post("/mcp", headers=session_headers, json={"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}).status_code == 404
+
+
+def test_mcp_session_cannot_be_reused_by_a_different_principal(setup_mcp, monkeypatch):
+    client, _, _ = setup_mcp
+    session_id = rpc(client, "initialize", INITIALIZE, rpc_id="init").headers["mcp-session-id"]
+    import app.api.controllers.mcp_routes as mcp_module
+
+    monkeypatch.setattr(mcp_module, "_principal", lambda _request: ("mcp", "other-principal"))
+    assert client.post("/mcp", headers={**HEADERS, "Mcp-Session-Id": session_id}, json={"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}).status_code == 404
 
 
 @pytest.mark.parametrize("path", ["/mcp", "/api/mcp/tools/list", "/api/mcp/tools/call"])

@@ -4,11 +4,12 @@ import { del, get, post, put, upload } from "./api";
 import type { ClientConfig, Dashboard, KnowledgeBase, OpenApiPreview, PromptTemplate, SoftwareTool } from "./types";
 import { WikiManager } from "./WikiManager";
 import { ProviderManager } from "./ProviderManager";
+import { McpManager } from "./McpManager";
 import "./styles.css";
 import "./software.css";
 
-type Page = "dashboard" | "channels" | "software" | "providers" | "wiki" | "knowledge" | "settings";
-const nav: Array<[Page, string]> = [["dashboard", "仪表盘"], ["channels", "渠道"], ["knowledge", "知识库"], ["wiki", "Wiki"], ["software", "Software"], ["providers", "Auth Provider"], ["settings", "设置"]];
+type Page = "dashboard" | "channels" | "software" | "providers" | "wiki" | "knowledge" | "mcp" | "settings";
+const nav: Array<[Page, string]> = [["dashboard", "仪表盘"], ["channels", "渠道"], ["knowledge", "知识库"], ["wiki", "Wiki"], ["software", "Software"], ["providers", "Auth Provider"], ["mcp", "MCP 调试"], ["settings", "设置"]];
 
 function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
@@ -35,6 +36,7 @@ function PageView({ page, onError }: { page: Page; onError: (message: string) =>
   if (page === "providers") return <ProviderManager onError={onError} />;
   if (page === "knowledge") return <KnowledgePage onError={onError} />;
   if (page === "wiki") return <WikiManager onError={onError} />;
+  if (page === "mcp") return <McpManager onError={onError} />;
   return <SettingsPage onError={onError} />;
 }
 

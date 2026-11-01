@@ -7,7 +7,7 @@
 | 模块 | 当前已实现 | 尚未达到完整平台能力的部分 |
 |---|---|---|
 | Wiki | 项目/页面编辑、来源/附件、搜索标签、图谱、问答、备份恢复、资源授权、REST/MCP；管理台支持 Markdown 编辑和安全预览 | 真实浏览器移动布局与长文档交互验收待做 |
-| MCP | MCP 2025-06-18 JSON-RPC HTTP、KB/Wiki/Software 工具、权限校验、审计 | 无状态 JSON 响应，不支持 SSE 会话/恢复/取消；工具调试与权限管理 UI 未完成 |
+| MCP | MCP 2025-06-18 JSON-RPC HTTP、TTL 会话和主体绑定、KB/Wiki/Software 工具、权限校验、审计；管理台工具调试与审计查看 | 不发出服务器主动 SSE 通知，不支持断线恢复、取消和权限配置 UI |
 | Software | CLI/HTTP/MCP connector、OpenAPI 3.0/3.1 JSON 预览与选择导入、参数映射、schema 校验、启停、审批检查、脱敏调用记录、MCP 聚合 | 无自动扫描安装；不支持外部 `$ref`、header/cookie 参数、表单请求体或认证配置 UI；界面缺实例完整编辑、审批队列和调用调试 |
 | Auth Provider | 账户、PKCE OAuth 流程、Token 加密/刷新/退出、配额和模型端点、HTTP adapter；管理台生命周期操作；显式配置 `gateway_url`/`base_url` 的 active 账号可进入网关候选池 | 厂商专属端点未做真实联调；未实现厂商专属协议、自动 Token 轮换和账号级故障统计 |
 | 平台 | Prompt、语义缓存、客户端配置预览/写入/删除 | 客户端支持范围和真实安装探测仍有限，界面缺少配置差异预览和更多目标 |
