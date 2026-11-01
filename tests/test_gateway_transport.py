@@ -10,7 +10,7 @@ from app.domain.entities import (
     ProxyRequestEntity,
 )
 from app.domain.gateway import GatewayService
-from app.domain.multipart import multipart_fields
+from app.domain.multipart import multipart_fields, multipart_files
 
 
 class Dispatcher:
@@ -47,6 +47,7 @@ def test_multipart_fields_ignore_uploaded_file_bytes():
         f"--{boundary}--\r\n"
     ).encode("latin-1")
     assert multipart_fields(f"multipart/form-data; boundary={boundary}", payload) == {"model": "whisper"}
+    assert multipart_files(f"multipart/form-data; boundary={boundary}", payload)["file"] == ("voice.wav", "audio/wav", b"\x00\x01\x02")
 
 
 @pytest.mark.asyncio

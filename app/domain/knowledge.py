@@ -2,6 +2,7 @@
 import json
 import logging
 import math
+import re
 import struct
 import uuid
 
@@ -37,7 +38,47 @@ class TextSplitter:
         lower = file_type.lower()
         if lower in ("md", "markdown"):
             return self._split_markdown(content, config, metadata)
+        if lower in {"json", "yaml", "yml", "csv"}:
+            content = self._normalize_structured(content, lower)
+        if lower in {"py", "js", "ts", "tsx", "jsx", "java", "go", "rs", "c", "cpp", "cs", "rb", "php"}:
+            symbols = self._split_code_symbols(content, config, metadata, lower)
+            if symbols:
+                return symbols
         return self._split_text(content, config, metadata)
+
+    @staticmethod
+    def _normalize_structured(content, file_type):
+        if file_type == "json":
+            try:
+                return json.dumps(json.loads(content), ensure_ascii=False, indent=2)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return content
+        if file_type == "csv":
+            rows = content.splitlines()
+            return "\n".join(" | ".join(field.strip() for field in row.split(",")) for row in rows)
+        # Keep YAML dependency-free while preserving mapping/list structure.
+        return content
+
+    def _split_code_symbols(self, content, config, metadata, file_type):
+        pattern = re.compile(r"(?m)^(?:\s*)(?:async\s+def|def|class|func|fn|function|public\s+\w+|private\s+\w+|export\s+function)\b.*")
+        starts = [match.start() for match in pattern.finditer(content)]
+        if not starts:
+            return []
+        chunks = []
+        for index, start in enumerate(starts):
+            end = starts[index + 1] if index + 1 < len(starts) else len(content)
+            symbol = content[start:end].strip()
+            if not symbol:
+                continue
+            if len(symbol) > config.chunk_size:
+                chunks.extend(self._split_text(symbol, config, {**(metadata or {}), "language": file_type}))
+                continue
+            chunks.append(KbChunkEntity(
+                id=str(uuid.uuid4()), content=symbol, chunk_index=len(chunks),
+                token_count=self._estimate_tokens(symbol), chunk_type="code",
+                language=file_type, metadata=json.dumps({"filePath": (metadata or {}).get("filePath", ""), "symbol": symbol.splitlines()[0].strip()}, ensure_ascii=False),
+            ))
+        return chunks
 
     def _split_text(self, content, config, metadata):
         chunks = []
@@ -219,7 +260,11 @@ class RetrieverService:
             logger.warning(f"Fulltext search failed, falling back to LIKE: {e}")
             chunks = self._like_search(kb_id, query, top_k)
         results = []
+        seen = set()
         for chunk in chunks:
+            if chunk.id in seen:
+                continue
+            seen.add(chunk.id)
             results.append(SearchResultEntity(
                 chunk_id=chunk.id, doc_id=chunk.doc_id, content=chunk.content,
                 score=1.0, metadata=self._parse_metadata(chunk.metadata),

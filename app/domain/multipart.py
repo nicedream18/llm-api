@@ -34,6 +34,25 @@ def multipart_fields(content_type: str | None, payload: bytes) -> dict[str, str]
     return fields
 
 
+def multipart_files(content_type: str | None, payload: bytes) -> dict[str, tuple[str, str, bytes]]:
+    """Return uploaded files as name -> (filename, media type, bytes)."""
+    if not content_type or not content_type.lower().startswith("multipart/"):
+        return {}
+    header = b"Content-Type: " + content_type.encode("latin-1", "replace") + b"\r\nMIME-Version: 1.0\r\n\r\n"
+    message = BytesParser(policy=policy.default).parsebytes(header + payload)
+    if not message.is_multipart():
+        return {}
+    files: dict[str, tuple[str, str, bytes]] = {}
+    for part in message.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        filename = part.get_filename()
+        if not name or not filename:
+            continue
+        decoded = part.get_payload(decode=True)
+        files[str(name)] = (str(filename), str(part.get_content_type()), decoded if isinstance(decoded, bytes) else b"")
+    return files
+
+
 def replace_model(payload: bytes, model: str, upstream_model: str) -> bytes:
     """Replace only the text model field, preserving file bytes and boundaries."""
     if not model or model == upstream_model:

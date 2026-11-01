@@ -1,5 +1,6 @@
 """All FastAPI route controllers."""
 import asyncio
+import base64
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -329,6 +330,27 @@ async def delete_kb(kb_id: str):
 
 @kb_router.post("/{kb_id}/documents")
 async def upload_doc(kb_id: str, dto: UploadDocDTO):
+    return _success(get_container().kb_service.upload_doc(kb_id, dto))
+
+
+@kb_router.post("/{kb_id}/documents/upload")
+async def upload_doc_multipart(kb_id: str, request: Request):
+    from app.domain.multipart import multipart_fields, multipart_files
+
+    payload = await request.body()
+    content_type = request.headers.get("content-type", "")
+    fields = multipart_fields(content_type, payload)
+    files = multipart_files(content_type, payload)
+    file_entry = next(iter(files.values()), None)
+    if file_entry is None:
+        raise HTTPException(status_code=422, detail="file is required")
+    filename, _media_type, content = file_entry
+    dto = UploadDocDTO(
+        filename=filename,
+        content=base64.b64encode(content).decode("ascii"),
+        file_type=fields.get("file_type") or filename.rsplit(".", 1)[-1],
+        source_type=fields.get("source_type") or "file",
+    )
     return _success(get_container().kb_service.upload_doc(kb_id, dto))
 
 

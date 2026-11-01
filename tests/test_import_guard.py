@@ -2,6 +2,7 @@ import pytest
 
 from app.application.errors import ApplicationError
 from app.domain.importer import ImportGuard, file_walk
+from app.domain.knowledge import ChunkConfig, TextSplitter
 
 
 def test_local_file_walk_skips_unsupported_and_counts_content(tmp_path):
@@ -45,3 +46,12 @@ def test_branch_rejects_option_injection_and_path_traversal():
         ImportGuard.branch("--upload-pack=evil")
     with pytest.raises(ApplicationError):
         ImportGuard.branch("feature/../main")
+
+
+def test_text_splitter_normalizes_json_and_extracts_code_symbols():
+    splitter = TextSplitter()
+    json_chunks = splitter.split('{"b": 2, "a": 1}', "json", ChunkConfig(512, 0), {"filePath": "data.json"})
+    assert '"b": 2' in json_chunks[0].content and '"a": 1' in json_chunks[0].content
+    code_chunks = splitter.split("def first():\n    return 1\n\nclass Second:\n    pass", "py", ChunkConfig(512, 0), {"filePath": "a.py"})
+    assert [chunk.chunk_type for chunk in code_chunks] == ["code", "code"]
+    assert code_chunks[0].language == "py"
