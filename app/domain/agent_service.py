@@ -31,7 +31,7 @@ class AgentChatService:
                 instruction = cfg.get("instruction")
                 if instruction:
                     self._sessions[session_id].append({"role": "system", "content": instruction})
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - malformed optional agent config is non-fatal
                 pass
         logger.info(f"Created session {session_id} for agent {agent_id}")
         return session_id
@@ -46,7 +46,7 @@ class AgentChatService:
                 for key in keys:
                     if key.key:
                         return key.key
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - key lookup failure is non-fatal
             pass
         return None
 
@@ -64,7 +64,7 @@ class AgentChatService:
                 cfg_model = cfg.get("model")
                 if cfg_model:
                     model = cfg_model
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - malformed optional agent config is non-fatal
                 pass
 
         body = {"model": model, "messages": messages, "stream": False}
@@ -81,7 +81,7 @@ class AgentChatService:
             content = resp_json["choices"][0]["message"]["content"]
             messages.append({"role": "assistant", "content": content})
             return content
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - return a safe chat error
             return "\u5bf9\u8bdd\u5931\u8d25: " + str(e)
 
     def handle_message_stream(self, agent_id, session_id, user_id, message, on_chunk, on_error, on_complete):
@@ -99,7 +99,7 @@ class AgentChatService:
                     cfg_model = cfg.get("model")
                     if cfg_model:
                         model = cfg_model
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - malformed optional agent config is non-fatal
                     pass
 
             body = {"model": model, "messages": messages, "stream": True}
@@ -122,7 +122,7 @@ class AgentChatService:
                             if content:
                                 full_content.append(content)
                                 on_chunk(content)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - malformed upstream chunk is skipped
                     pass
 
             def _on_complete():
@@ -137,5 +137,5 @@ class AgentChatService:
                     _on_chunk(chunk)
                 _on_complete()
             asyncio.run(_consume())
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - callback receives the failure
             on_error(e)

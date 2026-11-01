@@ -142,14 +142,14 @@ class EmbedderService:
         body = {"model": upstream_model, "input": texts}
         resp = self._client.post(url, json=body, headers=headers)
         if resp.status_code < 200 or resp.status_code >= 300:
-            raise Exception(f"Embedding API failed: HTTP {resp.status_code}: {resp.text[:200]}")
+            raise RuntimeError(f"Embedding API failed: HTTP {resp.status_code}: {resp.text[:200]}")
         data = resp.json()
         embeddings = [item["embedding"] for item in data.get("data", [])]
         if embeddings:
             dim = len(embeddings[0])
             for i, e in enumerate(embeddings):
                 if len(e) != dim:
-                    raise Exception(f"Embedding dimension mismatch at index {i}")
+                    raise ValueError(f"Embedding dimension mismatch at index {i}")
         return embeddings
 
     def embed(self, text, model):
@@ -215,7 +215,7 @@ class RetrieverService:
             return []
         try:
             chunks = self.kb_repository.fulltext_search(kb_id, fts_query, top_k)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - keyword fallback is intentional
             logger.warning(f"Fulltext search failed, falling back to LIKE: {e}")
             chunks = self._like_search(kb_id, query, top_k)
         results = []
@@ -291,7 +291,7 @@ class RetrieverService:
             return {}
         try:
             return json.loads(meta_str)
-        except Exception:
+        except Exception:  # noqa: BLE001 - malformed metadata is treated as empty
             return {}
 
     def _normalize_scores(self, results):
@@ -440,7 +440,7 @@ class RagService:
         query_embedding = None
         try:
             query_embedding = self.embedder_service.embed(query, embedding_model)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - retrieval falls back to keyword search
             logger.warning(f"Embedding failed, falling back to keyword search: {e}")
             return self.retriever_service.keyword_search(kb_id, query, top_k)
         if mode == "vector":
@@ -450,7 +450,7 @@ class RagService:
                     return results
                 logger.info("Vector search returned no results, falling back to keyword search")
                 return self.retriever_service.keyword_search(kb_id, query, top_k)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - retrieval falls back to keyword search
                 logger.warning(f"Vector search failed, falling back to keyword: {e}")
                 return self.retriever_service.keyword_search(kb_id, query, top_k)
         # hybrid
@@ -460,7 +460,7 @@ class RagService:
                 return results
             logger.info("Hybrid search returned no results, falling back to keyword search")
             return self.retriever_service.keyword_search(kb_id, query, top_k)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - retrieval falls back to keyword search
             logger.warning(f"Hybrid search failed, falling back to keyword: {e}")
             return self.retriever_service.keyword_search(kb_id, query, top_k)
 
@@ -491,7 +491,7 @@ class RagService:
             if choices:
                 return choices[0].get("message", {}).get("content", response.body)
             return response.body
-        except Exception:
+        except Exception:  # noqa: BLE001 - malformed upstream response uses raw body
             return response.body
 
     def _build_sources(self, results):
@@ -522,6 +522,6 @@ class RagService:
             if response.success and response.body:
                 follow_up = self._extract_answer(response)
                 return follow_up.strip() if follow_up else None
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - follow-up is optional
             logger.warning(f"Generate follow-up failed: {e}")
         return None

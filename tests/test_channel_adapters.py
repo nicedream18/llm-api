@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from app.domain.entities import ChannelApiKeyEntity, ChannelEntity, ProxyRequestEntity
+from app.domain.entities import ChannelEntity, ProxyRequestEntity
 from app.domain.gateway import GatewayService
 from app.infrastructure.adapters.channel_adapters import adapter_for
 

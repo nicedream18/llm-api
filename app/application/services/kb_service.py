@@ -1,5 +1,6 @@
 """KB, Security, Agent, and Proxy application services."""
 import base64
+import binascii
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -93,18 +94,18 @@ class KbService:
         try:
             kb = self.repo.find_kb_by_id(kb_id)
             if not kb:
-                raise Exception("KB not found: " + kb_id)
+                raise ValueError("KB not found: " + kb_id)
             raw_content = dto.content
             try:
                 content = base64.b64decode(raw_content).decode("utf-8")
-            except Exception:
+            except (binascii.Error, UnicodeDecodeError, ValueError, TypeError):
                 content = raw_content
             from app.domain.knowledge import ChunkConfig
             chunk_config = ChunkConfig(chunk_size=kb.chunk_size, chunk_overlap=kb.chunk_overlap)
             metadata = {"filePath": dto.filename}
             chunks = self.splitter.split(content, dto.file_type or "txt", chunk_config, metadata)
             if not chunks:
-                raise Exception("Empty content or no chunks")
+                raise ValueError("Empty content or no chunks")
             embedding_model = kb.embedding_model or "text-embedding-3-small"
             chunk_contents = [c.content for c in chunks]
             from app.domain.knowledge import serialize_embedding
@@ -317,7 +318,7 @@ class KbService:
     def get_tags(self, kb_id, limit=10):
         contents = self.repo.sample_contents(kb_id, 200)
         word_freq = {}
-        stopwords = set(["the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can", "this", "that", "these", "those", "it", "its", "for", "and", "or", "but", "in", "on", "at", "to", "of", "from", "by", "with", "as"])
+        stopwords = {"the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can", "this", "that", "these", "those", "it", "its", "for", "and", "or", "but", "in", "on", "at", "to", "of", "from", "by", "with", "as"}
         for content in contents:
             self._extract_words(content, word_freq, stopwords)
         sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:limit]

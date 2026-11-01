@@ -3,7 +3,12 @@ import asyncio
 import httpx
 import pytest
 
-from app.domain.entities import ChannelApiKeyEntity, ChannelEntity, DispatchResult, ProxyRequestEntity
+from app.domain.entities import (
+    ChannelApiKeyEntity,
+    ChannelEntity,
+    DispatchResult,
+    ProxyRequestEntity,
+)
 from app.domain.gateway import GatewayService
 
 

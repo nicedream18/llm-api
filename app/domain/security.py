@@ -209,7 +209,7 @@ class SecurityScanner:
         try:
             parsed = json.loads(body)
             _walk_json(parsed, "$", phase, settings, findings, custom_rules, builtin_rules)
-        except Exception:
+        except Exception:  # noqa: BLE001 - raw scanner fallback handles malformed JSON
             _run_all_scanners(body, "$raw", phase, settings, findings, custom_rules, builtin_rules)
 
         if not findings:

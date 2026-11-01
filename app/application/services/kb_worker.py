@@ -86,5 +86,5 @@ class KnowledgeTaskWorker:
                 self.kb_service.run_reindex_pipeline(task["kb_id"], task["doc_id"], task_id, chunks)
             else:
                 raise ValueError(f"Unsupported task type: {task['task_type']}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - worker must mark failed tasks
             self.repository.fail_or_retry_task(task_id, str(exc), config.workers.max_attempts)
