@@ -1,6 +1,7 @@
 """WaLiAPI-Python main application entry point."""
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -9,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.controllers.access_routes import router as access_router
+from app.api.controllers.administration_routes import router as administration_router
 from app.api.controllers.auth_routes import router as auth_router
 from app.api.controllers.mcp_routes import router as standard_mcp_router
 from app.api.controllers.operations_routes import router as operations_router
@@ -34,24 +36,28 @@ from app.application.errors import ApplicationError
 from app.config import config
 from app.container import get_container
 from app.infrastructure.database.migrations import apply_migrations
+from app.infrastructure.telemetry import configure_tracing
 
 
 @asynccontextmanager
 async def lifespan(app):
-    apply_migrations()
-    await get_container().kb_worker.start()
-    await get_container().provider_sync_worker.start()
-    await get_container().operations_worker.start()
-    try:
-        yield
-    finally:
-        await get_container().operations_worker.stop()
-        await get_container().provider_sync_worker.stop()
-        await get_container().kb_worker.stop()
+    await asyncio.to_thread(apply_migrations)
+    container = get_container()
+    async def close_resource(callback):
         try:
-            await get_container().gateway.aclose()
-        except Exception:
-            logger.exception("Failed to close gateway client")
+            await asyncio.wait_for(callback(), timeout=10)
+        except Exception:  # noqa: BLE001 - continue closing the remaining resources
+            logger.warning("Resource shutdown incomplete", exc_info=False)
+
+    async with AsyncExitStack() as stack:
+        telemetry = getattr(app.state, "telemetry_provider", None)
+        if telemetry:
+            stack.callback(telemetry.shutdown)
+        stack.push_async_callback(close_resource, container.gateway.aclose)
+        for worker in (container.kb_worker, container.provider_sync_worker, container.operations_worker):
+            stack.push_async_callback(close_resource, worker.stop)
+            await worker.start()
+        yield
 
 logging.basicConfig(
     level=getattr(logging, config.log_level.upper(), logging.INFO),
@@ -60,6 +66,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="WaLiAPI-Python", version="1.0.0", lifespan=lifespan)
+configure_tracing(app)
 
 # CORS
 app.add_middleware(
@@ -86,6 +93,7 @@ app.include_router(security_router)
 app.include_router(mcp_router)
 app.include_router(standard_mcp_router)
 app.include_router(auth_router)
+app.include_router(administration_router)
 app.include_router(wiki_router)
 app.include_router(access_router)
 app.include_router(software_router)

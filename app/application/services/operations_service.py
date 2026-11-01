@@ -49,7 +49,11 @@ class OperationsWorker:
     async def stop(self):
         self._stop.set()
         if self.task:
-            await self.task
+            try:
+                await asyncio.wait_for(asyncio.shield(self.task), timeout=5)
+            except TimeoutError:
+                self.task.cancel()
+                await asyncio.gather(self.task, return_exceptions=True)
             self.task = None
 
     async def _run(self):

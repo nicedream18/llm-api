@@ -11,6 +11,8 @@ from app.types.auth import AuthContext
 
 
 class RecordingAdminService:
+    def logout(self, token):
+        pass
     def __init__(self, fail_login=False):
         self.fail_login = fail_login
         self.calls = []

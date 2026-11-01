@@ -1,12 +1,14 @@
 """Authentication middleware for admin, MCP and data-plane requests."""
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import uuid
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
+from starlette.routing import Match
 
 from app.application.services.auth_service import (
     AdminAuthService,
@@ -53,7 +55,23 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         candidate = request.headers.get("x-request-id", "").strip()
         request_id = request_id or (candidate[:128] if candidate and all(c.isalnum() or c in "-_." for c in candidate) else uuid.uuid4().hex)
         request.state.request_id = request_id
-        response = await call_next(request)
+        context = getattr(request.state, "auth_context", None)
+        audit = bool(context and context.is_admin and request.method not in {"GET", "HEAD", "OPTIONS"} and request.url.path.startswith("/api/v1/"))
+        if audit:
+            repository = get_container().admin_repo
+            routes = getattr(request.app, "routes", [])
+            template = next((getattr(route, "path", "unmatched") for route in routes if route.matches(request.scope)[0] == Match.FULL), "unmatched")
+            action = f"{request.method}:{template}"[:118]
+            ip = request.client.host if request.client else None
+            await asyncio.to_thread(repository.write_audit, context.principal_name, "start:" + action, request_id, ip, True)
+        try:
+            response = await call_next(request)
+        except Exception:
+            if audit:
+                await asyncio.to_thread(repository.write_audit, context.principal_name, "end:" + action, request_id, ip, False)
+            raise
+        if audit:
+            await asyncio.to_thread(repository.write_audit, context.principal_name, "end:" + action, request_id, ip, response.status_code < 400)
         response.headers["X-Request-ID"] = request_id
         return response
 
@@ -68,18 +86,21 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         container = get_container()
-        admin = AdminAuthService()
+        admin = container.admin_service.auth if hasattr(container, "admin_service") else AdminAuthService()
         api_authorizer = ApiKeyAuthorizer(container.channel_repo)
         bearer = request.headers.get("authorization", "")
         bearer_token = bearer[7:].strip() if bearer.lower().startswith("bearer ") else None
         cookie_token = request.cookies.get("waliapi_admin_session")
 
-        admin_context = admin.verify_admin_token(bearer_token) or admin.verify_session(cookie_token)
+        admin_context = admin.verify_admin_token(bearer_token) or (await asyncio.to_thread(admin.verify_session, cookie_token) if cookie_token else None)
+        if admin_context and cookie_token and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("origin")
+            if origin and origin not in config.cors_allowed_origins:
+                return _error(AuthError("Origin is not allowed", 403, "permission_error"), request_id, admin=True)
         if _under(path, "/api/v1/auth"):
-            if path in {"/api/v1/auth/logout", "/api/v1/auth/session", "/api/v1/auth/change-password"}:
-                if not admin_context:
-                    return _error(AuthError("Admin authentication required", 401, "authentication_error"), request_id, admin=True)
-                request.state.auth_context = admin_context
+            if not admin_context:
+                return _error(AuthError("Admin authentication required", 401, "authentication_error"), request_id, admin=True)
+            request.state.auth_context = admin_context
             return await call_next(request)
 
         if any(_under(path, p) for p in ADMIN_PREFIXES):

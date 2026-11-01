@@ -7,12 +7,23 @@ from app.application.services.auth_service import (
     hash_password,
 )
 from app.infrastructure.database.admin_repo import AdminRepository
+from app.infrastructure.repositories.admin_session_repo import AdminSessionRepository
 
 
 class AdminService:
-    def __init__(self, repository: AdminRepository | None = None):
+    def __init__(self, repository: AdminRepository | None = None, sessions=None):
         self.repo = repository or AdminRepository()
-        self.auth = AdminAuthService(self.repo)
+        self.sessions = sessions or (AdminSessionRepository() if isinstance(self.repo, AdminRepository) else None)
+        self.auth: AdminAuthService
+        if self.sessions:
+            from app.application.services.admin_sessions import DurableAdminAuth
+            self.auth = DurableAdminAuth(self.repo, self.sessions)
+        else:
+            self.auth = AdminAuthService(self.repo)
+
+    def logout(self, token):
+        if self.sessions:
+            self.sessions.revoke_token(token)
 
     def login(self, username: str, password: str, client_ip: str | None, request_id: str | None) -> str:
         try:

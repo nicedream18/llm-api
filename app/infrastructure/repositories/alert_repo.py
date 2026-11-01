@@ -67,3 +67,7 @@ class AlertRepository:
     def active_fingerprints(self, prefix):
         with self.engine.connect() as db:
             return [row[0] for row in db.execute(text("SELECT fingerprint FROM alert_runtime WHERE active_id IS NOT NULL AND fingerprint LIKE :prefix"), {"prefix": prefix + ":%"})]
+
+    def events(self, alert_id, limit=100):
+        with self.engine.connect() as db:
+            return [dict(row) for row in db.execute(text("SELECT * FROM alert_events WHERE alert_id=:id ORDER BY created_at,id LIMIT :limit"), {"id": alert_id, "limit": limit}).mappings()]

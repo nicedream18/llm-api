@@ -1,6 +1,7 @@
 """Validated application configuration loaded from environment."""
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 
@@ -29,6 +30,13 @@ def _int(name: str, default: int, minimum: int = 0) -> int:
 
 def _bool(name: str, default: bool) -> bool:
     return (_env(name, "true" if default else "false") or "").lower() in {"1", "true", "yes", "on"}
+
+
+def _previous_keys():
+    values = json.loads(_env("PROVIDER_TOKEN_PREVIOUS_KEYS", "[]") or "[]")
+    if not isinstance(values, list):
+        raise TypeError("PROVIDER_TOKEN_PREVIOUS_KEYS must be a JSON array")
+    return tuple(values)
 
 
 @dataclass(frozen=True)
@@ -85,6 +93,7 @@ class GatewayConfig:
 
 @dataclass(frozen=True)
 class AuthConfig:
+    provider_token_previous_keys: tuple[str, ...] = field(default_factory=_previous_keys)
     admin_username: str = field(default_factory=lambda: _env("ADMIN_USERNAME", "admin") or "admin")
     admin_password_hash: str = field(default_factory=lambda: _env("ADMIN_PASSWORD_HASH", "") or "")
     admin_token: str = field(default_factory=lambda: _env("ADMIN_TOKEN", "") or "")
@@ -99,6 +108,8 @@ class AuthConfig:
     provider_token_key: str = field(default_factory=lambda: _env("PROVIDER_TOKEN_KEY", "") or "")
 
     def __post_init__(self):
+        if len(self.provider_token_previous_keys) > 5 or any(not isinstance(key, str) or len(key) < 16 for key in self.provider_token_previous_keys):
+            raise ValueError("PROVIDER_TOKEN_PREVIOUS_KEYS must contain at most five previous keys")
         environment = (_env("APP_ENV", "development") or "development").lower()
         if environment == "production":
             if not self.session_secret or len(self.session_secret) < 32:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 import logging
 import os
@@ -11,7 +9,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import InvalidToken
 
 from app.application.errors import ApplicationError
 from app.application.services.provider_authorization import ProviderAuthorization
@@ -19,6 +17,7 @@ from app.config import config
 from app.domain.entities import ChannelEntity
 from app.domain.provider_adapters import adapter_for
 from app.domain.provider_quota import normalize_quota, quota_status
+from app.infrastructure.token_keyring import provider_cipher
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +55,7 @@ class ProviderService:
 
     @staticmethod
     def _cipher():
-        configured = config.auth.provider_token_key
-        seed = configured or config.auth.session_secret or "development-only-provider-key"
-        digest = hashlib.sha256(seed.encode("utf-8")).digest()
-        return Fernet(base64.urlsafe_b64encode(digest))
+        return provider_cipher(config.auth)
 
     def _encrypt(self, value: str | None):
         return self._cipher().encrypt(value.encode("utf-8")).decode("ascii") if value else None

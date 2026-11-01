@@ -54,3 +54,8 @@ async def acknowledge(alert_id: str, request: Request):
     context = getattr(request.state, "auth_context", None)
     value = await asyncio.to_thread(get_container().alert_repo.acknowledge, alert_id, context.principal_id if context else "admin")
     return {"code": "0000", "info": "成功", "data": {"changed": value}}
+
+
+@router.get("/alerts/{alert_id}/events")
+async def alert_events(alert_id: str, limit: int = Query(100, ge=1, le=100)):
+    return {"code": "0000", "info": "成功", "data": await asyncio.to_thread(get_container().alert_repo.events, alert_id, limit)}
