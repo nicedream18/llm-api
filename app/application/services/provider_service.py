@@ -181,7 +181,7 @@ class ProviderService:
             except ValueError:
                 return False
 
-    def routing_channels(self, model: str, *, preview=False):
+    def routing_channels(self, model: str | None, *, preview=False):
         """Expose explicitly configured OAuth accounts as gateway candidates.
 
         A provider account participates in routing only after it has a token and
@@ -224,12 +224,14 @@ class ProviderService:
                     mapping = json.loads(mapping)
                 if not isinstance(mapping, dict):
                     mapping = {}
-                upstream_model = mapping.get(model, model)
                 models = [str(key) for key in mapping if key]
+                discovered = self._discovered_models(account["id"])
+                if not models and discovered is not None:
+                    models = discovered
                 quota_info = self._routing_quota(account["id"])
                 if quota_info["quota_status"] == "exhausted":
                     continue
-                if models and model not in models:
+                if model is not None and (models or discovered is not None) and model not in models:
                     continue
                 access_token = "preview" if preview else self._decrypt(token_row.get("access_token"))
                 if not access_token:
@@ -243,13 +245,24 @@ class ProviderService:
                     models=models,
                     priority=int(account.get("priority") or 0),
                     weight=1,
-                    model_mapping={model: upstream_model} if upstream_model != model else {},
+                    model_mapping=mapping,
                     config={"provider_account_id": account["id"], "provider": account["provider"],
                             "endpoints": client_config.get("endpoints", ["/v1/chat/completions"]), **quota_info},
                 ))
             except (ApplicationError, TypeError, ValueError, json.JSONDecodeError):
                 continue
         return result
+
+    def _discovered_models(self, account_id):
+        if not hasattr(self.repo, "synchronization_state"):
+            return None
+        state = self.repo.synchronization_state(account_id)
+        snapshot = state["snapshots"].get("models")
+        if not snapshot or not snapshot.get("payload") or snapshot["generation"] != state["generation"]:
+            return None
+        if self._expired((datetime.fromisoformat(snapshot["fetched_at"]) + timedelta(minutes=15)).isoformat(), skew=0):
+            return None
+        return snapshot["payload"].get("models", [])
 
     def _routing_quota(self, account_id):
         if not hasattr(self.repo, "synchronization_state"):

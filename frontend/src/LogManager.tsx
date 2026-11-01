@@ -1,0 +1,12 @@
+import { useState } from "react";
+import { del, get } from "./api";
+import { useAction, useResource } from "./adminHooks";
+
+type Log = { id: string; model?: string; status_code?: number; duration_ms?: number; created_at?: string; request_id?: string; [key: string]: unknown };
+export function LogManager({ onError }: { onError: (message: string) => void }) {
+  const [keyword, setKeyword] = useState(""); const [query, setQuery] = useState(""); const [page, setPage] = useState(1);
+  const [rows, reload] = useResource<Log[]>(`/api/v1/logs?page=${page}&size=20&keyword=${encodeURIComponent(query)}`, onError);
+  const [detail, setDetail] = useState<{ log: Log; attempts: unknown; findings: unknown } | null>(null);
+  const [busy, run] = useAction(onError);
+  return <section><form className="panel" onSubmit={event => { event.preventDefault(); setPage(1); setQuery(keyword); reload(); }}><label>日志关键词<input value={keyword} onChange={event => setKeyword(event.target.value)} /></label><button>筛选日志</button><button type="button" onClick={reload}>刷新日志</button></form><div className="panel"><h2>请求日志</h2><div className="table-wrap"><table><thead><tr><th>时间</th><th>模型</th><th>状态</th><th>耗时</th><th>操作</th></tr></thead><tbody>{rows?.map(row => <tr key={row.id}><td>{row.created_at}</td><td>{row.model}</td><td>{row.status_code}</td><td>{row.duration_ms} ms</td><td><button disabled={busy} onClick={() => void run(async () => { const id = encodeURIComponent(row.id); const [log, attempts, findings] = await Promise.all([get<Log>(`/api/v1/logs/${id}`), get(`/api/v1/logs/${id}/attempts`), get(`/api/v1/security/findings/by-log/${id}`)]); setDetail({ log, attempts, findings }); })}>查看日志 {row.id}</button><button disabled={busy} onClick={() => { if (window.confirm("确认删除此日志？用量账本将保留。")) void run(async () => { await del(`/api/v1/logs/${encodeURIComponent(row.id)}`); setDetail(null); reload(); }); }}>删除日志 {row.id}</button></td></tr>)}</tbody></table></div>{rows?.length === 0 && <p>没有符合条件的日志。</p>}<div className="actions"><button disabled={page === 1 || rows === null} onClick={() => setPage(page - 1)}>上一页日志</button><span>第 {page} 页</span><button disabled={!rows || rows.length < 20} onClick={() => setPage(page + 1)}>下一页日志</button></div></div>{detail && <div className="panel"><h2>请求明细、重试和安全发现</h2><button onClick={() => setDetail(null)}>关闭日志明细</button><pre className="detail-json">{JSON.stringify(detail, null, 2)}</pre></div>}</section>;
+}

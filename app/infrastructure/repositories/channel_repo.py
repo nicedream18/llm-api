@@ -237,7 +237,7 @@ class ChannelRepository:
             result = db.execute(text(
                 "UPDATE api_keys SET name=:name, `key`=:key, status=:status, "
                 "allowed_models=:allowed_models, allowed_channels=:allowed_channels, "
-                "quota_limit=:quota_limit, quota_used=:quota_used, expires_at=:expires_at, "
+                "quota_limit=:quota_limit, expires_at=:expires_at, "
                 "updated_at=:updated_at WHERE id=:id"
             ), self._to_apikey_params(entity))
             return affected_rows(result) > 0

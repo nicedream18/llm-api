@@ -109,6 +109,14 @@ class DashboardStatsDTO(BaseModel):
 
 
 class RequestLogDTO(BaseModel):
+    request_id: str | None = None
+    endpoint: str | None = None
+    attempt_count: int = 1
+    final_attempt: int = 1
+    stream_status: str | None = None
+    usage_source: str | None = None
+    client_disconnect: bool = False
+    truncated: bool = False
     id: str | None = None
     seq: int | None = None
     api_key_id: str | None = None

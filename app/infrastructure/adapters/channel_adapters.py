@@ -328,4 +328,6 @@ def models_url(channel) -> str:
     base = (channel.base_url or "").rstrip("/")
     if str(channel.type or "").lower() == "gemini":
         return _join(base, "/models")
+    if str(channel.type or "").lower() == "ollama":
+        return _join(base.removesuffix("/v1").removesuffix("/api"), "/api/tags")
     return _join(base, "/models" if base.endswith("/v1") else "/v1/models")

@@ -1,6 +1,7 @@
 """All FastAPI route controllers."""
 import asyncio
 import base64
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -44,6 +45,16 @@ def _success(data=None):
     return {"code": "0000", "info": "\u6210\u529f", "data": data}
 
 
+def _stream_requested(body: str | bytes, accept: str, content_type: str = "") -> bool:
+    if content_type.lower().startswith("multipart/"):
+        return False
+    try:
+        parsed = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return isinstance(parsed, dict) and (parsed.get("stream") is True or "text/event-stream" in accept)
+
+
 # ==================== Gateway Controller ====================
 
 gateway_router = APIRouter()
@@ -56,7 +67,7 @@ async def chat_completions(request: Request):
     body_str = body.decode("utf-8")
     headers = {k.lower(): v for k, v in request.headers.items()}
     accept = request.headers.get("accept", "")
-    is_stream = ("text/event-stream" in accept) or ('"stream"' in body_str and "true" in body_str.lower())
+    is_stream = _stream_requested(body_str, accept)
     if is_stream:
         return StreamingResponse(
             container.proxy_service.forward_stream_async(body_str, headers, client_ip=request.client.host if request.client else None, auth_context=getattr(request.state, "auth_context", None), endpoint=str(request.url.path), request_id=getattr(request.state, "request_id", None)),
@@ -85,7 +96,7 @@ async def proxy_generic(request: Request):
     content_type = request.headers.get("content-type", "")
     headers = {k.lower(): v for k, v in request.headers.items()}
     body = raw_body if content_type.lower().startswith("multipart/") else raw_body.decode("utf-8")
-    is_stream = "text/event-stream" in request.headers.get("accept", "") or b'"stream"' in raw_body.lower() and b"true" in raw_body.lower()
+    is_stream = _stream_requested(raw_body, request.headers.get("accept", ""), content_type)
     if is_stream:
         return StreamingResponse(
             container.proxy_service.forward_stream_async(body, headers, client_ip=request.client.host if request.client else None, auth_context=getattr(request.state, "auth_context", None), endpoint=str(request.url.path), request_id=getattr(request.state, "request_id", None)),
@@ -104,30 +115,17 @@ async def proxy_generic(request: Request):
 @gateway_router.get("/v1/models")
 async def models(request: Request):
     context = getattr(request.state, "auth_context", None)
-    channels = get_container().channel_repo.get_enabled_channels()
+    container = get_container()
+    channels = await asyncio.to_thread(container.channel_repo.get_enabled_channels)
+    channels = [*channels, *await asyncio.to_thread(container.provider_service.routing_channels, None, preview=True)]
     names: set[str] = set()
     for channel in channels:
         if context and context.is_api_key and context.allowed_channels and channel.id not in context.allowed_channels and channel.name not in context.allowed_channels:
             continue
         names.update(channel.models or [])
-    for account in get_container().provider_repo.list_accounts():
-        if account.get("status") not in {"active", "pending"}:
-            continue
-        mapping = account.get("model_mapping") or {}
-        if isinstance(mapping, str):
-            import json
-
-            try:
-                mapping = json.loads(mapping)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                mapping = {}
-        if isinstance(mapping, dict):
-            names.update(str(name) for name in mapping if name)
-            names.update(str(name) for name in mapping.values() if name)
+        names.update(getattr(channel, "model_mapping", None) or {})
     if context and context.is_api_key and context.allowed_models:
         names.intersection_update(context.allowed_models)
-    if not names and not context:
-        names.add("gpt-4o")
     return {"object": "list", "data": [{"id": name, "object": "model", "owned_by": "waliapi"} for name in sorted(names)]}
 
 
@@ -263,6 +261,11 @@ async def update_channel_api_key(channel_id: str, key_id: str, dto: ChannelApiKe
 @channel_router.delete("/{channel_id}/api-keys/{key_id}")
 async def delete_channel_api_key(channel_id: str, key_id: str):
     return _success(get_container().channel_service.delete_channel_api_key(channel_id, key_id))
+
+
+@channel_router.post("/{channel_id}/api-keys/{key_id}/test")
+async def test_channel_api_key(channel_id: str, key_id: str):
+    return _success(await asyncio.to_thread(get_container().channel_service.test_channel_api_key, channel_id, key_id))
 
 
 # ==================== ApiKey Controller ====================

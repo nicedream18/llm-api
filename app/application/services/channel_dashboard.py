@@ -1,6 +1,7 @@
 """Application services orchestrating domain services and repositories."""
 import logging
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from app.domain.entities import (
@@ -143,7 +144,8 @@ class ChannelService:
         return self._to_dto(self.repo.create_channel(clone))
 
     def test_draft_channel(self, dto: ChannelDTO):
-        entity = self._to_entity(dto)
+        existing = self.repo.get_channel(dto.id) if dto.id else None
+        entity = self._to_entity(dto, existing)
         success = self.gateway.test_channel(entity)
         return TestChannelResultDTO(channel_id="draft", success=success,
                                     message="OK" if success else "Test failed", duration_ms=0)
@@ -165,12 +167,22 @@ class ChannelService:
         return self._to_channel_key_dto(self.repo.create_channel_api_key(entity), expose_secret=True)
 
     def update_channel_api_key(self, channel_id, key_id, dto: ChannelApiKeyDTO):
+        dto = dto.model_copy(update={"id": key_id})
         entity = self._to_channel_key_entity(channel_id, dto)
         entity.id = key_id
         return self.repo.update_channel_api_key(entity)
 
     def delete_channel_api_key(self, channel_id, key_id):
         return self.repo.delete_channel_api_key(channel_id, key_id)
+
+    def test_channel_api_key(self, channel_id, key_id):
+        channel = self.repo.get_channel(channel_id)
+        key = next((key for key in (channel.api_keys or []) if key.id == key_id), None) if channel else None
+        if not key:
+            return TestChannelResultDTO(channel_id=channel_id, success=False, message="Key not found")
+        success = self.gateway.test_channel(replace(channel, api_key=key.api_key, api_keys=[]))
+        self.repo.update_channel_api_key_result(key_id, success, None if success else "Test failed")
+        return TestChannelResultDTO(channel_id=channel_id, success=success, message="OK" if success else "Test failed")
 
     def list_api_keys(self):
         return [self._to_apikey_dto(e) for e in self.repo.get_all_api_keys()]
@@ -334,7 +346,10 @@ class DashboardService:
                              request_body=e.request_body, response_choices=e.response_choices,
                              risk_level=e.risk_level, risk_score=e.risk_score, risk_summary=e.risk_summary,
                              security_action=e.security_action, sanitized=e.sanitized,
-                             blocked_reason=e.blocked_reason, trace_id=e.trace_id, created_at=e.created_at)
+                             blocked_reason=e.blocked_reason, trace_id=e.trace_id, created_at=e.created_at,
+                             request_id=e.request_id, endpoint=e.endpoint, attempt_count=e.attempt_count,
+                             final_attempt=e.final_attempt, stream_status=e.stream_status, usage_source=e.usage_source,
+                             client_disconnect=e.client_disconnect, truncated=e.truncated)
 
     def _calculate_health_score(self, stats):
         """Calculate health score aligned with Java StatsService logic.

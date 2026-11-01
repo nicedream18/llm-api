@@ -119,6 +119,9 @@ def test_channel_api_key_and_downstream_key_repository_lifecycle(monkeypatch, tm
     assert repo.update_api_key(downstream) is True
     assert repo.update_api_key(ApiKeyEntity(id="missing")) is False
     assert repo.increment_quota_used(downstream.id, 15) is True
+    downstream.quota_used = 0
+    assert repo.update_api_key(downstream) is True
+    assert repo.get_api_key(downstream.id).quota_used == 15
     assert repo.delete_api_key(downstream.id) is True
     assert repo.delete_api_key(downstream.id) is False
 
