@@ -70,6 +70,8 @@ class ProxyRequestEntity:
     allowed_channels: frozenset[str] = frozenset()
     endpoint: str = "/v1/chat/completions"
     upstream_api_key: str | None = None
+    raw_body: bytes | None = None
+    content_type: str | None = None
 
 
 @dataclass
@@ -87,6 +89,7 @@ class ProxyResponseEntity:
     channel_id: str | None = None
     channel_name: str | None = None
     upstream_model: str | None = None
+    response_headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

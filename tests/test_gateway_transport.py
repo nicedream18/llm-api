@@ -10,6 +10,7 @@ from app.domain.entities import (
     ProxyRequestEntity,
 )
 from app.domain.gateway import GatewayService
+from app.domain.multipart import multipart_fields
 
 
 class Dispatcher:
@@ -35,6 +36,83 @@ def test_retry_after_http_date_is_relative_to_supplied_clock():
 
     value = email.utils.formatdate(1_005, usegmt=True)
     assert GatewayService._retry_after_seconds(value, now=1_000, maximum=10) == 5
+
+
+def test_multipart_fields_ignore_uploaded_file_bytes():
+    boundary = "----waliapi"
+    payload = (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper\r\n"
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"voice.wav\"\r\n"
+        "Content-Type: audio/wav\r\n\r\n\x00\x01\x02\r\n"
+        f"--{boundary}--\r\n"
+    ).encode("latin-1")
+    assert multipart_fields(f"multipart/form-data; boundary={boundary}", payload) == {"model": "whisper"}
+
+
+@pytest.mark.asyncio
+async def test_gateway_forwards_multipart_bytes_and_rewrites_model_field():
+    boundary = "----waliapi"
+    payload = (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\npublic\r\n"
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"voice.wav\"\r\n"
+        "Content-Type: audio/wav\r\n\r\n\x00\x01\x02\r\n"
+        f"--{boundary}--\r\n"
+    ).encode("latin-1")
+    channel = ChannelEntity(id="c1", base_url="http://audio", models=["public"], model_mapping={"public": "whisper-1"})
+
+    class SingleDispatcher:
+        def candidates(self, _model, _excluded=None):
+            return [DispatchResult(channel, "whisper-1")]
+
+    captured = {}
+
+    async def handler(request):
+        captured["content_type"] = request.headers["content-type"]
+        captured["body"] = await request.aread()
+        return httpx.Response(200, json={"text": "ok"}, request=request)
+
+    service = GatewayService(SingleDispatcher(), None)
+    await service.aclose()
+    service.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    response = await service.forward(ProxyRequestEntity(
+        "public", {"model": "public"}, endpoint="/v1/audio/transcriptions",
+        raw_body=payload, content_type=f"multipart/form-data; boundary={boundary}",
+    ))
+    await service.aclose()
+    assert response.success
+    assert captured["content_type"].startswith("multipart/form-data")
+    assert b'name="model"' in captured["body"] and b"whisper-1" in captured["body"]
+    assert b"\x00\x01\x02" in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_preserves_safe_binary_response_headers():
+    channel = ChannelEntity(id="c1", base_url="http://audio", models=["speech"])
+
+    class SingleDispatcher:
+        def candidates(self, _model, _excluded=None):
+            return [DispatchResult(channel, "speech")]
+
+    async def handler(request):
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "audio/mpeg",
+                "content-disposition": 'attachment; filename="speech.mp3"',
+                "x-secret-upstream-header": "must-not-forward",
+            },
+            content=b"audio",
+            request=request,
+        )
+
+    service = GatewayService(SingleDispatcher(), None)
+    await service.aclose()
+    service.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    response = await service.forward(ProxyRequestEntity("speech", {"model": "speech"}, endpoint="/v1/audio/speech"))
+    await service.aclose()
+    assert response.raw_body == b"audio"
+    assert response.response_headers["content-disposition"].endswith('filename="speech.mp3"')
+    assert "x-secret-upstream-header" not in response.response_headers
 
 
 @pytest.mark.asyncio

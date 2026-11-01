@@ -52,6 +52,12 @@ def _extract_tokens(response_body: str) -> tuple[int, int, int]:
         return 0, 0, 0
 
 
+def _response_headers(response: httpx.Response) -> dict[str, str]:
+    """Keep only headers safe and useful for a downstream binary response."""
+    allowed = {"content-type", "content-disposition", "cache-control", "content-length", "etag", "last-modified"}
+    return {key: value for key, value in response.headers.items() if key.lower() in allowed}
+
+
 class GatewayService:
     def __init__(self, dispatcher, channel_repository):
         self.dispatcher = dispatcher
@@ -167,11 +173,16 @@ class GatewayService:
             upstream_api_key, key_id = self._select_api_key(channel)
             attempt_request = request if upstream_api_key is None else request.__class__(**{**request.__dict__, "upstream_api_key": upstream_api_key})
             body = adapter_for(channel).prepare_body(channel, attempt_request, upstream_model)
+            raw_body = adapter_for(channel).prepare_raw_body(channel, attempt_request, upstream_model)
+            request_headers = _build_headers(channel, attempt_request)
+            if raw_body is not None:
+                request_headers["Content-Type"] = attempt_request.content_type or "application/octet-stream"
             started = time.monotonic()
             item = GatewayAttempt(attempt_no + 1, channel.id, channel.name)
             retry_after = None
             try:
-                response = await self.client.post(_build_url(channel, attempt_request), json=body, headers=_build_headers(channel, attempt_request))
+                request_kwargs = {"content": raw_body, "headers": request_headers} if raw_body is not None else {"json": body, "headers": request_headers}
+                response = await self.client.post(_build_url(channel, attempt_request), **request_kwargs)
                 item.status_code = response.status_code
                 item.duration_ms = int((time.monotonic() - started) * 1000)
                 item.succeeded = response.is_success
@@ -200,6 +211,7 @@ class GatewayService:
                     prompt_tokens=pt, completion_tokens=ct, total_tokens=tt,
                     duration_ms=item.duration_ms, channel_id=channel.id, channel_name=channel.name,
                     upstream_model=upstream_model,
+                    response_headers=_response_headers(response),
                 )
                 attempts.append(item)
                 if on_attempt:
@@ -251,6 +263,10 @@ class GatewayService:
             upstream_api_key, key_id = self._select_api_key(channel)
             attempt_request = request if upstream_api_key is None else request.__class__(**{**request.__dict__, "upstream_api_key": upstream_api_key})
             body = adapter_for(channel).prepare_body(channel, attempt_request, dispatch_result.upstream_model)
+            raw_body = adapter_for(channel).prepare_raw_body(channel, attempt_request, dispatch_result.upstream_model)
+            request_headers = _build_headers(channel, attempt_request)
+            if raw_body is not None:
+                request_headers["Content-Type"] = attempt_request.content_type or "application/octet-stream"
             body["stream"] = True
             adapter = adapter_for(channel)
             source_protocol = adapter.stream_protocol(channel)
@@ -268,9 +284,9 @@ class GatewayService:
                         logger.warning("Failed to record streaming gateway attempt", exc_info=True)
 
             try:
+                request_kwargs = {"content": raw_body, "headers": request_headers} if raw_body is not None else {"json": body, "headers": request_headers}
                 async with self.client.stream(
-                    "POST", _build_url(channel, attempt_request), json=body,
-                    headers=_build_headers(channel, attempt_request),
+                    "POST", _build_url(channel, attempt_request), **request_kwargs,
                     timeout=httpx.Timeout(config.gateway.stream_timeout_seconds),
                 ) as response:
                     if not response.is_success:

@@ -55,6 +55,14 @@ class ChannelAdapter(ABC):
         body["model"] = upstream_model
         return body
 
+    def prepare_raw_body(self, channel, request, upstream_model: str) -> bytes | None:
+        """Prepare a non-JSON request while preserving uploaded file bytes."""
+        if request.raw_body is None:
+            return None
+        from app.domain.multipart import replace_model
+
+        return replace_model(request.raw_body, request.model, upstream_model)
+
     def normalize_response(self, body: str, model: str) -> str:
         """Return an OpenAI-compatible response body when conversion is needed."""
         return body

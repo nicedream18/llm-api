@@ -165,6 +165,7 @@ class AgentService:
 class RawProxyResponse:
     content: bytes
     media_type: str | None = None
+    headers: dict[str, str] | None = None
 
 
 class ProxyService:
@@ -191,22 +192,30 @@ class ProxyService:
         builtin = self.security_repo.get_all_builtin_rules() if self.security_repo else []
         return self.scanner.scan(body, phase, self.settings, custom, builtin)
 
-    def forward(self, body: str, headers: dict, client_ip: str | None = None, auth_context: AuthContext | None = None, endpoint: str = "/v1/chat/completions", request_id: str | None = None):
+    def forward(self, body: str | bytes, headers: dict, client_ip: str | None = None, auth_context: AuthContext | None = None, endpoint: str = "/v1/chat/completions", request_id: str | None = None, content_type: str | None = None):
         start = time.time()
         request_id = request_id or str(uuid.uuid4()).replace("-", "")
-        protocol = ProtocolDetector.detect_endpoint(headers, body, endpoint)
+        is_multipart = isinstance(body, (bytes, bytearray)) and (content_type or "").lower().startswith("multipart/")
+        raw_body = body if is_multipart and isinstance(body, bytes) else None
+        if is_multipart:
+            from app.domain.multipart import multipart_fields
+
+            fields = multipart_fields(content_type, raw_body or b"")
+            body = json.dumps(fields, ensure_ascii=False)
+        body_text = body if isinstance(body, str) else body.decode("utf-8", "replace")
+        protocol = ProtocolDetector.detect_endpoint(headers, body_text, endpoint)
         try:
-            body_json = json.loads(body)
+            body_json = json.loads(body_text)
         except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
             return 400, {"error": {"message": "Invalid JSON body", "type": "invalid_request_error", "code": "invalid_json"}}
         if protocol == "responses":
             from app.domain.responses_converter import ResponsesConverter
-            converted = ResponsesConverter.responses_to_openai(body)
-            body_json, body = json.loads(converted), converted
+            converted = ResponsesConverter.responses_to_openai(body_text)
+            body_json, body_text = json.loads(converted), converted
         elif protocol == "completions":
             from app.domain.completion_converter import CompletionConverter
-            converted = CompletionConverter.completions_to_chat(body)
-            body_json, body = json.loads(converted), converted
+            converted = CompletionConverter.completions_to_chat(body_text)
+            body_json, body_text = json.loads(converted), converted
         model = body_json.get("model")
         if not model:
             return 400, {"error": {"message": "Missing 'model' field", "type": "invalid_request_error", "code": "missing_model"}}
@@ -220,25 +229,25 @@ class ProxyService:
         scan_result = None
         if self.settings.enabled:
             try:
-                scan_result = self._scan(body, "request")
+                scan_result = self._scan(body_text, "request")
             except Exception:
                 if self.settings.fail_closed:
                     return 503, {"error": {"message": "Security scan unavailable", "type": "security_error", "code": "security_scan_failed"}}
                 logger.exception("Request security scan failed")
             if scan_result and scan_result.blocked:
                 log_id = str(uuid.uuid4()).replace("-", "")
-                self._record_log(self._build_log(log_id, None, model, protocol, bool(body_json.get("stream")), 403, scan_result, client_ip, body, None, "Request blocked by security policy", request_id=request_id, endpoint=endpoint))
+                self._record_log(self._build_log(log_id, None, model, protocol, bool(body_json.get("stream")), 403, scan_result, client_ip, body_text, None, "Request blocked by security policy", request_id=request_id, endpoint=endpoint))
                 return 403, {"error": {"message": "Request blocked by security policy", "type": "security_error", "code": "security_blocked"}}
             if scan_result and scan_result.sanitized and getattr(scan_result, "sanitized_body", None):
-                body = scan_result.sanitized_body
-                body_json = json.loads(body)
+                body_text = scan_result.sanitized_body
+                body_json = json.loads(body_text)
         reservation_id = None
         if context and context.is_api_key and self.quota_repo:
             reservation_id = self.quota_repo.reserve(context.principal_id, request_id, self._estimate_tokens(body_json))
             if not reservation_id:
                 return 429, {"error": {"message": "API key quota exceeded", "type": "quota_error", "code": "quota_exceeded"}}
         upstream_endpoint = "/v1/chat/completions" if protocol in {"responses", "anthropic", "completions"} else endpoint
-        proxy_request = ProxyRequestEntity(model=model, body=body_json, stream=bool(body_json.get("stream")), api_key=None, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset(), endpoint=upstream_endpoint)
+        proxy_request = ProxyRequestEntity(model=model, body=body_json, stream=bool(body_json.get("stream")), api_key=None, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset(), endpoint=upstream_endpoint, raw_body=raw_body, content_type=content_type)
         attempts = []
         try:
             if hasattr(self.gateway, "forward_with_attempts"):
@@ -288,7 +297,7 @@ class ProxyService:
                     proxy_response.status_code = 502
                     proxy_response.error_message = "Response security scan failed"
         log_id = str(uuid.uuid4()).replace("-", "")
-        self._record_log(self._build_log(log_id, context.principal_id if context and context.is_api_key else None, model, protocol, proxy_request.stream, proxy_response.status_code or 502, scan_result, client_ip, body, proxy_response.body if proxy_response.success else None, proxy_response.error_message if not proxy_response.success else None, channel_id=proxy_response.channel_id, channel_name=proxy_response.channel_name, upstream_model=proxy_response.upstream_model, prompt_tokens=proxy_response.prompt_tokens, completion_tokens=proxy_response.completion_tokens, total_tokens=proxy_response.total_tokens, duration_ms=int((time.time()-start)*1000), request_id=request_id, endpoint=endpoint, attempt_count=len(attempts), final_attempt=len(attempts), api_key_name=context.principal_name if context and context.is_api_key else None))
+        self._record_log(self._build_log(log_id, context.principal_id if context and context.is_api_key else None, model, protocol, proxy_request.stream, proxy_response.status_code or 502, scan_result, client_ip, body_text, proxy_response.body if proxy_response.success else None, proxy_response.error_message if not proxy_response.success else None, channel_id=proxy_response.channel_id, channel_name=proxy_response.channel_name, upstream_model=proxy_response.upstream_model, prompt_tokens=proxy_response.prompt_tokens, completion_tokens=proxy_response.completion_tokens, total_tokens=proxy_response.total_tokens, duration_ms=int((time.time()-start)*1000), request_id=request_id, endpoint=endpoint, attempt_count=len(attempts), final_attempt=len(attempts), api_key_name=context.principal_name if context and context.is_api_key else None))
         if proxy_response.success:
             if proxy_response.raw_body is not None and (
                 endpoint.endswith(("/audio/speech", "/images/generations"))
@@ -297,6 +306,7 @@ class ProxyService:
                 return proxy_response.status_code, RawProxyResponse(
                     content=proxy_response.raw_body,
                     media_type=proxy_response.content_type,
+                    headers=proxy_response.response_headers,
                 )
             result = json.loads(proxy_response.body) if proxy_response.body else {}
             if protocol == "anthropic":
@@ -359,7 +369,7 @@ class ProxyService:
             if not reservation_id:
                 yield 'data: {"error":{"message":"API key quota exceeded","type":"quota_error","code":"quota_exceeded"}}\n\n'; return
         chunks=[]; status="completed"; total_tokens=0; done_seen = False; attempt_records = []
-        stream = None; event_name = None; data_lines = []
+        stream = None; event_name = None; data_lines: list[str] = []
         started = time.time()
         async def flush_event():
             nonlocal event_name, data_lines, done_seen, total_tokens

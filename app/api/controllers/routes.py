@@ -44,7 +44,7 @@ async def chat_completions(request: Request):
     body_str = body.decode("utf-8")
     headers = {k.lower(): v for k, v in request.headers.items()}
     accept = request.headers.get("accept", "")
-    is_stream = ("text/event-stream" in accept) or ('"stream"' in body_str and "true" in body_str)
+    is_stream = ("text/event-stream" in accept) or ('"stream"' in body_str and "true" in body_str.lower())
     if is_stream:
         return StreamingResponse(
             container.proxy_service.forward_stream_async(body_str, headers, client_ip=request.client.host if request.client else None, auth_context=getattr(request.state, "auth_context", None), endpoint=str(request.url.path), request_id=getattr(request.state, "request_id", None)),
@@ -53,7 +53,9 @@ async def chat_completions(request: Request):
         )
     status, result = await asyncio.to_thread(container.proxy_service.forward, body_str, headers, client_ip=request.client.host if request.client else None, auth_context=getattr(request.state, "auth_context", None), endpoint=str(request.url.path), request_id=getattr(request.state, "request_id", None))
     if isinstance(result, RawProxyResponse):
-        response_headers = {"Content-Type": result.media_type} if result.media_type else {}
+        response_headers = dict(result.headers or {})
+        if result.media_type:
+            response_headers.setdefault("Content-Type", result.media_type)
         return Response(content=result.content, status_code=status, headers=response_headers)
     return JSONResponse(status_code=status, content=result)
 
@@ -67,11 +69,22 @@ async def chat_completions(request: Request):
 @gateway_router.post("/v1/audio/speech")
 async def proxy_generic(request: Request):
     container = get_container()
-    body_str = (await request.body()).decode("utf-8")
+    raw_body = await request.body()
+    content_type = request.headers.get("content-type", "")
     headers = {k.lower(): v for k, v in request.headers.items()}
-    status, result = await asyncio.to_thread(container.proxy_service.forward, body_str, headers, client_ip=request.client.host if request.client else None, auth_context=getattr(request.state, "auth_context", None), endpoint=str(request.url.path), request_id=getattr(request.state, "request_id", None))
+    body = raw_body if content_type.lower().startswith("multipart/") else raw_body.decode("utf-8")
+    is_stream = "text/event-stream" in request.headers.get("accept", "") or b'"stream"' in raw_body.lower() and b"true" in raw_body.lower()
+    if is_stream:
+        return StreamingResponse(
+            container.proxy_service.forward_stream_async(body, headers, client_ip=request.client.host if request.client else None, auth_context=getattr(request.state, "auth_context", None), endpoint=str(request.url.path), request_id=getattr(request.state, "request_id", None)),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+    status, result = await asyncio.to_thread(container.proxy_service.forward, body, headers, client_ip=request.client.host if request.client else None, auth_context=getattr(request.state, "auth_context", None), endpoint=str(request.url.path), request_id=getattr(request.state, "request_id", None), content_type=content_type)
     if isinstance(result, RawProxyResponse):
-        response_headers = {"Content-Type": result.media_type} if result.media_type else {}
+        response_headers = dict(result.headers or {})
+        if result.media_type:
+            response_headers.setdefault("Content-Type", result.media_type)
         return Response(content=result.content, status_code=status, headers=response_headers)
     return JSONResponse(status_code=status, content=result)
 
@@ -80,7 +93,7 @@ async def proxy_generic(request: Request):
 async def models(request: Request):
     context = getattr(request.state, "auth_context", None)
     channels = get_container().channel_repo.get_enabled_channels()
-    names = set()
+    names: set[str] = set()
     for channel in channels:
         if context and context.is_api_key and context.allowed_channels and channel.id not in context.allowed_channels and channel.name not in context.allowed_channels:
             continue
@@ -293,7 +306,7 @@ async def create_kb(dto: CreateKbDTO):
 async def list_kbs(request: Request):
     rows = await asyncio.to_thread(get_container().kb_service.list_kbs)
     context = getattr(request.state, "auth_context", None)
-    if not context.is_admin:
+    if not context or not context.is_admin:
         allowed = await asyncio.to_thread(get_container().access_service.allowed_resources, context, "kb")
         rows = [row for row in rows if "*" in allowed or row.id in allowed]
     return _success(rows)
