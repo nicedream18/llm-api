@@ -242,11 +242,12 @@ def test_token_header_and_api_key_opt_in(setup_mcp, monkeypatch):
 
 def test_persistent_mcp_replay_gap_and_cross_worker_delete(setup_mcp, monkeypatch, tmp_path):
     from pathlib import Path
+
     from sqlalchemy import create_engine
 
+    import app.api.controllers.mcp_routes as mcp_module
     from app.infrastructure.database.migrations import execute_migration
     from app.infrastructure.repositories.mcp_session_repo import McpSessionRepository
-    import app.api.controllers.mcp_routes as mcp_module
 
     client, _, _ = setup_mcp
     engine = create_engine(f"sqlite:///{tmp_path / 'mcp.db'}")
