@@ -21,18 +21,33 @@ class AgentChatService:
         self.gateway_service = gateway_service
         self._sessions = defaultdict(list)
 
+    def _agent_config(self, agent_id):
+        config = self.agent_repository.get_agent_by_agent_id(agent_id)
+        if not config or not config.config_json:
+            return {}
+        try:
+            value = json.loads(config.config_json)
+        except (TypeError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _initial_messages(self, agent_id):
+        instruction = self._agent_config(agent_id).get("instruction")
+        if instruction:
+            return [{"role": "system", "content": instruction}]
+        return []
+
+    def _get_or_create_session(self, agent_id, session_id):
+        if session_id not in self._sessions:
+            self._sessions[session_id] = self._initial_messages(agent_id)
+        return self._sessions[session_id]
+
+    def _get_model(self, agent_id):
+        return self._agent_config(agent_id).get("model") or DEFAULT_CHAT_MODEL
+
     def create_session(self, agent_id, user_id):
         session_id = str(uuid.uuid4())
-        self._sessions[session_id] = []
-        config = self.agent_repository.get_agent_by_agent_id(agent_id)
-        if config and config.config_json:
-            try:
-                cfg = json.loads(config.config_json)
-                instruction = cfg.get("instruction")
-                if instruction:
-                    self._sessions[session_id].append({"role": "system", "content": instruction})
-            except Exception:  # noqa: BLE001, S110 - malformed optional agent config is non-fatal
-                pass
+        self._sessions[session_id] = self._initial_messages(agent_id)
         logger.info(f"Created session {session_id} for agent {agent_id}")
         return session_id
 
@@ -51,22 +66,10 @@ class AgentChatService:
         return None
 
     def handle_message(self, agent_id, session_id, user_id, message):
-        if session_id not in self._sessions:
-            self.create_session(agent_id, user_id)
-        messages = self._sessions[session_id]
+        messages = self._get_or_create_session(agent_id, session_id)
         messages.append({"role": "user", "content": message})
 
-        config = self.agent_repository.get_agent_by_agent_id(agent_id)
-        model = DEFAULT_CHAT_MODEL
-        if config and config.config_json:
-            try:
-                cfg = json.loads(config.config_json)
-                cfg_model = cfg.get("model")
-                if cfg_model:
-                    model = cfg_model
-            except Exception:  # noqa: BLE001, S110 - malformed optional agent config is non-fatal
-                pass
-
+        model = self._get_model(agent_id)
         body = {"model": model, "messages": messages, "stream": False}
         request = ProxyRequestEntity(model=model, body=body, stream=False, protocol_type="openai")
         response = self.gateway_service.forward_sync(request)
@@ -86,22 +89,10 @@ class AgentChatService:
 
     def handle_message_stream(self, agent_id, session_id, user_id, message, on_chunk, on_error, on_complete):
         try:
-            if session_id not in self._sessions:
-                self.create_session(agent_id, user_id)
-            messages = self._sessions[session_id]
+            messages = self._get_or_create_session(agent_id, session_id)
             messages.append({"role": "user", "content": message})
 
-            config = self.agent_repository.get_agent_by_agent_id(agent_id)
-            model = DEFAULT_CHAT_MODEL
-            if config and config.config_json:
-                try:
-                    cfg = json.loads(config.config_json)
-                    cfg_model = cfg.get("model")
-                    if cfg_model:
-                        model = cfg_model
-                except Exception:  # noqa: BLE001, S110 - malformed optional agent config is non-fatal
-                    pass
-
+            model = self._get_model(agent_id)
             body = {"model": model, "messages": messages, "stream": True}
             request = ProxyRequestEntity(model=model, body=body, stream=True, protocol_type="openai")
 
