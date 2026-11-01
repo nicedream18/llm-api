@@ -183,3 +183,12 @@ _OPENAI_COMPATIBLE = OpenAICompatibleAdapter()
 def adapter_for(channel) -> ChannelAdapter:
     """Return the adapter for a channel type, defaulting to OpenAI-compatible."""
     return _ADAPTERS.get(str(channel.type or "openai").lower(), _OPENAI_COMPATIBLE)
+
+
+def models_url(channel) -> str:
+    """Build a provider model-list URL using the channel's API base convention."""
+    configured_path = (channel.config or {}).get("models_path")
+    if configured_path:
+        return _join(channel.base_url, str(configured_path))
+    base = (channel.base_url or "").rstrip("/")
+    return _join(base, "/models" if base.endswith("/v1") else "/v1/models")

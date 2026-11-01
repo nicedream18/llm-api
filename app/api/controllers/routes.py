@@ -160,6 +160,27 @@ async def test_channel(channel_id: str):
     return _success(await asyncio.to_thread(get_container().channel_service.test_channel, channel_id))
 
 
+@channel_router.post("/{channel_id}/clone")
+async def clone_channel(channel_id: str):
+    result = await asyncio.to_thread(get_container().channel_service.clone_channel, channel_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    return _success(result)
+
+
+@channel_router.post("/test-draft")
+async def test_draft_channel(dto: ChannelDTO):
+    return _success(await asyncio.to_thread(get_container().channel_service.test_draft_channel, dto))
+
+
+@channel_router.post("/{channel_id}/sync-models")
+async def sync_channel_models(channel_id: str):
+    result = await asyncio.to_thread(get_container().channel_service.sync_models, channel_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    return _success(result)
+
+
 # ==================== ApiKey Controller ====================
 
 apikey_router = APIRouter(prefix="/api/v1/api-keys")

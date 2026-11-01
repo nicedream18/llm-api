@@ -30,6 +30,10 @@ class FakeRepository:
         self.updated_api_key = entity
         return True
 
+    def create_channel(self, entity):
+        self.channel = entity
+        return entity
+
 
 def test_channel_credentials_are_masked_and_masked_update_preserves_secret():
     repo = FakeRepository()
@@ -55,3 +59,12 @@ def test_api_key_is_exposed_only_on_creation_and_masked_update_preserves_secret(
 
     service.update_api_key(ApiKeyDTO(id="key-1", key=listed.key))
     assert repo.updated_api_key.key == repo.api_key.key
+
+
+def test_clone_channel_copies_configuration_without_reusing_id():
+    repo = FakeRepository()
+    service = ChannelService(repo, None)
+    clone = service.clone_channel("channel-1")
+    assert clone.name == "provider (copy)"
+    assert clone.id != "channel-1"
+    assert clone.api_key.startswith("prov")

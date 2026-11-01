@@ -13,7 +13,7 @@ import httpx
 
 from app.config import config
 from app.domain.entities import ProxyRequestEntity, ProxyResponseEntity
-from app.infrastructure.adapters.channel_adapters import adapter_for
+from app.infrastructure.adapters.channel_adapters import adapter_for, models_url
 
 logger = logging.getLogger(__name__)
 
@@ -227,3 +227,22 @@ class GatewayService:
                 return False
 
         return asyncio.run(send_test())
+
+    def sync_models(self, channel) -> list[str]:
+        """Fetch and validate a channel's advertised model IDs."""
+        async def fetch() -> list[str]:
+            response = await self.client.get(models_url(channel), headers=_build_headers(channel, ProxyRequestEntity(model="", body={})))
+            if not response.is_success:
+                raise RuntimeError(f"model discovery returned HTTP {response.status_code}")
+            payload = response.json()
+            rows = payload.get("data", payload) if isinstance(payload, dict) else payload
+            if not isinstance(rows, list):
+                raise TypeError("model discovery response is not a list")
+            models: list[str] = []
+            for row in rows:
+                model = row.get("id") if isinstance(row, dict) else row
+                if isinstance(model, str) and model.strip() and model.strip() not in models:
+                    models.append(model.strip())
+            return models
+
+        return asyncio.run(fetch())

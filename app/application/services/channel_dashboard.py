@@ -69,6 +69,33 @@ class ChannelService:
         return TestChannelResultDTO(channel_id=channel_id, success=success,
                                     message="OK" if success else "Test failed", duration_ms=0)
 
+    def clone_channel(self, channel_id):
+        source = self.repo.get_channel(channel_id)
+        if not source:
+            return None
+        clone = ChannelEntity(
+            name=f"{source.name} (copy)", type=source.type, base_url=source.base_url,
+            api_key=source.api_key, models=list(source.models or []), status=source.status,
+            priority=source.priority, weight=source.weight,
+            config=dict(source.config or {}), model_mapping=dict(source.model_mapping or {}),
+        )
+        return self._to_dto(self.repo.create_channel(clone))
+
+    def test_draft_channel(self, dto: ChannelDTO):
+        entity = self._to_entity(dto)
+        success = self.gateway.test_channel(entity)
+        return TestChannelResultDTO(channel_id="draft", success=success,
+                                    message="OK" if success else "Test failed", duration_ms=0)
+
+    def sync_models(self, channel_id):
+        entity = self.repo.get_channel(channel_id)
+        if not entity:
+            return None
+        models = self.gateway.sync_models(entity)
+        entity.models = models
+        self.repo.update_channel(entity)
+        return self._to_dto(entity)
+
     def list_api_keys(self):
         return [self._to_apikey_dto(e) for e in self.repo.get_all_api_keys()]
 
