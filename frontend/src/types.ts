@@ -1,6 +1,6 @@
 export type Dashboard = { total_requests: number; total_tokens: number; total_errors: number; avg_duration_ms: number; active_channels: number; active_api_keys: number; health_score: number; health_badge: string };
 export type Channel = { id: string; name: string; type: string; status: number; models: string[]; api_keys?: unknown[] };
-export type Provider = { id: string; provider: string; name: string; status: string; priority: number; client_config?: Record<string, unknown>; model_mapping?: Record<string, string>; models: string[]; quota?: Record<string, unknown> | null };
+export type Provider = { id: string; provider: string; name: string; status: string; priority: number; client_config?: Record<string, unknown>; model_mapping?: Record<string, string>; models: string[]; quota?: Record<string, unknown> | null; failure_count?: number; cooldown_until?: string | null };
 export type SoftwareTool = { id: string; name: string; description: string; risk_level: string; enabled: number };
 export type SoftwareInstance = { id: string; name: string; connector_type: string; config?: Record<string, unknown>; enabled: number };
 export type SoftwareCall = { id: string; tool_id: string; principal_id?: string | null; status: string; error_type?: string | null; duration_ms: number; request_summary?: string | null; response_summary?: string | null; created_at: string };

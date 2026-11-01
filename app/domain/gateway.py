@@ -110,6 +110,16 @@ class GatewayService:
         keys = [key for key in getattr(channel, "api_keys", []) if getattr(key, "status", 1) and getattr(key, "api_key", None)]
         return not keys or any(self._key_cooldown_until.get(str(key.id or key.api_key), 0.0) <= time.monotonic() for key in keys)
 
+    def _provider_outcome(self, channel, success: bool) -> None:
+        account_id = (getattr(channel, "config", None) or {}).get("provider_account_id")
+        provider = getattr(self.dispatcher, "provider_source", None)
+        if not account_id or provider is None:
+            return
+        try:
+            (provider.record_success if success else provider.record_failure)(account_id)
+        except Exception:
+            logger.warning("Failed to update provider account health", exc_info=True)
+
     def _cooldown_key(self, key_id: str | None, retry_after: str | None = None) -> None:
         if not key_id:
             return
@@ -190,6 +200,7 @@ class GatewayService:
                 retry_after = response.headers.get("retry-after")
                 if response.is_success:
                     self._cooldown_until.pop(self._channel_key(channel), None)
+                self._provider_outcome(channel, response.is_success)
                 if not response.is_success:
                     item.error_type = "upstream_http"
                     item.error_message = f"upstream returned HTTP {response.status_code}"
@@ -322,6 +333,7 @@ class GatewayService:
                             yield output_line
                         yield ""
                     attempt.succeeded = True
+                    self._provider_outcome(channel, True)
                     self._cooldown_until.pop(self._channel_key(channel), None)
                     if key_id:
                         self._key_cooldown_until.pop(key_id, None)

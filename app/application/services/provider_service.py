@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import secrets
+from datetime import UTC, datetime, timedelta
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -129,6 +130,35 @@ class ProviderService:
     def models(self, account_id):
         return self._provider_data(account_id, "models")
 
+    def record_failure(self, account_id):
+        account = self.repo.get_account(account_id)
+        if not account or not hasattr(self.repo, "record_failure"):
+            return None
+        count = int(account.get("failure_count") or 0) + 1
+        duration = min(300, 2 ** min(count, 8))
+        return self.repo.record_failure(account_id, (datetime.now(UTC) + timedelta(seconds=duration)).isoformat())
+
+    def record_success(self, account_id):
+        if hasattr(self.repo, "clear_failures"):
+            return self.repo.clear_failures(account_id)
+        return None
+
+    @staticmethod
+    def _expired(expires_at):
+        if not expires_at:
+            return False
+        try:
+            value = float(expires_at)
+            return value <= datetime.now(UTC).timestamp() + 30
+        except (TypeError, ValueError):
+            try:
+                parsed = datetime.fromisoformat(str(expires_at))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=UTC)
+                return parsed <= datetime.now(UTC) + timedelta(seconds=30)
+            except ValueError:
+                return False
+
     def routing_channels(self, model: str):
         """Expose explicitly configured OAuth accounts as gateway candidates.
 
@@ -143,6 +173,18 @@ class ProviderService:
             account = self.repo.get_account(row.get("id")) or row
             token_row = self.repo.get_token(row.get("id"))
             if not token_row:
+                continue
+            if self._expired(token_row.get("expires_at")):
+                if not token_row.get("refresh_token"):
+                    continue
+                try:
+                    self.refresh(row["id"])
+                    token_row = self.repo.get_token(row["id"])
+                except ApplicationError:
+                    self.record_failure(row["id"])
+                    continue
+            cooldown_until = account.get("cooldown_until")
+            if cooldown_until and not self._expired(cooldown_until):
                 continue
             try:
                 client_config = account.get("client_config") or {}

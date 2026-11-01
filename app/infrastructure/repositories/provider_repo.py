@@ -21,7 +21,13 @@ class ProviderRepository:
 
     def list_accounts(self):
         with self.engine.connect() as db:
-            return [dict(row) for row in db.execute(text("SELECT id,provider,name,status,client_config,model_mapping,priority,created_at,updated_at FROM provider_accounts ORDER BY priority DESC, created_at")).mappings()]
+            rows = []
+            for row in db.execute(text("SELECT * FROM provider_accounts ORDER BY priority DESC, created_at")).mappings():
+                item = dict(row)
+                item.setdefault("failure_count", 0)
+                item.setdefault("cooldown_until", None)
+                rows.append(item)
+            return rows
 
     def get_account(self, account_id):
         with self.engine.connect() as db:
@@ -70,3 +76,17 @@ class ProviderRepository:
         with self.engine.begin() as db:
             db.execute(text("DELETE FROM provider_tokens WHERE account_id=:id"), {"id": account_id})
             db.execute(text("UPDATE provider_accounts SET status='signed_out', updated_at=:updated_at WHERE id=:id"), {"id": account_id, "updated_at": _now()})
+
+    def record_failure(self, account_id, cooldown_until):
+        with self.engine.begin() as db:
+            db.execute(text("""UPDATE provider_accounts
+                SET failure_count=COALESCE(failure_count, 0) + 1,
+                    cooldown_until=:cooldown_until, updated_at=:updated_at
+                WHERE id=:id"""), {"id": account_id, "cooldown_until": cooldown_until, "updated_at": _now()})
+        return self.get_account(account_id)
+
+    def clear_failures(self, account_id):
+        with self.engine.begin() as db:
+            db.execute(text("""UPDATE provider_accounts SET failure_count=0,
+                cooldown_until=NULL, updated_at=:updated_at WHERE id=:id"""), {"id": account_id, "updated_at": _now()})
+        return self.get_account(account_id)

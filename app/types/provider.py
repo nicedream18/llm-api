@@ -32,3 +32,5 @@ class ProviderAccountView(BaseModel):
     model_mapping: dict[str, str] = Field(default_factory=dict)
     quota: dict | None = None
     models: list[str] = Field(default_factory=list)
+    failure_count: int = 0
+    cooldown_until: str | None = None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
 import httpx
@@ -124,10 +125,16 @@ class ConfiguredProviderAdapter(ProviderAdapter):
             raise TypeError("Provider token response must be an object")
         if not isinstance(result.get("access_token"), str):
             raise TypeError("Provider token response is missing access_token")
+        expires_at = result.get("expires_at")
+        if expires_at is None and result.get("expires_in") is not None:
+            try:
+                expires_at = (datetime.now(UTC) + timedelta(seconds=max(0, int(result["expires_in"])))).isoformat()
+            except (TypeError, ValueError, OverflowError):
+                expires_at = None
         return {
             "access_token": result["access_token"],
             "refresh_token": result.get("refresh_token"),
-            "expires_at": result.get("expires_at") or result.get("expires_in"),
+            "expires_at": expires_at,
         }
 
     @classmethod

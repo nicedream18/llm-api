@@ -193,3 +193,25 @@ def test_provider_routing_skips_accounts_without_gateway_or_with_invalid_token()
     repo.tokens[no_gateway["id"]]["access_token"] = "tampered"
     assert service.routing_channels("any") == []
 
+
+def test_provider_failure_cooldown_is_persisted_and_cleared(tmp_path):
+    from pathlib import Path
+
+    from sqlalchemy import create_engine
+
+    from app.infrastructure.database.migrations import execute_migration
+    from app.infrastructure.repositories.provider_repo import ProviderRepository
+
+    engine = create_engine("sqlite://")
+    with engine.begin() as db:
+        execute_migration(db, Path("docs/migrations/014_provider_accounts.sql"))
+        execute_migration(db, Path("docs/migrations/017_provider_resilience.sql"))
+    repo = ProviderRepository(engine)
+    service = ProviderService(repo)
+    account = service.create_account(ProviderAccountInput(provider="codex", name="Routeable", client_config={"gateway_url": "https://gateway.example"}))
+    failed = service.record_failure(account["id"])
+    assert failed["failure_count"] == 1 and failed["cooldown_until"]
+    assert repo.list_accounts()[0]["failure_count"] == 1
+    cleared = service.record_success(account["id"])
+    assert cleared["failure_count"] == 0 and cleared["cooldown_until"] is None
+
