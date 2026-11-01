@@ -77,3 +77,47 @@ def test_tool_input_schema_rejects_missing_unknown_and_wrong_type_arguments():
         service.invoke("tool", {"query": "ok", "extra": True})
     with pytest.raises(ApplicationError, match="invalid type"):
         service.invoke("tool", {"query": 3})
+
+
+def test_mcp_connector_initializes_and_calls_tool_with_session(monkeypatch):
+    class Response:
+        def __init__(self, payload, session_id=None):
+            self.status_code = 200
+            self.headers = {"content-type": "application/json"}
+            if session_id:
+                self.headers["mcp-session-id"] = session_id
+            self.content = b"{}"
+            self.text = ""
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        method = kwargs["json"]["method"]
+        if method == "initialize":
+            return Response({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18"}}, "session-1")
+        return Response({"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": "done"}]}})
+
+    monkeypatch.setattr("app.application.services.software_service.ImportGuard.remote_url", lambda url: url)
+    monkeypatch.setattr("app.application.services.software_service.httpx.post", fake_post)
+
+    class Repo:
+        def get_tool(self, _id):
+            return {"id": "tool", "name": "search", "instance_id": "instance", "enabled": 1, "approval_mode": "none", "config": '{"url":"https://mcp.example.test","tool_name":"search"}', "input_schema": '{"type":"object"}'}
+
+        def get_instance(self, _id):
+            return {"id": "instance", "enabled": 1, "connector_type": "mcp", "config": "{}"}
+
+        def record_call(self, values):
+            self.call = values
+
+    result = SoftwareService(Repo()).invoke("tool", {"query": "hello"})
+
+    assert result == {"content": [{"type": "text", "text": "done"}]}
+    assert calls[0][1]["json"]["method"] == "initialize"
+    assert calls[1][1]["json"]["method"] == "tools/call"
+    assert calls[1][1]["headers"]["Mcp-Session-Id"] == "session-1"

@@ -163,6 +163,78 @@ class SoftwareService:
                 return response.json()
             except ValueError:
                 return {"text": response.text[:16_384]}
-        if connector in {"mcp", "wechat", "clihub"}:
+        if connector == "mcp":
+            return self._invoke_mcp(config, tool["name"], arguments)
+        if connector in {"wechat", "clihub"}:
             raise ApplicationError("Connector is registered but not configured", 501, "connector_not_implemented")
         raise ApplicationError("Unsupported software connector", 422, "invalid_tool_config")
+
+    @staticmethod
+    def _invoke_mcp(config, tool_name, arguments):
+        url = str(config.get("url") or "")
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ApplicationError("MCP connector URL is invalid", 422, "invalid_tool_config")
+        ImportGuard.remote_url(url)
+        configured_headers = config.get("headers") or {}
+        if not isinstance(configured_headers, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in configured_headers.items()):
+            raise ApplicationError("MCP connector headers are invalid", 422, "invalid_tool_config")
+        try:
+            timeout = min(max(float(config.get("timeout_seconds", 30)), 1.0), 120.0)
+        except (TypeError, ValueError):
+            timeout = 30.0
+        headers = {**configured_headers, "Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+
+        def call(payload, session_id=None):
+            request_headers = dict(headers)
+            if session_id:
+                request_headers["Mcp-Session-Id"] = session_id
+            response = httpx.post(url, json=payload, headers=request_headers, timeout=timeout, follow_redirects=False)
+            if response.status_code < 200 or response.status_code >= 300:
+                raise ApplicationError("MCP server returned an error", 502, "tool_execution_failed")
+            if len(response.content) > 1_048_576:
+                raise ApplicationError("MCP server response exceeds the size limit", 502, "response_too_large")
+            return response, SoftwareService._decode_mcp_response(response)
+
+        initialize = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": str(config.get("protocol_version") or "2025-06-18"),
+                "capabilities": {},
+                "clientInfo": {"name": "waliapi-software", "version": "1.0"},
+            },
+        }
+        initialize_response, initialize_payload = call(initialize)
+        if not isinstance(initialize_payload, dict) or initialize_payload.get("error"):
+            raise ApplicationError("MCP server initialization failed", 502, "tool_execution_failed")
+        session_id = initialize_response.headers.get("mcp-session-id")
+        call_payload = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": str(config.get("tool_name") or tool_name), "arguments": arguments},
+        }
+        _, result = call(call_payload, session_id)
+        if not isinstance(result, dict):
+            raise ApplicationError("MCP server returned an invalid response", 502, "tool_execution_failed")
+        if result.get("error"):
+            raise ApplicationError("MCP tool returned an error", 502, "tool_execution_failed")
+        return result.get("result", result)
+
+    @staticmethod
+    def _decode_mcp_response(response):
+        content_type = response.headers.get("content-type", "").lower()
+        if "json" in content_type:
+            try:
+                return response.json()
+            except ValueError as exc:
+                raise ApplicationError("MCP server returned invalid JSON", 502, "tool_execution_failed") from exc
+        for line in reversed(response.text.splitlines()):
+            if line.startswith("data:"):
+                try:
+                    return json.loads(line[5:].strip())
+                except json.JSONDecodeError:
+                    continue
+        raise ApplicationError("MCP server returned an invalid response", 502, "tool_execution_failed")
