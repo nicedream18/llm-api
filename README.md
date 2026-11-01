@@ -585,6 +585,28 @@ LOG_LEVEL=info              # 日志级别
 
 ## Docker 部署
 
+### 生产就绪说明
+
+当前分支的生产就绪工作按 `docs/part2-progress.md` 的 N0–N11 节点记录。自动化门禁在 Windows 本地已验证：513 个后端测试通过、13 个环境测试跳过、覆盖率 88.34%，前端 33 个 Vitest 测试、类型检查和构建通过。
+
+代码状态与外部验收分开记录。MySQL 8.4、真实 Provider OAuth/协议、带凭据的 Wiki 浏览器流程、Docker 构建和 OTLP 收集器需要对应环境，缺少环境时不会被标记为通过。
+
+### 安全部署要求
+
+- 生产必须设置 `DB_PASSWORD`、至少 32 字符的 `ADMIN_SESSION_SECRET`、`ADMIN_TOKEN`、`ADMIN_PASSWORD_HASH`（或只用于首次引导的 `ADMIN_PASSWORD`）和 `PROVIDER_TOKEN_KEY`。
+- 管理员登录使用持久化会话；升级到 026 后旧的无状态 Cookie 不再有效。改密、停用账号或注销会使旧会话失效。
+- 先执行 `python -m app.infrastructure.database.migrations validate`，再执行 `upgrade`。校验和冲突会中止升级；迁移前应备份数据库。
+- 本地客户端配置使用 `python scripts/waliapi_local.py config preview` → 人工检查脱敏 diff → `config apply --expected-sha256`；服务管理只作用于本工具写入并验证身份的 loopback 进程。
+
+### 验收命令
+
+```bash
+python scripts/quality_gate.py
+python scripts/platform_benchmark.py --sections 5000 --repeats 10 --p95-budget-ms 2000
+```
+
+没有 Docker、MySQL、真实 Provider 凭据或 Playwright 浏览器时，相关验收保留为跳过状态。当前不提供商业计费、SaaS 租户、原生桌面壳、第三方自动安装或未经声明的厂商专属 OAuth 保证。
+
 ### 基础设施
 
 ```bash
@@ -605,21 +627,16 @@ docker run -d \
   -p 9900:9900 \
   -e DB_HOST=192.168.1.108 \
   -e DB_PORT=13306 \
-  -e DB_PASSWORD=123456 \
+  -e DB_PASSWORD=<deployment-secret> \
+  -e ADMIN_SESSION_SECRET=<32+-char-secret> \
+  -e ADMIN_TOKEN=<long-random-token> \
+  -e PROVIDER_TOKEN_KEY=<encryption-key> \
   waliapi-python:1.0.0
 ```
 
 ### Dockerfile
 
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-EXPOSE 9900
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9900"]
-```
+The root `Dockerfile` uses a Node 24 frontend build stage and a Python 3.12 runtime stage. Build it with Docker on a deployment host; Docker is not installed in the current local environment.
 
 ---
 

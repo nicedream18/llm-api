@@ -80,3 +80,5 @@ git diff --check
 本轮最终门禁结果：361 passed / 5 skipped，覆盖率 85.63%；Ruff、Mypy、compileall、Node 4 项、Vitest 11 项、TypeScript 和 Vite build 全部通过。
 
 没有把外部环境缺失伪报为通过；外部验收完成后应在此文档补充实际环境、命令和结果。
+
+第二阶段的增量状态、节点提交和当前环境限制见 [`docs/part2-progress.md`](part2-progress.md)。

@@ -28,3 +28,7 @@
 3. Browser：移动端登录和权限、页面编辑、来源摄入、附件、图谱、问答引用、Markdown 安全预览、长页面滚动、备份恢复一致性。
 
 这些项目是环境验收项，代码没有将它们标记为已通过。
+
+## 第二阶段交叉更新（2026-11-02）
+
+后续生产就绪节点已在 `docs/part2-progress.md` 维护。当前增量包括 React 管理流程、持久化管理员会话与审计、Provider 密钥轮换、本机配置 CLI、受管 loopback 服务、MCP stdio bridge、Docker 多阶段构建和可选浏览器/长文档基准。最新自动化门禁为 513 passed / 13 skipped、88.34% 覆盖率；MySQL、真实 Provider、浏览器、Docker 和 OTLP 收集器仍按环境矩阵单列。

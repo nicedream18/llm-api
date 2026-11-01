@@ -27,14 +27,14 @@ Vitest 11 项、TypeScript 和 Vite 构建通过。完整覆盖数据在本机
 | N8 | 可撤销会话、审计、轮换和运行诊断 | 自动化完成；MySQL/真实 OTLP 收集器待验收 |
 | N9 | 本机客户端配置和受管服务 CLI | 自动化完成；真实客户端和容器验收待环境 |
 | N10 | 浏览器全链路、压测、容器和升级验收 | 代码/可选测试完成；MySQL、浏览器、Docker 待环境 |
-| N11 | 支持边界、部署恢复文档和最终验收记录 | 待实施 |
+| N11 | 支持边界、部署恢复文档和最终验收记录 | 完成；外部环境项单列 |
 
 ## 已确认能力边界
 
 - 六个 Provider 名称共用配置式 OAuth adapter，尚非六家独立厂商接入。
 - OAuth state、配额/模型快照和同步任务已持久化；同步默认关闭，需管理员显式开启。
-- 客户端配置目前只写项目 `data/client-config` 目录。
-- 浏览器测试只打开 Wiki 页，不能替代登录与业务全流程。
+- 管理台旧的客户端配置接口仍只写项目 `data/client-config`；N9 本机 CLI 只有在用户显式指定临时或真实 home、完成预览和哈希确认后才写入目标客户端文件。
+- 浏览器测试默认只跳过；配置部署 URL、管理员凭据和 Playwright 后会执行登录、Wiki 与渠道导航回归，仍不能替代完整真实 Provider 链路。
 - 所谓语义缓存目前是请求哈希精确缓存；本轮不承诺向量语义匹配。
 
 ## 每节点固定门禁
@@ -93,6 +93,17 @@ MySQL DDL 不承诺事务回滚；迁移必须可恢复，既有 checksum 不可
 - `scripts/platform_benchmark.py` 提供固定 5000 节点长文档 fixture、重复测量、P95 预算和 JSON 基线输出；本机 P95 约 0.65ms（仅解析基准，不代表上游问答延迟）。
 - MySQL 8.4 集成、真实 Provider、浏览器全链路和容器构建仍依赖外部环境；CI service 配置是验收入口，未在本机虚报通过。
 - 本节点定向测试 21 passed / 3 skipped；Docker 未安装，浏览器未配置，均保留环境限制记录。
+
+### N11
+
+- 文档统一区分“自动化完成”“代码完成、环境待验收”和“明确不支持”；没有把本机缺失的 MySQL、Docker、Provider 凭据或浏览器当作通过。
+- 部署要求：Python 3.12、Node 24（仅镜像构建阶段）、MySQL 8.4；生产必须提供 `DB_PASSWORD`、`ADMIN_SESSION_SECRET`、`ADMIN_TOKEN`、`ADMIN_PASSWORD_HASH`/首次启动密码和 `PROVIDER_TOKEN_KEY`。
+- 升级流程：先备份数据库与 `data/client-config`，执行 `python -m app.infrastructure.database.migrations validate` 和 `upgrade`，再启动服务；checksum 不一致必须停止升级，不能手工覆盖既有记录。
+- 本机客户端操作必须先 `config preview`、人工检查脱敏 diff，再使用 `config apply --expected-sha256`；恢复必须使用备份 ID，文件发生外部修改时拒绝恢复。真实客户端配置、真实 Provider 账号和外部 MCP Server 不在本轮自动修改。
+- 质量门禁最终结果：后端 **513 passed / 13 skipped，覆盖率 88.34%**；Ruff、Mypy、compileall、Node 4、前端 Vitest **33 项**、TypeScript、Vite 构建和 `git diff --check` 全部通过。
+- 最终本地节点提交：`658e3f1`（N7）、`776ad18`（N8）、`5caf4e6`（N9/N10）；此前 N0–N6 提交保持独立可回溯。
+- 外部待验收：MySQL 8.4 方言/并发/级联，真实 Provider OAuth 与专属协议，带凭据 Wiki 浏览器全流程，Docker 镜像构建和 OTLP 收集器端到端。
+- 明确不支持：商业计费/SaaS 租户、原生桌面壳、自动安装第三方软件、自动修改用户真实客户端账号、向量语义匹配（当前缓存是请求哈希精确匹配）、未声明厂商专属 OAuth 保证。
 
 ### N1
 
