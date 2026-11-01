@@ -142,6 +142,55 @@ class LogRepository:
             db.execute(text("DELETE FROM request_logs"))
             return True
 
+    def model_stats(self):
+        with get_db() as db:
+            rows = db.execute(text("""SELECT model, COUNT(*) AS requests,
+                COALESCE(SUM(total_tokens),0) AS total_tokens,
+                COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END),0) AS errors
+                FROM request_logs GROUP BY model ORDER BY requests DESC""")).mappings()
+            return [dict(row) for row in rows]
+
+    def token_trend(self, days: int = 30):
+        with get_db() as db:
+            rows = db.execute(text("""SELECT SUBSTRING(created_at,1,10) AS day,
+                COALESCE(SUM(prompt_tokens),0) AS prompt_tokens,
+                COALESCE(SUM(completion_tokens),0) AS completion_tokens,
+                COALESCE(SUM(total_tokens),0) AS total_tokens
+                FROM request_logs GROUP BY SUBSTRING(created_at,1,10)
+                ORDER BY day DESC LIMIT :days"""), {"days": min(max(int(days), 1), 366)}).mappings()
+            return [dict(row) for row in rows]
+
+    def route_flow(self):
+        with get_db() as db:
+            rows = db.execute(text("""SELECT channel_id, channel_name, endpoint,
+                COUNT(*) AS requests, COALESCE(SUM(total_tokens),0) AS total_tokens
+                FROM request_logs GROUP BY channel_id, channel_name, endpoint
+                ORDER BY requests DESC""")).mappings()
+            return [dict(row) for row in rows]
+
+    def filter_options(self):
+        with get_db() as db:
+            models = [row[0] for row in db.execute(text("SELECT DISTINCT model FROM request_logs WHERE model IS NOT NULL ORDER BY model"))]
+            channels = [dict(row) for row in db.execute(text("SELECT DISTINCT channel_id, channel_name FROM request_logs WHERE channel_id IS NOT NULL ORDER BY channel_name")).mappings()]
+            risks = [row[0] for row in db.execute(text("SELECT DISTINCT risk_level FROM request_logs WHERE risk_level IS NOT NULL ORDER BY risk_level"))]
+            return {"models": models, "channels": channels, "risk_levels": risks}
+
+    def attempts(self, request_id):
+        with get_db() as db:
+            return [dict(row) for row in db.execute(text("SELECT * FROM gateway_attempts WHERE request_id=:request_id ORDER BY attempt_no"), {"request_id": request_id}).mappings()]
+
+    def delete_before(self, cutoff):
+        with get_db() as db:
+            return db.execute(text("DELETE FROM request_logs WHERE created_at < :cutoff"), {"cutoff": cutoff}).rowcount
+
+    def delete_by_channel(self, channel_id):
+        with get_db() as db:
+            return db.execute(text("DELETE FROM request_logs WHERE channel_id=:channel_id"), {"channel_id": channel_id}).rowcount
+
+    def clear_stats(self):
+        with get_db() as db:
+            db.execute(text("UPDATE request_logs SET prompt_tokens=0, completion_tokens=0, total_tokens=0"))
+
     def _to_entity(self, row) -> RequestLogEntity:
         return RequestLogEntity(
             id=row["id"], seq=row["seq"], request_id=row.get("request_id"), endpoint=row.get("endpoint"), attempt_count=int(row.get("attempt_count") or 1), final_attempt=int(row.get("final_attempt") or 1), stream_status=row.get("stream_status"), usage_source=row.get("usage_source"), client_disconnect=bool(row.get("client_disconnect")), truncated=bool(row.get("truncated")), api_key_id=row["api_key_id"], api_key_name=row["api_key_name"],

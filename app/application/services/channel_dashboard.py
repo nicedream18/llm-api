@@ -239,6 +239,31 @@ class DashboardService:
     def delete_all_logs(self):
         return self.log_repo.delete_all_logs()
 
+    def model_stats(self):
+        return self.log_repo.model_stats()
+
+    def token_trend(self, days=30):
+        return self.log_repo.token_trend(days)
+
+    def route_flow(self):
+        return self.log_repo.route_flow()
+
+    def clear_stats(self):
+        return self.log_repo.clear_stats()
+
+    def filter_options(self):
+        return self.log_repo.filter_options()
+
+    def attempts(self, log_id):
+        row = self.log_repo.get_log_by_id(log_id)
+        return self.log_repo.attempts(row.request_id) if row and row.request_id else []
+
+    def delete_before(self, cutoff):
+        return self.log_repo.delete_before(cutoff)
+
+    def delete_by_channel(self, channel_id):
+        return self.log_repo.delete_by_channel(channel_id)
+
     def _to_dto(self, e):
         if not e: return None
         return RequestLogDTO(id=e.id, seq=e.seq, api_key_id=e.api_key_id, api_key_name=e.api_key_name,

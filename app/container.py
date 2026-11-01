@@ -13,6 +13,7 @@ from app.application.services.misc_services import (
     ProxyService,
     SecurityService,
 )
+from app.application.services.platform_service import PlatformService
 from app.application.services.provider_service import ProviderService
 from app.application.services.software_service import SoftwareService
 from app.application.services.wiki_service import WikiService
@@ -35,6 +36,7 @@ from app.infrastructure.repositories.channel_repo import ChannelRepository
 from app.infrastructure.repositories.kb_repo import KbRepository
 from app.infrastructure.repositories.log_repo import LogRepository
 from app.infrastructure.repositories.mcp_audit_repo import McpAuditRepository
+from app.infrastructure.repositories.platform_repo import PlatformRepository
 from app.infrastructure.repositories.provider_repo import ProviderRepository
 from app.infrastructure.repositories.quota_repo import QuotaRepository
 from app.infrastructure.repositories.security_repo import SecurityRepository
@@ -54,6 +56,7 @@ class Container:
         self.mcp_audit_repo = McpAuditRepository()
         self.software_repo = SoftwareRepository()
         self.provider_repo = ProviderRepository()
+        self.platform_repo = PlatformRepository()
         self.security_repo = SecurityRepository()
         self.kb_repo = KbRepository()
         self.agent_repo = AgentRepository()
@@ -94,6 +97,7 @@ class Container:
         self.wiki_service = WikiService(WikiRepository(), self.proxy_service)
         self.software_service = SoftwareService(self.software_repo)
         self.provider_service = ProviderService(self.provider_repo)
+        self.platform_service = PlatformService(self.platform_repo)
         self.mcp_service = McpService(self.kb_service, self.access_service, self.wiki_service, self.mcp_audit_repo, self.software_service)
 
 

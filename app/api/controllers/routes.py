@@ -327,6 +327,31 @@ async def dashboard():
     return _success(get_container().dashboard_service.dashboard())
 
 
+@dashboard_router.get("/stats/models")
+async def stats_models():
+    return _success(await asyncio.to_thread(get_container().dashboard_service.model_stats))
+
+
+@dashboard_router.get("/stats/token-trend")
+async def stats_token_trend(days: int = 30):
+    return _success(await asyncio.to_thread(get_container().dashboard_service.token_trend, days))
+
+
+@dashboard_router.get("/stats/daily-tokens")
+async def stats_daily_tokens(days: int = 30):
+    return _success(await asyncio.to_thread(get_container().dashboard_service.token_trend, days))
+
+
+@dashboard_router.get("/stats/route-flow")
+async def stats_route_flow():
+    return _success(await asyncio.to_thread(get_container().dashboard_service.route_flow))
+
+
+@dashboard_router.post("/stats/clear")
+async def stats_clear():
+    return _success(await asyncio.to_thread(get_container().dashboard_service.clear_stats))
+
+
 @dashboard_router.get("/logs")
 async def logs(api_key_id: str | None = None, channel_id: str | None = None,
                model: str | None = None, risk_level: str | None = None,
@@ -337,9 +362,19 @@ async def logs(api_key_id: str | None = None, channel_id: str | None = None,
         api_key_id, channel_id, model, risk_level, start_time, end_time, keyword, page, size, limit))
 
 
+@dashboard_router.get("/logs/filter-options")
+async def log_filter_options():
+    return _success(await asyncio.to_thread(get_container().dashboard_service.filter_options))
+
+
 @dashboard_router.get("/logs/{log_id}")
 async def get_log(log_id: str):
     return _success(get_container().dashboard_service.get_log(log_id))
+
+
+@dashboard_router.get("/logs/{log_id}/attempts")
+async def log_attempts(log_id: str):
+    return _success(await asyncio.to_thread(get_container().dashboard_service.attempts, log_id))
 
 
 @dashboard_router.delete("/logs/{log_id}")
@@ -350,6 +385,16 @@ async def delete_log(log_id: str):
 @dashboard_router.delete("/logs")
 async def delete_all_logs():
     return _success(get_container().dashboard_service.delete_all_logs())
+
+
+@dashboard_router.delete("/logs/before")
+async def delete_logs_before(cutoff: str):
+    return _success(await asyncio.to_thread(get_container().dashboard_service.delete_before, cutoff))
+
+
+@dashboard_router.delete("/logs/by-channel/{channel_id}")
+async def delete_logs_by_channel(channel_id: str):
+    return _success(await asyncio.to_thread(get_container().dashboard_service.delete_by_channel, channel_id))
 
 
 # ==================== KB Controller ====================
