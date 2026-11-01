@@ -55,6 +55,10 @@ class ChannelAdapter(ABC):
         """Return an OpenAI-compatible response body when conversion is needed."""
         return body
 
+    def stream_protocol(self, channel) -> str:
+        """Identify the provider's streaming wire format."""
+        return "openai"
+
 
 class OpenAICompatibleAdapter(ChannelAdapter):
     def build_url(self, channel, request) -> str:
@@ -78,6 +82,9 @@ class OpenAICompatibleAdapter(ChannelAdapter):
 
 
 class AnthropicAdapter(ChannelAdapter):
+    def stream_protocol(self, channel) -> str:
+        return "anthropic"
+
     def build_url(self, channel, request) -> str:
         base = (channel.base_url or "").rstrip("/")
         path = "/messages" if base.endswith("/v1") else "/v1/messages"
@@ -148,6 +155,9 @@ class AnthropicAdapter(ChannelAdapter):
 
 
 class OllamaAdapter(OpenAICompatibleAdapter):
+    def stream_protocol(self, channel) -> str:
+        return "ollama" if (channel.config or {}).get("native_api") else "openai"
+
     def build_url(self, channel, request) -> str:
         if (channel.config or {}).get("native_api"):
             return _join(channel.base_url, "/api/chat")

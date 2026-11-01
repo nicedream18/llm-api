@@ -209,9 +209,10 @@ class ProxyService:
         context = auth_context
         if context and context.is_api_key and context.allowed_models and model not in context.allowed_models:
             return 403, {"error": {"message": "Model is not allowed for this API key", "type": "permission_error", "code": "model_forbidden"}}
-        if context and context.is_api_key and context.allowed_channels and hasattr(self.gateway, "_candidates"):
-            if not self.gateway._candidates(model, set(), context.allowed_channels):
-                return 403, {"error": {"message": "Channel is not allowed for this API key", "type": "permission_error", "code": "channel_forbidden"}}
+        if (context and context.is_api_key and context.allowed_channels
+                and hasattr(self.gateway, "_candidates")
+                and not self.gateway._candidates(model, set(), context.allowed_channels)):
+            return 403, {"error": {"message": "Channel is not allowed for this API key", "type": "permission_error", "code": "channel_forbidden"}}
         scan_result = None
         if self.settings.enabled:
             try:
@@ -276,7 +277,7 @@ class ProxyService:
                     scan_result = response_scan
                 else:
                     scan_result.findings.extend(response_scan.findings)
-            except Exception:
+            except Exception:  # noqa: BLE001 - response scanning is fail-closed when configured
                 if self.settings.fail_closed:
                     proxy_response.success = False
                     proxy_response.status_code = 502
@@ -306,6 +307,13 @@ class ProxyService:
             body_json = json.loads(body)
         except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
             yield 'data: {"error":{"message":"Invalid JSON body","type":"invalid_request_error"}}\n\n'; return
+        if protocol == "responses":
+            from app.domain.responses_converter import ResponsesConverter
+            try:
+                converted = ResponsesConverter.responses_to_openai(body)
+                body_json, body = json.loads(converted), converted
+            except (ValueError, TypeError, json.JSONDecodeError):
+                yield 'data: {"error":{"message":"Invalid Responses request","type":"invalid_request_error"}}\n\n'; return
         model = body_json.get("model")
         if not model:
             yield 'data: {"error":{"message":"Missing model field","type":"invalid_request_error"}}\n\n'; return
@@ -393,7 +401,7 @@ class ProxyService:
         except (asyncio.CancelledError, GeneratorExit):
             status="client_disconnect"
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - convert upstream failures to a safe SSE error
             status="error"
             safe=json.dumps({"error":{"message":"upstream stream failed","type":"upstream_error","code":"upstream_error"}})
             yield f"data: {safe}\n\n"
@@ -484,7 +492,7 @@ class ProxyService:
                     for finding in findings:
                         finding.log_id = entry.id
                     self.security_repo.save_findings(findings)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - logging must not break the response path
             logger.warning(f"Failed to insert request log: {e}")
 
 
@@ -539,7 +547,7 @@ class McpService:
         }
         try:
             result = handlers[tool_name]()
-        except Exception as exc:  # A tool failure must not expose database/upstream secrets.
+        except Exception as exc:  # noqa: BLE001 - tool errors are intentionally sanitized
             logger.error("MCP tool execution failed: tool=%s error_type=%s", tool_name, type(exc).__name__)
             result = {"content": [{"type": "text", "text": "Tool execution failed"}], "isError": True}
         duration_ms = int((time.monotonic() - started) * 1000)

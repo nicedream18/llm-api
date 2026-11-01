@@ -13,6 +13,7 @@ import httpx
 
 from app.config import config
 from app.domain.entities import ProxyRequestEntity, ProxyResponseEntity
+from app.domain.streaming import StreamCodec
 from app.infrastructure.adapters.channel_adapters import adapter_for, models_url
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,9 @@ class GatewayService:
             excluded.add(channel.id or channel.name)
             body = adapter_for(channel).prepare_body(channel, request, dispatch_result.upstream_model)
             body["stream"] = True
+            adapter = adapter_for(channel)
+            source_protocol = adapter.stream_protocol(channel)
+            codec = StreamCodec(source_protocol, request.protocol_type, request.model)
             stream_started = False
             started = time.monotonic()
             attempt = GatewayAttempt(attempt_no + 1, channel.id, channel.name)
@@ -192,8 +196,14 @@ class GatewayService:
                     attempt.status_code = response.status_code
                     async for line in response.aiter_lines():
                         stream_started = True
-                        # Preserve SSE fields and boundaries. Blank lines are meaningful.
-                        yield line
+                        for output in codec.feed_line(line):
+                            for output_line in output.rstrip("\r\n").split("\n"):
+                                yield output_line
+                            yield ""
+                    for output in codec.finish():
+                        for output_line in output.rstrip("\r\n").split("\n"):
+                            yield output_line
+                        yield ""
                     attempt.succeeded = True
                     record_attempt()
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
