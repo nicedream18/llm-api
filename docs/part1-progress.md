@@ -6,7 +6,7 @@
 
 - Python 全量测试：**332 passed, 2 skipped**；全仓覆盖率 **85.74%**。GitHub Actions 在全量测试命令中执行 85% 覆盖率门槛。
 - 全仓 Ruff、全仓 Mypy（81 个源文件）、`compileall` 和 `git diff --check` 通过。
-- 前端 Node 静态 Wiki 测试 3 项通过，Vitest 10 项通过；TypeScript 检查与 Vite 生产构建通过。
+- 前端 Node 静态 Wiki 测试 3 项通过，Vitest 11 项通过；TypeScript 检查与 Vite 生产构建通过。新增 jsdom Wiki 问答工作流回归。
 - 本机没有隔离 MySQL 服务，因此本地两项真实 MySQL 集成测试跳过；GitHub Actions 已配置 MySQL 8.4 service，会在 CI 中执行这两项测试。
 - 远程模型和 Provider 实际 OAuth 服务未接入测试；使用本地 SQLite 与模拟 HTTP 响应验证。
 
@@ -69,6 +69,7 @@
 | `9be4b47` | MCP SSE 通知队列、SSE 会话流和取消通知 |
 | `352b4a0` | Software 本机工具扫描、受控安装计划和管理台入口 |
 | `80ee591` | Provider Token 过期刷新、账号失败冷却和网关健康回写 |
+| `2fd8d87` | Wiki 管理台 jsdom 问答工作流回归 |
 
 每个节点均先跑定向测试，再完成全量验证后提交；不推送远程。
 
