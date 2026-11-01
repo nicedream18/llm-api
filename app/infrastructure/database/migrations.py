@@ -74,7 +74,15 @@ def sql_statements(script: str) -> list[str]:
 
 
 def execute_migration(db, path: Path) -> None:
+    dialect = getattr(getattr(db, "bind", None), "dialect", None)
+    is_mysql = getattr(dialect, "name", None) == "mysql"
     for statement in sql_statements(path.read_text(encoding="utf-8")):
+        # SQLite supports ``CREATE INDEX IF NOT EXISTS`` while MySQL 8 does
+        # not. The migration runner records applied checksums, so MySQL only
+        # needs the standard form for a new migration; SQLite keeps the
+        # idempotent form used by local repository tests.
+        if is_mysql:
+            statement = re.sub(r"(?i)CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS", "CREATE INDEX", statement)
         db.execute(text(statement))
 
 

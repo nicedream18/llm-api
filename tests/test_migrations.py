@@ -58,6 +58,31 @@ def test_sql_splitter_accepts_unterminated_comment_at_eof():
     assert sql_statements("SELECT 1; -- trailing comment") == ["SELECT 1"]
 
 
+def test_execute_migration_normalizes_sqlite_index_guard_for_mysql(tmp_path):
+    from sqlalchemy import create_engine, inspect
+
+    from app.infrastructure.database import migrations
+
+    script = tmp_path / "019_index.sql"
+    script.write_text("CREATE TABLE sample (id INTEGER PRIMARY KEY); CREATE INDEX IF NOT EXISTS idx_sample ON sample (id);", encoding="utf-8")
+    engine = create_engine("sqlite://")
+
+    class MysqlDialect:
+        name = "mysql"
+
+    with engine.begin() as connection:
+        class FakeConnection:
+            bind = type("Bind", (), {"dialect": MysqlDialect()})()
+
+            @staticmethod
+            def execute(statement):
+                return connection.execute(statement)
+
+        # Execute against SQLite while selecting the MySQL normalization path.
+        migrations.execute_migration(FakeConnection(), script)
+    assert inspect(engine).has_table("sample")
+
+
 def test_migration_files_rejects_invalid_filename(monkeypatch, tmp_path):
     from app.infrastructure.database import migrations
 
