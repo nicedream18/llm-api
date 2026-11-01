@@ -171,7 +171,8 @@ class GatewayService:
             excluded.add(channel.id or channel.name)
             upstream_model = dispatch_result.upstream_model
             upstream_api_key, key_id = self._select_api_key(channel)
-            attempt_request = request if upstream_api_key is None else request.__class__(**{**request.__dict__, "upstream_api_key": upstream_api_key})
+            attempt_request = request.__class__(**{**request.__dict__, "upstream_api_key": upstream_api_key,
+                                                  "upstream_model": upstream_model})
             body = adapter_for(channel).prepare_body(channel, attempt_request, upstream_model)
             raw_body = adapter_for(channel).prepare_raw_body(channel, attempt_request, upstream_model)
             request_headers = _build_headers(channel, attempt_request)
@@ -261,15 +262,17 @@ class GatewayService:
             channel = dispatch_result.channel
             excluded.add(channel.id or channel.name)
             upstream_api_key, key_id = self._select_api_key(channel)
-            attempt_request = request if upstream_api_key is None else request.__class__(**{**request.__dict__, "upstream_api_key": upstream_api_key})
+            attempt_request = request.__class__(**{**request.__dict__, "upstream_api_key": upstream_api_key,
+                                                  "upstream_model": dispatch_result.upstream_model})
+            adapter = adapter_for(channel)
+            source_protocol = adapter.stream_protocol(channel)
             body = adapter_for(channel).prepare_body(channel, attempt_request, dispatch_result.upstream_model)
             raw_body = adapter_for(channel).prepare_raw_body(channel, attempt_request, dispatch_result.upstream_model)
             request_headers = _build_headers(channel, attempt_request)
             if raw_body is not None:
                 request_headers["Content-Type"] = attempt_request.content_type or "application/octet-stream"
-            body["stream"] = True
-            adapter = adapter_for(channel)
-            source_protocol = adapter.stream_protocol(channel)
+            if source_protocol != "gemini":
+                body["stream"] = True
             codec = StreamCodec(source_protocol, request.protocol_type, request.model)
             stream_started = False
             started = time.monotonic()

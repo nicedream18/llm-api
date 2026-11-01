@@ -199,12 +199,116 @@ class OllamaAdapter(OpenAICompatibleAdapter):
         return body
 
 
+class GeminiAdapter(ChannelAdapter):
+    """Translate OpenAI chat requests to Gemini's native REST contract."""
+
+    def stream_protocol(self, channel) -> str:
+        return "gemini"
+
+    def build_url(self, channel, request) -> str:
+        configured_path = (channel.config or {}).get("path")
+        if configured_path:
+            return _join(channel.base_url, str(configured_path))
+        base = (channel.base_url or "").rstrip("/")
+        model = str(getattr(request, "upstream_model", None) or request.body.get("model") or "")
+        # Gateway keeps the selected upstream model outside the public body.
+        # DispatchResult is not part of ProxyRequestEntity, so the model is
+        # injected by prepare_body and retained in a private request field
+        # when available; callers can also configure a path explicitly.
+        model = model or str((channel.config or {}).get("model") or "gemini-1.5-flash")
+        suffix = "streamGenerateContent?alt=sse" if request.stream else "generateContent"
+        return f"{base}/models/{model}:{suffix}"
+
+    def build_headers(self, channel, request) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        api_key = getattr(request, "upstream_api_key", None) or channel.api_key
+        if api_key:
+            headers["x-goog-api-key"] = api_key
+        headers.update(_copy_headers(channel.config))
+        return headers
+
+    @staticmethod
+    def _parts(content: Any) -> list[dict[str, str]]:
+        if isinstance(content, str):
+            return [{"text": content}]
+        if isinstance(content, list):
+            result = []
+            for item in content:
+                if isinstance(item, str):
+                    result.append({"text": item})
+                elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                    result.append({"text": item["text"]})
+            return result
+        return []
+
+    def prepare_body(self, channel, request, upstream_model: str) -> dict[str, Any]:
+        messages = request.body.get("messages") or []
+        contents: list[dict[str, Any]] = []
+        system_parts: list[dict[str, str]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            parts = self._parts(message.get("content"))
+            if not parts:
+                continue
+            role = str(message.get("role") or "user")
+            if role == "system":
+                system_parts.extend(parts)
+            else:
+                contents.append({"role": "model" if role == "assistant" else "user", "parts": parts})
+        source = request.body
+        result: dict[str, Any] = {"contents": contents}
+        if system_parts:
+            result["systemInstruction"] = {"parts": system_parts}
+        generation: dict[str, Any] = {}
+        for source_key, gemini_key in (("max_tokens", "maxOutputTokens"), ("max_output_tokens", "maxOutputTokens"),
+                                       ("temperature", "temperature"), ("top_p", "topP"), ("stop", "stopSequences")):
+            if source_key in source and source[source_key] is not None:
+                value = source[source_key]
+                if source_key == "stop" and isinstance(value, str):
+                    value = [value]
+                generation[gemini_key] = value
+        if generation:
+            result["generationConfig"] = generation
+        tools = source.get("tools")
+        if isinstance(tools, list):
+            declarations = []
+            for tool in tools:
+                function = tool.get("function") if isinstance(tool, dict) else None
+                if isinstance(function, dict) and function.get("name"):
+                    declarations.append({key: function[key] for key in ("name", "description", "parameters") if key in function})
+            if declarations:
+                result["tools"] = [{"functionDeclarations": declarations}]
+        return result
+
+    def normalize_response(self, body: str, model: str) -> str:
+        try:
+            response = json.loads(body)
+        except (TypeError, ValueError):
+            return body
+        candidates = response.get("candidates") or []
+        candidate = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
+        content = candidate.get("content") or {}
+        parts = content.get("parts") or []
+        text = "".join(str(part.get("text", "")) for part in parts if isinstance(part, dict))
+        usage = response.get("usageMetadata") or {}
+        prompt = int(usage.get("promptTokenCount", 0) or 0)
+        completion = int(usage.get("candidatesTokenCount", 0) or 0)
+        total = int(usage.get("totalTokenCount", prompt + completion) or prompt + completion)
+        finish = str(candidate.get("finishReason") or "STOP").lower()
+        result = {"id": response.get("responseId"), "object": "chat.completion", "model": model,
+                  "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": finish}],
+                  "usage": {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total}}
+        return json.dumps(result, ensure_ascii=False)
+
+
 class CustomAdapter(OpenAICompatibleAdapter):
     pass
 
 
 _ADAPTERS: dict[str, ChannelAdapter] = {
     "claude": AnthropicAdapter(),
+    "gemini": GeminiAdapter(),
     "ollama": OllamaAdapter(),
     "custom": CustomAdapter(),
 }
@@ -222,4 +326,6 @@ def models_url(channel) -> str:
     if configured_path:
         return _join(channel.base_url, str(configured_path))
     base = (channel.base_url or "").rstrip("/")
+    if str(channel.type or "").lower() == "gemini":
+        return _join(base, "/models")
     return _join(base, "/models" if base.endswith("/v1") else "/v1/models")

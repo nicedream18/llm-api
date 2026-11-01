@@ -72,6 +72,7 @@ class ProxyRequestEntity:
     upstream_api_key: str | None = None
     raw_body: bytes | None = None
     content_type: str | None = None
+    upstream_model: str | None = None
 
 
 @dataclass

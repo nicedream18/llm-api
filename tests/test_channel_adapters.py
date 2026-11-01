@@ -5,7 +5,8 @@ import pytest
 
 from app.domain.entities import ChannelEntity, ProxyRequestEntity
 from app.domain.gateway import GatewayService
-from app.infrastructure.adapters.channel_adapters import adapter_for
+from app.infrastructure.adapters.channel_adapters import adapter_for, models_url
+from app.infrastructure.adapters.http_adaptors import adapter_for as legacy_adapter_for
 
 
 def request(body=None, endpoint="/v1/chat/completions", protocol_type="openai"):
@@ -16,6 +17,7 @@ def test_openai_compatible_adapter_builds_url_headers_and_model_mapping():
     channel = ChannelEntity(type="openai", base_url="https://provider.example/v1", api_key="secret")
     adapter = adapter_for(channel)
     assert adapter.build_url(channel, request()) == "https://provider.example/v1/chat/completions"
+    assert legacy_adapter_for(channel) is adapter
     assert adapter.build_headers(channel, request()) == {
         "Content-Type": "application/json",
         "Authorization": "Bearer secret",
@@ -103,6 +105,30 @@ def test_ollama_native_adapter_maps_openai_options():
     body = adapter.prepare_body(channel, req, "llama3")
     assert body["model"] == "llama3"
     assert body["options"] == {"num_predict": 32, "temperature": 0.4}
+
+
+def test_gemini_adapter_builds_native_request_and_normalizes_response():
+    channel = ChannelEntity(type="gemini", base_url="https://generativelanguage.googleapis.com/v1beta", api_key="secret")
+    adapter = adapter_for(channel)
+    req = request({
+        "model": "public-model", "messages": [
+            {"role": "system", "content": "Be concise"},
+            {"role": "user", "content": "hello"},
+        ], "max_tokens": 12, "temperature": 0.2,
+    })
+    req = ProxyRequestEntity(**{**req.__dict__, "stream": False, "upstream_model": "gemini-2.0-flash"})
+    assert adapter.build_url(channel, req).endswith("/models/gemini-2.0-flash:generateContent")
+    assert adapter.build_headers(channel, req)["x-goog-api-key"] == "secret"
+    body = adapter.prepare_body(channel, req, "gemini-2.0-flash")
+    assert body["contents"] == [{"role": "user", "parts": [{"text": "hello"}]}]
+    assert body["systemInstruction"] == {"parts": [{"text": "Be concise"}]}
+    normalized = json.loads(adapter.normalize_response(json.dumps({
+        "responseId": "resp-1", "candidates": [{"content": {"parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 3, "totalTokenCount": 5},
+    }), "public-model"))
+    assert normalized["choices"][0]["message"]["content"] == "hi"
+    assert normalized["usage"]["total_tokens"] == 5
+    assert models_url(channel) == "https://generativelanguage.googleapis.com/v1beta/models"
 
 
 def test_custom_adapter_honors_configured_path_and_headers():
