@@ -4,7 +4,7 @@
 
 ## 当前验收状态（2026-11-02）
 
-- Python 全量测试：**360 passed, 5 skipped**；全仓覆盖率 **85.62%**，CI 同样执行 85% 门槛。
+- Python 全量测试：**361 passed, 5 skipped**；全仓覆盖率 **85.63%**，CI 同样执行 85% 门槛。
 - 全仓 Ruff、Mypy、`compileall` 和 `git diff --check` 已纳入最终门禁。
 - 前端 Vitest、Node Wiki 静态回归、TypeScript 检查和 Vite 生产构建通过。
 - 本机没有隔离 MySQL 服务，真实 MySQL 测试保留跳过；GitHub Actions 已配置 MySQL 8.4 service。
@@ -63,6 +63,7 @@
 | `13a7e60` | Software 扫描路径安全、审批策略和有效期 |
 | `c97af3d` / `960f04c` | MCP 重放协议与仓储状态回归 |
 | `d2359a6` | Wiki 长文档性能和可选浏览器 smoke test |
+| `cbda537` | MySQL 方言迁移索引和仓储行锁检测修复 |
 
 ## 最近一次复现命令
 
@@ -76,6 +77,6 @@ cd frontend && npm test && npm run build
 git diff --check
 ```
 
-本轮最终门禁结果：360 passed / 5 skipped，覆盖率 85.62%；Ruff、Mypy、compileall、Node 4 项、Vitest 11 项、TypeScript 和 Vite build 全部通过。
+本轮最终门禁结果：361 passed / 5 skipped，覆盖率 85.63%；Ruff、Mypy、compileall、Node 4 项、Vitest 11 项、TypeScript 和 Vite build 全部通过。
 
 没有把外部环境缺失伪报为通过；外部验收完成后应在此文档补充实际环境、命令和结果。

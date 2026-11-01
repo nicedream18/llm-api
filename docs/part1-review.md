@@ -15,7 +15,7 @@
 
 ## 工程与验证
 
-- Python 全量测试：**360 passed, 5 skipped**，覆盖率 **85.62%**；新增节点都有定向测试、错误分支测试和回归测试。
+- Python 全量测试：**361 passed, 5 skipped**，覆盖率 **85.63%**；新增节点都有定向测试、错误分支测试和回归测试。
 - Ruff、Mypy、`compileall`、`git diff --check`、Node Wiki 测试、Vitest、TypeScript 检查和 Vite 构建均纳入门禁。
 - MySQL 集成测试在没有本机隔离服务时跳过，由 GitHub Actions MySQL 8.4 service 执行真实验收。
 - Provider live 测试只在 `WALIAPI_PROVIDER_LIVE_URL` 与 `WALIAPI_PROVIDER_LIVE_TOKEN` 同时提供时执行，测试数据和日志不记录凭据。
