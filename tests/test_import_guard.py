@@ -61,9 +61,11 @@ def test_importer_persists_returned_source_id_and_failure_status():
     class Repo:
         def __init__(self):
             self.sources = {}
+            self.updates = []
         def save_source(self, kb_id, source_type, **kwargs):
             self.sources[kwargs["source_id"]] = {"kb_id": kb_id, "source_type": source_type, "status": kwargs["status"]}
         def update_source_status(self, source_id, status, error=None, file_count=None):
+            self.updates.append((source_id, status, file_count))
             self.sources[source_id].update(status=status, error=error)
 
     repo = Repo()
@@ -75,3 +77,28 @@ def test_importer_persists_returned_source_id_and_failure_status():
     result = importer.import_source("kb-1", {"source_type": "test"})
     assert result["sourceId"] in repo.sources
     assert repo.sources[result["sourceId"]]["status"] == "failed"
+    assert repo.updates[-1] == (result["sourceId"], "failed", 0)
+
+
+def test_importer_persists_source_file_count():
+    class Repo:
+        def __init__(self):
+            self.updates = []
+
+        def save_source(self, _kb_id, _source_type, **_kwargs):
+            pass
+
+        def update_source_status(self, source_id, status, error=None, file_count=None):
+            self.updates.append((source_id, status, error, file_count))
+
+    repo = Repo()
+    importer = ImporterService(repo, TextSplitter(), object())
+    importer.strategies["test"] = type("Successful", (), {
+        "get_source_type": lambda self: "test",
+        "import_source": lambda self, _kb_id, _source_id, context, _params: setattr(context, "file_count", 3) or 4,
+    })()
+
+    result = importer.import_source("kb-1", {"source_type": "test"})
+
+    assert result["totalChunks"] == 4
+    assert repo.updates[-1] == (result["sourceId"], "ingested", None, 3)

@@ -213,6 +213,7 @@ class ImportContext:
         self.repo = kb_repository
         self.splitter = text_splitter
         self.embedder = embedder_service
+        self.file_count = 0
 
     def import_content(self, kb_id: str, filename: str, source_type: str,
                       source_path: str, content: str) -> int:
@@ -245,6 +246,7 @@ class ImportContext:
         doc.total_tokens = sum(c.token_count or 0 for c in chunks)
         doc.updated_at = datetime.now(UTC).isoformat()
         self.repo.update_doc(doc)
+        self.file_count += 1
 
         return len(chunks)
 
@@ -252,9 +254,10 @@ class ImportContext:
                     source_url: str | None = None, source_path: str | None = None,
                     branch: str | None = None, status: str = "ingested", error: str | None = None):
         if hasattr(self.repo, "update_source_status"):
-            self.repo.update_source_status(source_id, status, error)
+            self.repo.update_source_status(source_id, status, error, self.file_count)
         else:
-            self.repo.save_source(kb_id, source_type, source_url, source_path, branch, source_id=source_id, status=status)
+            self.repo.save_source(kb_id, source_type, source_url, source_path, branch,
+                                  file_count=self.file_count, source_id=source_id, status=status)
 
     def _embed_and_save(self, kb_id: str, chunks: list[KbChunkEntity]):
         if not chunks:
@@ -426,15 +429,16 @@ class ImporterService:
         source_path = params.dir_path
         self.repo.save_source(kb_id, source_type, source_url=source_url, source_path=source_path,
                               branch=params.branch, source_id=source_id, status="pending")
+        self.context.file_count = 0
         try:
             total_chunks = strategy.import_source(kb_id, source_id, self.context, params)
         except Exception as exc:
-            self.repo.update_source_status(source_id, "failed", str(exc)[:2000])
+            self.repo.update_source_status(source_id, "failed", str(exc)[:2000], self.context.file_count)
             raise
         if total_chunks <= 0:
-            self.repo.update_source_status(source_id, "failed", "No documents were imported")
+            self.repo.update_source_status(source_id, "failed", "No documents were imported", self.context.file_count)
         else:
-            self.repo.update_source_status(source_id, "ingested", None)
+            self.repo.update_source_status(source_id, "ingested", None, self.context.file_count)
         return {
             "success": True,
             "sourceId": source_id,
