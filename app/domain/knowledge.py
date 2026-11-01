@@ -434,8 +434,9 @@ class RagService:
         self.search_strategy_factory = search_strategy_factory
 
     def ask(self, kb_id, query, embedding_model, chat_model, top_k, history=None):
-        query_embedding = self.embedder_service.embed(query, embedding_model)
-        results = self.retriever_service.hybrid_search(kb_id, query, query_embedding, top_k, 0.7, 0.3)
+        results = self.search_by_mode(kb_id, query, top_k, "hybrid", embedding_model)
+        if not results:
+            return self._empty_answer()
         context = self.context_builder.build_context(results)
         prompt = self.context_builder.build_rag_prompt(context, query, history)
         prompt = self.context_builder.trim_context(prompt, self.context_builder.get_model_context_limit(chat_model))
@@ -444,7 +445,10 @@ class RagService:
 
     def ask_with_config(self, kb_id, query, embedding_model, chat_model, top_k, search_mode, vector_weight, keyword_weight, history=None):
         """Ask with config; uses search_by_mode which has fallback logic."""
-        results = self.search_by_mode(kb_id, query, top_k, search_mode, embedding_model)
+        results = self.search_by_mode(kb_id, query, top_k, search_mode, embedding_model,
+                                      vector_weight, keyword_weight)
+        if not results:
+            return self._empty_answer()
         context = self.context_builder.build_context(results)
         prompt = self.context_builder.build_rag_prompt(context, query, history)
         prompt = self.context_builder.trim_context(prompt, self.context_builder.get_model_context_limit(chat_model))
@@ -456,8 +460,11 @@ class RagService:
         current_query = query
         all_answers = []
         for round_num in range(max_rounds):
-            query_embedding = self.embedder_service.embed(current_query, embedding_model)
-            results = self.retriever_service.hybrid_search(kb_id, current_query, query_embedding, top_k, 0.7, 0.3)
+            results = self.search_by_mode(kb_id, current_query, top_k, "hybrid", embedding_model)
+            if not results:
+                if not all_answers:
+                    return self._empty_answer()
+                break
             all_results.extend(results)
             context = self.context_builder.build_context(results)
             prompt = self.context_builder.build_rag_prompt(context, current_query, None)
@@ -477,7 +484,8 @@ class RagService:
         combined = "\n\n".join(all_answers)
         return RagAnswerEntity(answer=combined, sources=self._build_sources(final_results), retrieval_details=self._build_details(final_results))
 
-    def search_by_mode(self, kb_id, query, top_k, search_mode, embedding_model):
+    def search_by_mode(self, kb_id, query, top_k, search_mode, embedding_model,
+                       vector_weight=0.7, keyword_weight=0.3):
         """Search by mode with fallback (aligned with Java SearchStrategyFactory.searchWithFallback)."""
         mode = (search_mode or "keyword").lower()
         if mode == "keyword":
@@ -500,7 +508,8 @@ class RagService:
                 return self.retriever_service.keyword_search(kb_id, query, top_k)
         # hybrid
         try:
-            results = self.retriever_service.hybrid_search(kb_id, query, query_embedding, top_k, 0.7, 0.3)
+            results = self.retriever_service.hybrid_search(
+                kb_id, query, query_embedding, top_k, vector_weight, keyword_weight)
             if results:
                 return results
             logger.info("Hybrid search returned no results, falling back to keyword search")
@@ -528,6 +537,10 @@ class RagService:
         else:
             answer = "\u62b1\u6b49\uff0c\u56de\u7b54\u751f\u6210\u5931\u8d25: " + (response.error_message or "\u672a\u77e5\u9519\u8bef")
         return RagAnswerEntity(answer=answer, sources=self._build_sources(results), usage=usage, retrieval_details=self._build_details(results))
+
+    @staticmethod
+    def _empty_answer():
+        return RagAnswerEntity(answer="知识库中没有找到与问题相关的内容", sources=[], retrieval_details=[])
 
     def _extract_answer(self, response):
         try:

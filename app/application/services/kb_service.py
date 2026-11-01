@@ -205,12 +205,13 @@ class KbService:
         chat_model = request.model or "gpt-4.1"
         top_k = request.top_k or 5
         history = request.history
-        if request.search_mode and request.search_mode != "hybrid":
-            answer = self.rag.ask_with_config(kb_id, request.question, embedding_model, chat_model,
-                                              top_k, request.search_mode,
-                                              request.vector_weight or 0.7, request.keyword_weight or 0.3, history)
-        else:
-            answer = self.rag.ask(kb_id, request.question, embedding_model, chat_model, top_k, history)
+        answer = self.rag.ask_with_config(
+            kb_id, request.question, embedding_model, chat_model, top_k,
+            request.search_mode or "hybrid",
+            request.vector_weight if request.vector_weight is not None else 0.7,
+            request.keyword_weight if request.keyword_weight is not None else 0.3,
+            history,
+        )
         self.repo.save_conversation(kb_id, "user", request.question)
         self.repo.save_conversation(kb_id, "assistant", answer.answer)
         return self._to_ask_response(answer)
