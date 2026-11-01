@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import text
 
-from app.infrastructure.database.connection import get_db
+from app.infrastructure.database.connection import affected_rows, get_db
 
 
 def _now() -> str:
@@ -25,7 +25,7 @@ class QuotaRepository:
             result = db.execute(text("""UPDATE api_keys SET quota_used=quota_used+:tokens, updated_at=:now
                 WHERE id=:id AND status=1 AND (quota_limit=0 OR quota_used+:tokens <= quota_limit)"""),
                 {"id": api_key_id, "tokens": estimated_tokens, "now": _now()})
-            if result.rowcount != 1:
+            if affected_rows(result) != 1:
                 return None
             db.execute(text("""INSERT INTO api_key_quota_ledger
                 (id, api_key_id, request_id, reserved_tokens, actual_tokens, released_tokens, status, created_at)
@@ -46,7 +46,7 @@ class QuotaRepository:
                 result = db.execute(text("""UPDATE api_keys SET quota_used=quota_used+:delta, updated_at=:now
                     WHERE id=:id AND (quota_limit=0 OR quota_used+:delta <= quota_limit)"""),
                     {"id": row["api_key_id"], "delta": delta, "now": _now()})
-                if result.rowcount != 1:
+                if affected_rows(result) != 1:
                     actual_tokens = reserved
                     delta = 0
             elif delta < 0:

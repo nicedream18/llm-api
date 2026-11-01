@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from sqlalchemy import text
 
 from app.domain.entities import LogStatsEntity, RequestLogEntity
-from app.infrastructure.database.connection import get_db
+from app.infrastructure.database.connection import affected_rows, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ class LogRepository:
     def delete_log(self, log_id: str) -> bool:
         with get_db() as db:
             result = db.execute(text("DELETE FROM request_logs WHERE id = :id"), {"id": log_id})
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def delete_all_logs(self) -> bool:
         with get_db() as db:
@@ -181,11 +181,11 @@ class LogRepository:
 
     def delete_before(self, cutoff):
         with get_db() as db:
-            return db.execute(text("DELETE FROM request_logs WHERE created_at < :cutoff"), {"cutoff": cutoff}).rowcount
+            return affected_rows(db.execute(text("DELETE FROM request_logs WHERE created_at < :cutoff"), {"cutoff": cutoff}))
 
     def delete_by_channel(self, channel_id):
         with get_db() as db:
-            return db.execute(text("DELETE FROM request_logs WHERE channel_id=:channel_id"), {"channel_id": channel_id}).rowcount
+            return affected_rows(db.execute(text("DELETE FROM request_logs WHERE channel_id=:channel_id"), {"channel_id": channel_id}))
 
     def clear_stats(self):
         with get_db() as db:

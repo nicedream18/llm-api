@@ -13,7 +13,7 @@ from app.domain.entities import (
     ChannelEntity,
     ChannelStatsEntity,
 )
-from app.infrastructure.database.connection import get_db
+from app.infrastructure.database.connection import affected_rows, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class ChannelRepository:
                 "VALUES (:id, :name, :type, :base_url, :api_key, :models, :status, :priority, :weight, "
                 ":config, :model_mapping, :last_test_at, :last_test_ok, :created_at, :updated_at)"
             ), self._to_params(entity))
-            self._replace_channel_keys(db, entity.id, entity.api_keys)
+            self._replace_channel_keys(db, entity.id or "", entity.api_keys)
         return entity
 
     def update_channel(self, entity: ChannelEntity) -> bool:
@@ -77,20 +77,20 @@ class ChannelRepository:
                 "config=:config, model_mapping=:model_mapping, updated_at=:updated_at WHERE id=:id"
             ), self._to_params(entity))
             if entity.api_keys is not None:
-                self._replace_channel_keys(db, entity.id, entity.api_keys)
-            return result.rowcount > 0
+                self._replace_channel_keys(db, entity.id or "", entity.api_keys)
+            return affected_rows(result) > 0
 
     def delete_channel(self, channel_id: str) -> bool:
         with get_db() as db:
             result = db.execute(text("DELETE FROM channels WHERE id = :id"), {"id": channel_id})
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def toggle_channel_status(self, channel_id: str, status: int) -> bool:
         with get_db() as db:
             result = db.execute(text(
                 "UPDATE channels SET status=:status, updated_at=NOW() WHERE id=:id"
             ), {"id": channel_id, "status": status})
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def update_test_result(self, channel_id: str, ok: bool) -> bool:
         now = _now()
@@ -98,7 +98,7 @@ class ChannelRepository:
             result = db.execute(text(
                 "UPDATE channels SET last_test_at=:t, last_test_ok=:ok, updated_at=:t WHERE id=:id"
             ), {"id": channel_id, "t": now, "ok": 1 if ok else 0})
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def get_channel_api_keys(self, channel_id: str) -> list[ChannelApiKeyEntity]:
         with get_db() as db:
@@ -132,14 +132,14 @@ class ChannelRepository:
                 "last_error=:last_error, cooldown_until=:cooldown_until, last_used_at=:last_used_at, "
                 "updated_at=:updated_at WHERE id=:id AND channel_id=:channel_id"
             ), self._channel_key_params(entity))
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def delete_channel_api_key(self, channel_id: str, key_id: str) -> bool:
         with get_db() as db:
             result = db.execute(text(
                 "DELETE FROM channel_api_keys WHERE id=:id AND channel_id=:channel_id"
             ), {"id": key_id, "channel_id": channel_id})
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def update_channel_api_key_result(self, key_id: str, ok: bool, error: str | None = None, cooldown_until: str | None = None) -> bool:
         with get_db() as db:
@@ -148,7 +148,7 @@ class ChannelRepository:
                 "last_used_at=:last_used_at, updated_at=:last_used_at WHERE id=:id"
             ), {"id": key_id, "last_error": None if ok else error, "cooldown_until": cooldown_until,
                 "last_used_at": _now()})
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def get_channel_stats(self) -> list[ChannelStatsEntity]:
         with get_db() as db:
@@ -240,19 +240,19 @@ class ChannelRepository:
                 "quota_limit=:quota_limit, quota_used=:quota_used, expires_at=:expires_at, "
                 "updated_at=:updated_at WHERE id=:id"
             ), self._to_apikey_params(entity))
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def delete_api_key(self, key_id: str) -> bool:
         with get_db() as db:
             result = db.execute(text("DELETE FROM api_keys WHERE id = :id"), {"id": key_id})
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def increment_quota_used(self, key_id: str, delta: int) -> bool:
         with get_db() as db:
             result = db.execute(text(
                 "UPDATE api_keys SET quota_used = quota_used + :delta, updated_at=NOW() WHERE id=:id"
             ), {"id": key_id, "delta": delta})
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     # ---- Conversions ----
 

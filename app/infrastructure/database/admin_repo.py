@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import text
 
-from app.infrastructure.database.connection import get_db
+from app.infrastructure.database.connection import affected_rows, get_db
 
 
 def _now() -> str:
@@ -29,7 +29,7 @@ class AdminRepository:
         with get_db() as db:
             result = db.execute(text("UPDATE admin_users SET password_hash=:password_hash, updated_at=:now WHERE username=:username AND status=1"),
                                 {"username": username, "password_hash": password_hash, "now": _now()})
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def write_audit(self, username: str | None, action: str, request_id: str | None, client_ip: str | None, success: bool = True) -> None:
         with get_db() as db:

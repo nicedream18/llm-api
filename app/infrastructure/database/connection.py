@@ -2,6 +2,7 @@
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -34,3 +35,8 @@ def get_db() -> Iterator[Session]:
         raise
     finally:
         db.close()
+
+
+def affected_rows(result: Any) -> int:
+    """Return a portable DML row count across SQLAlchemy result implementations."""
+    return int(getattr(result, "rowcount", 0) or 0)

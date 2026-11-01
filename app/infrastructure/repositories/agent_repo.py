@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from sqlalchemy import text
 
 from app.domain.entities import AgentConfigEntity
-from app.infrastructure.database.connection import get_db
+from app.infrastructure.database.connection import affected_rows, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +73,12 @@ class AgentRepository:
                 "config_json": entity.config_json, "status": entity.status,
                 "created_at": entity.created_at, "updated_at": entity.updated_at,
             })
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def delete_agent(self, agent_id: str) -> bool:
         with get_db() as db:
             result = db.execute(text("DELETE FROM agent_configs WHERE agent_id = :id"), {"id": agent_id})
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def _to_entity(self, row) -> AgentConfigEntity:
         return AgentConfigEntity(

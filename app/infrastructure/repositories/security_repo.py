@@ -10,7 +10,7 @@ from app.domain.entities import (
     SecurityCustomRuleEntity,
     SecurityFindingEntity,
 )
-from app.infrastructure.database.connection import get_db
+from app.infrastructure.database.connection import affected_rows, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ class SecurityRepository:
     def update_builtin_rule(self, rule_id: str, enabled: int | None, severity: str | None) -> bool:
         with get_db() as db:
             updates = []
-            params = {"id": rule_id}
+            params: dict[str, object] = {"id": rule_id}
             if enabled is not None:
                 updates.append("enabled=:enabled")
                 params["enabled"] = enabled
@@ -94,7 +94,7 @@ class SecurityRepository:
             result = db.execute(text(
                 f"UPDATE security_builtin_rules SET {', '.join(updates)} WHERE id=:id"
             ), params)
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def get_all_custom_rules(self) -> list[SecurityCustomRuleEntity]:
         with get_db() as db:
@@ -126,12 +126,12 @@ class SecurityRepository:
                 "UPDATE security_custom_rules SET category=:category, name=:name, description=:description, "
                 "severity=:severity, pattern=:pattern, action=:action, enabled=:enabled, updated_at=:updated_at WHERE id=:id"
             ), self._to_custom_params(entity))
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def delete_custom_rule(self, rule_id: str) -> bool:
         with get_db() as db:
             result = db.execute(text("DELETE FROM security_custom_rules WHERE id = :id"), {"id": rule_id})
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     def _to_finding_entity(self, row) -> SecurityFindingEntity:
         return SecurityFindingEntity(

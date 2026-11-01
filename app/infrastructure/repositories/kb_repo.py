@@ -14,7 +14,7 @@ from app.domain.entities import (
     KbStatsEntity,
     KbTaskEntity,
 )
-from app.infrastructure.database.connection import get_db
+from app.infrastructure.database.connection import affected_rows, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +230,7 @@ class KbRepository:
                         continue
                 candidate_id = row["id"]
                 updated = db.execute(text("UPDATE kb_tasks SET status='running',worker_id=:worker_id,lease_until=:lease_until,started_at=:started_at,attempt_count=attempt_count+1 WHERE id=:id AND status='pending'"), {"worker_id":worker_id,"lease_until":lease_until,"started_at":_now(),"id":candidate_id})
-                if updated.rowcount == 1:
+                if affected_rows(updated) == 1:
                     task_id = candidate_id
                     break
             if not task_id:
@@ -249,7 +249,7 @@ class KbRepository:
         with get_db() as db:
             result = db.execute(text("UPDATE kb_tasks SET lease_until=:lease_until WHERE id=:id AND worker_id=:worker_id AND status='running'"),
                                 {"lease_until": lease_until, "id": task_id, "worker_id": worker_id})
-            return result.rowcount == 1
+            return affected_rows(result) == 1
 
     def recover_expired_tasks(self):
         with get_db() as db:
@@ -269,7 +269,7 @@ class KbRepository:
     def cancel_task(self, kb_id: str, task_id: str) -> bool:
         with get_db() as db:
             result=db.execute(text("UPDATE kb_tasks SET status='cancelled',completed_at=:now WHERE id=:id AND kb_id=:kb_id AND status='pending'"), {"id":task_id,"kb_id":kb_id,"now":_now()})
-            return result.rowcount==1
+            return affected_rows(result)==1
 
     def find_task_by_id(self, task_id: str) -> KbTaskEntity | None:
         with get_db() as db:
@@ -386,7 +386,7 @@ class KbRepository:
     def delete_source(self, source_id: str) -> bool:
         with get_db() as db:
             result = db.execute(text("DELETE FROM kb_sources WHERE id = :id"), {"id": source_id})
-            return result.rowcount > 0
+            return affected_rows(result) > 0
 
     # ---- Index Meta ----
 
@@ -511,4 +511,4 @@ class KbRepository:
     def save_task_payload(self, task_id: str, payload: dict) -> bool:
         with get_db() as db:
             result = db.execute(text("UPDATE kb_tasks SET payload=:payload WHERE id=:id"), {"payload": json.dumps(payload), "id": task_id})
-            return result.rowcount == 1
+            return affected_rows(result) == 1
