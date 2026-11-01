@@ -352,8 +352,10 @@ class KbRepository:
     # ---- Source ----
 
     def save_source(self, kb_id: str, source_type: str, source_url: str | None = None, source_path: str | None = None,
-                    branch: str | None = None, file_count: int = 0, error: str | None = None):
+                    branch: str | None = None, file_count: int = 0, error: str | None = None,
+                    source_id: str | None = None, status: str = "pending") -> str:
         now = _now()
+        source_id = source_id or str(uuid.uuid4())
         with get_db() as db:
             db.execute(text(
                 "INSERT INTO kb_sources (id, kb_id, source_type, source_url, source_path, branch, status, "
@@ -361,11 +363,23 @@ class KbRepository:
                 "VALUES (:id, :kb_id, :source_type, :source_url, :source_path, :branch, :status, "
                 ":file_count, :error, :created_at, :updated_at)"
             ), {
-                "id": str(uuid.uuid4()), "kb_id": kb_id, "source_type": source_type,
+                "id": source_id, "kb_id": kb_id, "source_type": source_type,
                 "source_url": source_url, "source_path": source_path, "branch": branch,
-                "status": "completed", "file_count": file_count, "error": error,
+                "status": status, "file_count": file_count, "error": error,
                 "created_at": now, "updated_at": now,
             })
+        return source_id
+
+    def update_source_status(self, source_id: str, status: str, error: str | None = None,
+                             file_count: int | None = None) -> bool:
+        values: dict[str, object] = {"id": source_id, "status": status, "error": error, "updated_at": _now()}
+        fields = ["status=:status", "error=:error", "updated_at=:updated_at"]
+        if file_count is not None:
+            fields.append("file_count=:file_count")
+            values["file_count"] = file_count
+        with get_db() as db:
+            result = db.execute(text(f"UPDATE kb_sources SET {', '.join(fields)} WHERE id=:id"), values)
+            return affected_rows(result) == 1
 
     def find_sources_by_kb_id(self, kb_id: str) -> list[dict]:
         with get_db() as db:

@@ -248,8 +248,13 @@ class ImportContext:
 
         return len(chunks)
 
-    def save_source(self, kb_id: str, doc_id: str | None = None, source_type: str | None = None):
-        self.repo.save_source(kb_id, source_type)
+    def save_source(self, kb_id: str, source_id: str, source_type: str,
+                    source_url: str | None = None, source_path: str | None = None,
+                    branch: str | None = None, status: str = "ingested", error: str | None = None):
+        if hasattr(self.repo, "update_source_status"):
+            self.repo.update_source_status(source_id, status, error)
+        else:
+            self.repo.save_source(kb_id, source_type, source_url, source_path, branch, source_id=source_id, status=status)
 
     def _embed_and_save(self, kb_id: str, chunks: list[KbChunkEntity]):
         if not chunks:
@@ -315,7 +320,7 @@ class GitImportStrategy(ImportStrategy):
                                      lambda filename, relative_path, content:
                                      context.import_content(kb_id, filename, "git", relative_path, content))
 
-            context.save_source(kb_id, None, "git")
+            context.save_source(kb_id, source_id, "git", source_url=params.repo_url, branch=params.branch)
             logger.info(f"Git import done: {params.repo_url} -> {total_chunks} chunks")
             return total_chunks
         except ApplicationError:
@@ -357,7 +362,7 @@ class UrlImportStrategy(ImportStrategy):
                         content = bytes(data).decode("utf-8", errors="replace")
                         filename = self._extract_filename(current)
                         chunk_count = context.import_content(kb_id, filename, "url", current, content)
-                        context.save_source(kb_id, None, "url")
+                        context.save_source(kb_id, source_id, "url", source_url=current)
                         logger.info("URL import done: %s -> %s chunks", current, chunk_count)
                         return chunk_count
                 raise ApplicationError("Too many redirects", 422, "invalid_import_url")
@@ -383,7 +388,7 @@ class LocalDirImportStrategy(ImportStrategy):
                                  params.included_files, params.max_file_size,
                                  lambda filename, relative_path, content:
                                  context.import_content(kb_id, filename, "local_dir", relative_path, content))
-        context.save_source(kb_id, None, "local_dir")
+        context.save_source(kb_id, source_id, "local_dir", source_path=params.dir_path)
         logger.info(f"Local dir import done: {params.dir_path} -> {total_chunks} chunks")
         return total_chunks
 
@@ -417,7 +422,19 @@ class ImporterService:
         params = ImportParams.from_dict(body)
         import uuid
         source_id = str(uuid.uuid4())
-        total_chunks = strategy.import_source(kb_id, source_id, self.context, params)
+        source_url = params.repo_url or params.url
+        source_path = params.dir_path
+        self.repo.save_source(kb_id, source_type, source_url=source_url, source_path=source_path,
+                              branch=params.branch, source_id=source_id, status="pending")
+        try:
+            total_chunks = strategy.import_source(kb_id, source_id, self.context, params)
+        except Exception as exc:
+            self.repo.update_source_status(source_id, "failed", str(exc)[:2000])
+            raise
+        if total_chunks <= 0:
+            self.repo.update_source_status(source_id, "failed", "No documents were imported")
+        else:
+            self.repo.update_source_status(source_id, "ingested", None)
         return {
             "success": True,
             "sourceId": source_id,

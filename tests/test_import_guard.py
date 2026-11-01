@@ -1,7 +1,7 @@
 import pytest
 
 from app.application.errors import ApplicationError
-from app.domain.importer import ImportGuard, file_walk
+from app.domain.importer import ImporterService, ImportGuard, file_walk
 from app.domain.knowledge import ChunkConfig, TextSplitter
 
 
@@ -55,3 +55,23 @@ def test_text_splitter_normalizes_json_and_extracts_code_symbols():
     code_chunks = splitter.split("def first():\n    return 1\n\nclass Second:\n    pass", "py", ChunkConfig(512, 0), {"filePath": "a.py"})
     assert [chunk.chunk_type for chunk in code_chunks] == ["code", "code"]
     assert code_chunks[0].language == "py"
+
+
+def test_importer_persists_returned_source_id_and_failure_status():
+    class Repo:
+        def __init__(self):
+            self.sources = {}
+        def save_source(self, kb_id, source_type, **kwargs):
+            self.sources[kwargs["source_id"]] = {"kb_id": kb_id, "source_type": source_type, "status": kwargs["status"]}
+        def update_source_status(self, source_id, status, error=None, file_count=None):
+            self.sources[source_id].update(status=status, error=error)
+
+    repo = Repo()
+    importer = ImporterService(repo, TextSplitter(), object())
+    importer.strategies["test"] = type("Failing", (), {
+        "get_source_type": lambda self: "test",
+        "import_source": lambda self, *_args: 0,
+    })()
+    result = importer.import_source("kb-1", {"source_type": "test"})
+    assert result["sourceId"] in repo.sources
+    assert repo.sources[result["sourceId"]]["status"] == "failed"
