@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { del, get, post, put } from "./api";
+import { del, get, post, put, upload } from "./api";
 import type { ClientConfig, Dashboard, KnowledgeBase, PromptTemplate, Provider, SoftwareTool, WikiPage, WikiProject } from "./types";
 import "./styles.css";
 
@@ -56,10 +56,12 @@ function Table({ rows, columns }: { rows: Record<string, unknown>[]; columns: st
 function KnowledgePage({ onError }: { onError: (message: string) => void }) {
   const [rows, setRows] = useState<KnowledgeBase[]>([]);
   const [name, setName] = useState("");
+  const [selectedKb, setSelectedKb] = useState("");
   const load = () => get<KnowledgeBase[]>("/api/v1/kb").then(setRows).catch((error: Error) => onError(error.message));
   useEffect(() => { load(); }, []);
   const create = () => { if (!name.trim()) return; post<KnowledgeBase>("/api/v1/kb", { name: name.trim() }).then(() => { setName(""); load(); }).catch((error: Error) => onError(error.message)); };
-  return <section><div className="panel"><div className="panel-head"><h2>知识库</h2><button className="primary" onClick={load}>刷新</button></div><div className="inline-form"><input placeholder="新知识库名称" value={name} onChange={event => setName(event.target.value)} /><button className="primary" onClick={create}>创建</button></div><div className="card-list">{rows.map(row => <article className="subcard" key={row.id}><strong>{row.name}</strong><span>{row.description || "暂无描述"}</span><small>{row.doc_count} 文档 · {row.chunk_count} 分块 · {row.index_status}</small></article>)}</div>{rows.length === 0 && <p className="muted">暂无知识库。</p>}</div></section>;
+  const handleUpload = (event: FormEvent<HTMLInputElement>) => { const file = event.currentTarget.files?.[0]; if (!file || !selectedKb) return; upload(`/api/v1/kb/${selectedKb}/documents/upload`, file).then(() => { event.currentTarget.value = ""; load(); }).catch((error: Error) => onError(error.message)); };
+  return <section><div className="panel"><div className="panel-head"><h2>知识库</h2><button className="primary" onClick={load}>刷新</button></div><div className="inline-form"><input placeholder="新知识库名称" value={name} onChange={event => setName(event.target.value)} /><button className="primary" onClick={create}>创建</button></div><div className="inline-form"><select value={selectedKb} onChange={event => setSelectedKb(event.target.value)}><option value="">选择上传目标</option>{rows.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select><input type="file" onChange={handleUpload} disabled={!selectedKb} /></div><div className="card-list">{rows.map(row => <article className="subcard" key={row.id}><strong>{row.name}</strong><span>{row.description || "暂无描述"}</span><small>{row.doc_count} 文档 · {row.chunk_count} 分块 · {row.index_status}</small></article>)}</div>{rows.length === 0 && <p className="muted">暂无知识库。</p>}</div></section>;
 }
 
 function WikiPageView({ onError }: { onError: (message: string) => void }) {
