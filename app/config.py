@@ -96,6 +96,7 @@ class AuthConfig:
     bootstrap_password: str = field(default_factory=lambda: _env("ADMIN_PASSWORD", "") or "")
     mcp_api_key_access: bool = field(default_factory=lambda: _bool("MCP_API_KEY_ACCESS", False))
     quota_reserve_tokens: int = field(default_factory=lambda: _int("API_KEY_QUOTA_RESERVE", 1024, 0))
+    provider_token_key: str = field(default_factory=lambda: _env("PROVIDER_TOKEN_KEY", "") or "")
 
     def __post_init__(self):
         environment = (_env("APP_ENV", "development") or "development").lower()
@@ -106,6 +107,8 @@ class AuthConfig:
                 raise ValueError("ADMIN_TOKEN is required in production")
             if not (self.admin_password_hash or self.bootstrap_password):
                 raise ValueError("ADMIN_PASSWORD_HASH or ADMIN_PASSWORD is required in production")
+            if not self.provider_token_key:
+                raise ValueError("PROVIDER_TOKEN_KEY is required in production")
 
 
 @dataclass(frozen=True)

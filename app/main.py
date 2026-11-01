@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.controllers.access_routes import router as access_router
 from app.api.controllers.auth_routes import router as auth_router
 from app.api.controllers.mcp_routes import router as standard_mcp_router
+from app.api.controllers.provider_routes import router as provider_router
 from app.api.controllers.routes import (
     agent_router,
     apikey_router,
@@ -78,6 +79,7 @@ app.include_router(auth_router)
 app.include_router(wiki_router)
 app.include_router(access_router)
 app.include_router(software_router)
+app.include_router(provider_router)
 app.add_exception_handler(ApplicationError, application_error_handler)
 
 
