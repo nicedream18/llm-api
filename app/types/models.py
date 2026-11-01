@@ -69,6 +69,11 @@ class ChannelDTO(BaseModel):
     api_keys: list["ChannelApiKeyDTO"] | None = None
 
 
+class ChannelImportDTO(BaseModel):
+    channels: list[ChannelDTO] = Field(min_length=1, max_length=500)
+    replace_existing: bool = False
+
+
 class ApiKeyDTO(BaseModel):
     id: str | None = None
     name: str = ""

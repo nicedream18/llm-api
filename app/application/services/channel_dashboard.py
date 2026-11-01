@@ -45,6 +45,61 @@ class ChannelService:
     def list_channels(self):
         return [self._to_dto(e) for e in self.repo.get_all_channels()]
 
+    def export_channels(self, include_secrets=False):
+        """Return a portable channel snapshot with secrets omitted by default."""
+        channels = []
+        for entity in self.repo.get_all_channels():
+            row = {
+                "id": entity.id,
+                "name": entity.name,
+                "type": entity.type,
+                "base_url": entity.base_url,
+                "models": list(entity.models or []),
+                "status": entity.status,
+                "priority": entity.priority,
+                "weight": entity.weight,
+                "config": dict(entity.config or {}),
+                "model_mapping": dict(entity.model_mapping or {}),
+            }
+            if include_secrets:
+                row["api_key"] = entity.api_key
+                row["api_keys"] = [
+                    {
+                        "id": key.id,
+                        "name": key.name,
+                        "api_key": key.api_key,
+                        "status": key.status,
+                        "weight": key.weight,
+                    }
+                    for key in (entity.api_keys or [])
+                ]
+            channels.append(row)
+        return {
+            "version": 1,
+            "secret_fields_included": bool(include_secrets),
+            "exported_at": _now(),
+            "channels": channels,
+        }
+
+    def import_channels(self, channels, replace_existing=False):
+        """Import channel DTOs, preserving existing credentials when omitted."""
+        created = []
+        updated = []
+        skipped = []
+        for dto in channels:
+            existing = self.repo.get_channel(dto.id) if dto.id else None
+            if existing and not replace_existing:
+                skipped.append(dto.id)
+                continue
+            entity = self._to_entity(dto, existing)
+            if existing:
+                self.repo.update_channel(entity)
+                updated.append(entity.id)
+            else:
+                created_entity = self.repo.create_channel(entity)
+                created.append(created_entity.id)
+        return {"created": created, "updated": updated, "skipped": skipped}
+
     def get_channel(self, channel_id):
         return self._to_dto(self.repo.get_channel(channel_id))
 

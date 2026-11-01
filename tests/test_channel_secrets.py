@@ -91,3 +91,40 @@ def test_channel_upstream_keys_are_masked_and_preserve_secret_on_update():
     assert set(listed[0].api_key[4:-4]) == {"*"}
     service.update_channel_api_key("channel-1", "up-1", ChannelApiKeyDTO(id="up-1", api_key=listed[0].api_key))
     assert repo.channel.api_keys[0].api_key == "upstream-secret-123456"
+
+
+def test_channel_export_omits_secrets_by_default_and_can_include_them_explicitly():
+    service = ChannelService(FakeRepository(), None)
+
+    safe = service.export_channels()
+    assert safe["secret_fields_included"] is False
+    assert "api_key" not in safe["channels"][0]
+    assert "api_keys" not in safe["channels"][0]
+
+    full = service.export_channels(include_secrets=True)
+    assert full["secret_fields_included"] is True
+    assert full["channels"][0]["api_key"] == "provider-secret-123456"
+    assert full["channels"][0]["api_keys"][0]["api_key"] == "upstream-secret-123456"
+
+
+def test_channel_import_preserves_existing_secret_when_snapshot_is_redacted():
+    repo = FakeRepository()
+    service = ChannelService(repo, None)
+
+    result = service.import_channels(
+        [ChannelDTO(id="channel-1", name="renamed", api_key=None)],
+        replace_existing=True,
+    )
+
+    assert result == {"created": [], "updated": ["channel-1"], "skipped": []}
+    assert repo.updated_channel.api_key == "provider-secret-123456"
+    assert repo.updated_channel.name == "renamed"
+
+
+def test_channel_import_skips_existing_without_replace_flag():
+    repo = FakeRepository()
+    service = ChannelService(repo, None)
+
+    result = service.import_channels([ChannelDTO(id="channel-1", name="ignored")])
+
+    assert result == {"created": [], "updated": [], "skipped": ["channel-1"]}

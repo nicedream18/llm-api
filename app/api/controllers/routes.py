@@ -18,6 +18,7 @@ from app.types.models import (
     ApiKeyDTO,
     ChannelApiKeyDTO,
     ChannelDTO,
+    ChannelImportDTO,
     CreateKbDTO,
     KbAskRequestDTO,
     KbKnowledgeBaseDTO,
@@ -148,6 +149,29 @@ async def health_details():
 # ==================== Channel Controller ====================
 
 channel_router = APIRouter(prefix="/api/v1/channels")
+
+
+@channel_router.get("/export")
+async def export_channels(include_secrets: bool = False):
+    from fastapi.responses import JSONResponse
+
+    payload = get_container().channel_service.export_channels(include_secrets)
+    return JSONResponse(
+        payload,
+        headers={
+            "Content-Disposition": 'attachment; filename="channels-export.json"',
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@channel_router.post("/import")
+async def import_channels(dto: ChannelImportDTO):
+    return _success(
+        get_container().channel_service.import_channels(
+            dto.channels, dto.replace_existing
+        )
+    )
 
 
 @channel_router.get("")
