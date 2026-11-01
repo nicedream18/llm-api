@@ -511,6 +511,7 @@ LOG_LEVEL=info              # 日志级别
 | GET/POST/PUT/DELETE | /api/v1/software/* | Software 实例、工具、启停、调用与调用记录 |
 | POST | /api/v1/software/openapi/preview、/api/v1/software/openapi/import | 预览 OpenAPI 3.0/3.1 操作并将选中项导入为审批工具 |
 | GET/POST/PUT/DELETE | /api/v1/providers/* | Provider 账户、OAuth、Token、配额与模型 |
+| POST | /api/v1/providers/{id}/authorize、/refresh、/logout、/token | Provider 账号授权和生命周期管理；显式配置通用网关地址的 active 账号可参与网关路由 |
 | GET/POST/PUT/DELETE | /api/v1/platform/* | Prompt、语义缓存和客户端配置 |
 | GET/POST/DELETE | /api/v1/access/* | 按资源和主体配置授权 |
 | POST | /api/v1/auth/login | 管理员登录并建立会话 |
