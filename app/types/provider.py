@@ -1,8 +1,9 @@
 """Auth provider account contracts."""
 
+from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 PROVIDER_NAMES = ("codex", "gemini", "grok", "kimi", "qoder", "workbuddy")
 
@@ -21,6 +22,20 @@ class ProviderTokenInput(BaseModel):
     access_token: str = Field(min_length=1, max_length=16384)
     refresh_token: str | None = Field(default=None, max_length=16384)
     expires_at: str | None = Field(default=None, max_length=64)
+
+    @field_validator("expires_at", mode="before")
+    @classmethod
+    def normalize_expiry(cls, value):
+        if value is None:
+            return None
+        try:
+            try:
+                parsed = datetime.fromtimestamp(float(value), UTC)
+            except ValueError:
+                parsed = datetime.fromisoformat(str(value))
+            return parsed.replace(tzinfo=parsed.tzinfo or UTC).astimezone(UTC).isoformat()
+        except (ValueError, TypeError, OverflowError, OSError):
+            raise ValueError("Invalid token expiry timestamp") from None
 
 
 class ProviderAccountView(BaseModel):

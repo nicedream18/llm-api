@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from sqlalchemy import text
 
 from app.infrastructure.database.connection import engine as default_engine
+from app.infrastructure.repositories.provider_auth_repo import ProviderAuthRepository
 from app.infrastructure.repositories.provider_operations_repo import (
     ProviderOperationsRepository,
 )
@@ -18,7 +19,7 @@ def _now():
     return datetime.now(UTC).isoformat()
 
 
-class ProviderRepository(ProviderOperationsRepository):
+class ProviderRepository(ProviderOperationsRepository, ProviderAuthRepository):
     def __init__(self, engine=None):
         self.engine = engine if engine is not None else default_engine
 
@@ -57,6 +58,9 @@ class ProviderRepository(ProviderOperationsRepository):
                 values[key] = json.dumps(values[key] or {}, ensure_ascii=False)
         fields = ", ".join(f"{key}=:{key}" for key in values if key != "id")
         with self.engine.begin() as db:
+            account = self._lock(db, account_id)
+            if any(key in values and values[key] != account[key] for key in ("provider", "client_config")):
+                self._invalidate_auth(db, account_id)
             db.execute(text(f"UPDATE provider_accounts SET {fields} WHERE id=:id"), values)
         return self.get_account(account_id)
 
@@ -77,13 +81,7 @@ class ProviderRepository(ProviderOperationsRepository):
             ).rowcount > 0
 
     def save_token(self, account_id, values):
-        row = {"id": str(uuid.uuid4()), "account_id": account_id, "created_at": _now(), "updated_at": _now(), **values}
-        with self.engine.begin() as db:
-            db.execute(text("DELETE FROM provider_tokens WHERE account_id=:account_id"), {"account_id": account_id})
-            db.execute(text("""INSERT INTO provider_tokens
-                (id,account_id,access_token,refresh_token,expires_at,created_at,updated_at)
-                VALUES (:id,:account_id,:access_token,:refresh_token,:expires_at,:created_at,:updated_at)"""), row)
-            db.execute(text("UPDATE provider_accounts SET status='active', updated_at=:updated_at WHERE id=:id"), {"id": account_id, "updated_at": row["updated_at"]})
+        return self.store_token(account_id, values)
 
     def get_token(self, account_id):
         with self.engine.connect() as db:
@@ -91,9 +89,7 @@ class ProviderRepository(ProviderOperationsRepository):
             return dict(row) if row else None
 
     def delete_token(self, account_id):
-        with self.engine.begin() as db:
-            db.execute(text("DELETE FROM provider_tokens WHERE account_id=:id"), {"id": account_id})
-            db.execute(text("UPDATE provider_accounts SET status='signed_out', updated_at=:updated_at WHERE id=:id"), {"id": account_id, "updated_at": _now()})
+        return self.invalidate_token(account_id)
 
     def record_failure(self, account_id, cooldown_until):
         with self.engine.begin() as db:

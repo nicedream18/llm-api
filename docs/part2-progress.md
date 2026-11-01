@@ -18,7 +18,7 @@ Vitest 11 项、TypeScript 和 Vite 构建通过。完整覆盖数据在本机
 |---|---|---|
 | N0 | 可复现基线、固定前端版本、质量门禁 | 完成 |
 | N1 | 账号检索、分组标签、批量启停、归档恢复和管理台 | 自动化完成；MySQL 待环境验收 |
-| N2 | 持久化 OAuth、一次性 state、刷新租约及 Token 版本 | 待实施 |
+| N2 | 持久化 OAuth、一次性 state、刷新租约及 Token 版本 | 自动化完成；真实 Provider/MySQL 待验收 |
 | N3 | 配额/模型快照、同步任务、重试和恢复 | 待实施 |
 | N4 | 路由组、配额均衡、预演和并发控制 | 待实施 |
 | N5 | 用量账本、真实超额结算、版本化价格和费用 | 待实施 |
@@ -62,3 +62,15 @@ MySQL DDL 不承诺事务回滚；迁移必须可恢复，既有 checksum 不可
 - 完整门禁：后端 367 passed / 6 skipped；覆盖率高于 85.63%；Node 4、Vitest 16，静态检查和构建通过。
 - 失败尝试：门禁首次发现测试文件尾空行，修正后重跑；没有降低门槛或移除测试。
 - DevBugKB 无可用案例源，未命中案例 ID。
+
+### N2
+
+- 021 迁移新增授权事务和 Token generation/refresh lease 表，state 哈希、PKCE 加密、十分钟过期。
+- GET/POST 回调绑定主体和 Provider，单次消费；Token 更新、退出和归档使旧授权失效。
+- 刷新在网络调用期间持有可过期租约，完成时校验 generation 和 owner；退出先清理本地 Token。
+- 删除运行时授权码充当 Token 的回退；缺少端点、厂商不支持、授权失效分别报告明确错误。
+- 六个标识的 `/capabilities` 明确为 configured_oauth、vendor_verified=false。
+- 时间戳统一为 UTC；回调清除访问日志查询串；撤销失败日志不包含上游异常正文。
+- 后端 393 passed / 7 skipped，覆盖率 86.37%；新增授权服务/仓储定向覆盖率至少 95%。
+- Ruff、Mypy、compileall、Node 4、Vitest 16、TypeScript、Vite 构建和 diff 检查通过。
+- MySQL 增加租约/版本竞争验收；本机缺少服务跳过。厂商 OAuth 仍需显式测试账号。

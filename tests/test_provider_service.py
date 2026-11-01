@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import pytest
@@ -11,6 +12,9 @@ class MemoryProviderRepository:
     def __init__(self):
         self.accounts = {}
         self.tokens = {}
+        self.oauth_states = {}
+        self.generation = 0
+        self.owner = None
 
     def create_account(self, values):
         account = {"id": "provider-1", "status": "disconnected", **values}
@@ -42,14 +46,39 @@ class MemoryProviderRepository:
     def save_token(self, account_id, values):
         self.tokens[account_id] = values
         self.accounts[account_id]["status"] = "active"
+        self.generation += 1
+        self.oauth_states.clear()
 
     def get_token(self, account_id):
         return self.tokens.get(account_id)
 
     def delete_token(self, account_id):
+        self.generation += 1
+        self.oauth_states.clear()
         self.tokens.pop(account_id, None)
         if account_id in self.accounts:
             self.accounts[account_id]["status"] = "disconnected"
+
+    def store_oauth(self, values):
+        self.oauth_states[values["state_hash"]] = {**values, "generation": self.generation}
+
+    def consume_oauth(self, key, principal, provider):
+        return self.oauth_states.pop(key, None)
+
+    def claim_refresh(self, account_id, owner):
+        if account_id not in self.tokens:
+            raise ApplicationError("Provider account is not connected", 404, "not_found")
+        self.owner = owner
+        return {**self.tokens[account_id], "generation": self.generation}
+
+    def release_refresh(self, account_id, owner):
+        if self.owner == owner:
+            self.owner = None
+
+    def store_token(self, account_id, values, generation, owner):
+        assert generation == self.generation
+        assert owner is None or owner == self.owner
+        self.save_token(account_id, values)
 
 
 def test_provider_account_oauth_refresh_and_metadata_lifecycle(monkeypatch):
@@ -93,7 +122,7 @@ def test_provider_account_oauth_refresh_and_metadata_lifecycle(monkeypatch):
 
     monkeypatch.setattr(provider_service, "adapter_for", lambda _provider: Adapter())
     authorization = service.authorize(account["id"])
-    assert authorization["state"] in service._oauth_states
+    assert hashlib.sha256(authorization["state"].encode()).hexdigest() in repo.oauth_states
     connected = service.callback(authorization["state"], "one-use-code")
     assert connected["status"] == "active"
     assert "access_token" not in connected and "refresh_token" not in connected
@@ -151,7 +180,7 @@ def test_provider_service_rejects_missing_accounts_tokens_and_failed_upstream(mo
     with pytest.raises(ApplicationError, match="authorization failed") as err:
         service.callback(auth["state"], "code")
     assert "private upstream error" not in str(err.value)
-    assert auth["state"] not in service._oauth_states
+    assert hashlib.sha256(auth["state"].encode()).hexdigest() not in repo.oauth_states
 
     service.set_token(account["id"], ProviderTokenInput(access_token="access", refresh_token="refresh"))
     with pytest.raises(ApplicationError, match="refresh failed"):
@@ -207,6 +236,7 @@ def test_provider_failure_cooldown_is_persisted_and_cleared(tmp_path):
         execute_migration(db, Path("docs/migrations/014_provider_accounts.sql"))
         execute_migration(db, Path("docs/migrations/017_provider_resilience.sql"))
         execute_migration(db, Path("docs/migrations/020_provider_operations.sql"))
+        execute_migration(db, Path("docs/migrations/021_provider_auth_lifecycle.sql"))
     repo = ProviderRepository(engine)
     service = ProviderService(repo)
     account = service.create_account(ProviderAccountInput(provider="codex", name="Routeable", client_config={"gateway_url": "https://gateway.example"}))

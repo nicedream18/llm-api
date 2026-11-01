@@ -94,6 +94,7 @@ class ProviderOperationsRepository:
             fields = {}
             if operation == "archive":
                 fields = {"enabled": 0, "archived_at": stamp()}
+                self._invalidate_auth(db, account_id)
                 db.execute(text("DELETE FROM provider_tokens WHERE account_id=:id"), {"id": account_id})
                 db.execute(text("UPDATE provider_accounts SET status='signed_out',updated_at=:now WHERE id=:id"), {"id": account_id, "now": stamp()})
             elif operation == "restore":

@@ -15,9 +15,12 @@ def test_provider_account_token_is_encrypted_and_oauth_flow_is_mockable(monkeypa
     with engine.begin() as db:
         execute_migration(db, Path("docs/migrations/014_provider_accounts.sql"))
         execute_migration(db, Path("docs/migrations/020_provider_operations.sql"))
+        execute_migration(db, Path("docs/migrations/021_provider_auth_lifecycle.sql"))
     repo = ProviderRepository(engine)
     service = ProviderService(repo)
-    account = service.create_account(ProviderAccountInput(provider="gemini", name="Gemini", client_config={"authorization_url": "https://accounts.example/authorize", "client_id": "client"}))
+    from httpx import Response
+    monkeypatch.setattr("app.domain.provider_adapters.httpx.post", lambda *_args, **_kwargs: Response(200, json={"access_token": "exchanged-token"}))
+    account = service.create_account(ProviderAccountInput(provider="gemini", name="Gemini", client_config={"authorization_url": "https://accounts.example/authorize", "token_url": "https://accounts.example/token", "redirect_uri": "http://localhost/callback", "client_id": "client"}))
     service.set_token(account["id"], ProviderTokenInput(access_token="access-secret", refresh_token="refresh-secret"))
     raw = repo.get_token(account["id"])
     assert raw["access_token"] != "access-secret"
@@ -30,7 +33,7 @@ def test_provider_account_token_is_encrypted_and_oauth_flow_is_mockable(monkeypa
 
 
 def test_provider_rejects_invalid_oauth_state():
-    service = ProviderService(type("Repo", (), {})())
+    service = ProviderService(type("Repo", (), {"consume_oauth": lambda *_args: None})())
     with pytest.raises(Exception, match="state"):
         service.callback("invalid", "code")
 
@@ -78,6 +81,7 @@ def test_provider_account_delete_removes_encrypted_token(tmp_path):
     with engine.begin() as db:
         execute_migration(db, Path("docs/migrations/014_provider_accounts.sql"))
         execute_migration(db, Path("docs/migrations/020_provider_operations.sql"))
+        execute_migration(db, Path("docs/migrations/021_provider_auth_lifecycle.sql"))
     repo = ProviderRepository(engine)
     account = repo.create_account({"provider": "codex", "name": "Delete me", "client_config": {}, "model_mapping": {}, "priority": 0})
     repo.save_token(account["id"], {"access_token": "cipher", "refresh_token": None, "expires_at": None})

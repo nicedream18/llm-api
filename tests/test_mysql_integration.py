@@ -188,3 +188,23 @@ def test_mysql_provider_account_operations(mysql_engine):
     assert service.query_accounts(ProviderAccountQuery(archived=True))["total"] == 1
     service.operate_account(account_id, ProviderOperationInput(operation="restore"))
     assert service.repo.get_token(account_id) is None
+
+
+def test_mysql_provider_refresh_lease_and_epoch(mysql_engine):
+    from app.application.errors import ApplicationError
+    from app.infrastructure.repositories.provider_repo import ProviderRepository
+
+    migrations.apply_migrations()
+    first, second = ProviderRepository(mysql_engine), ProviderRepository(mysql_engine)
+    account = first.create_account({"provider": "codex", "name": "lease", "priority": 0})["id"]
+    values = {"access_token": "synthetic-cipher", "refresh_token": None, "expires_at": None}
+    first.save_token(account, values)
+    leased = first.claim_refresh(account, "worker-one")
+    with pytest.raises(ApplicationError) as conflict:
+        second.claim_refresh(account, "worker-two")
+    assert conflict.value.code == "refresh_in_progress"
+    second.delete_token(account)
+    with pytest.raises(ApplicationError) as stale:
+        first.store_token(account, values, leased["generation"], "worker-one")
+    assert stale.value.code == "authorization_changed"
+    assert second.get_token(account) is None

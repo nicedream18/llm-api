@@ -8,12 +8,12 @@ import json
 import logging
 import os
 import re
-import secrets
 from datetime import UTC, datetime, timedelta
 
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.application.errors import ApplicationError
+from app.application.services.provider_authorization import ProviderAuthorization
 from app.config import config
 from app.domain.entities import ChannelEntity
 from app.domain.provider_adapters import adapter_for
@@ -30,7 +30,7 @@ class ProviderService:
 
     def __init__(self, repository):
         self.repo = repository
-        self._oauth_states: dict[str, tuple[str, str]] = {}
+        self.authorization = ProviderAuthorization(repository, self, lambda name: adapter_for(name))
 
     @staticmethod
     def _decode(row):
@@ -132,65 +132,17 @@ class ProviderService:
         })
         return self._decode(self.repo.get_account(account_id))
 
-    def authorize(self, account_id):
-        account = self.repo.get_account(account_id)
-        if not account:
-            raise ApplicationError("Provider account not found", 404, "not_found")
-        state = secrets.token_urlsafe(32)
-        verifier = secrets.token_urlsafe(48)
-        self._oauth_states[state] = (account_id, verifier)
-        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-        adapter = adapter_for(account["provider"])
-        return {"state": state, "authorization_url": adapter.authorize_url(self._client_config(account), state, challenge)}
+    def authorize(self, account_id, principal=("admin", "system")):
+        return self.authorization.begin(account_id, principal)
 
-    def callback(self, state, code):
-        record = self._oauth_states.pop(state, None)
-        if not record:
-            raise ApplicationError("OAuth state is invalid or expired", 400, "invalid_oauth_state")
-        account_id, verifier = record
-        account = self.repo.get_account(account_id)
-        if not account:
-            raise ApplicationError("Provider account not found", 404, "not_found")
-        try:
-            token = adapter_for(account["provider"]).exchange_code(self._client_config(account), code, verifier)
-        except ApplicationError:
-            raise
-        except Exception as exc:
-            raise ApplicationError("Provider authorization failed", 502, "provider_error") from exc
-        from app.types.provider import ProviderTokenInput
-        return self.set_token(account_id, ProviderTokenInput(**token))
+    def callback(self, state, code, principal=("admin", "system"), provider=None, error=None):
+        return self.authorization.finish(state, code, principal, provider, error)
 
     def sign_out(self, account_id):
-        account = self.repo.get_account(account_id)
-        token = self.repo.get_token(account_id) if account else None
-        try:
-            if account and token:
-                access_token = self._decrypt(token.get("access_token"))
-                revoke = getattr(adapter_for(account["provider"]), "revoke", None)
-                if access_token and callable(revoke):
-                    revoke(self._client_config(account), access_token)
-        except (ApplicationError, ValueError, TypeError) as exc:
-            # Local sign-out must still remove the token if a provider is down.
-            logger.warning("Provider revoke failed during local sign-out", exc_info=exc)
-        finally:
-            self.repo.delete_token(account_id)
-        return True
+        return self.authorization.sign_out(account_id)
 
     def refresh(self, account_id):
-        account = self.repo.get_account(account_id)
-        token = self.repo.get_token(account_id) if account else None
-        if not account or not token:
-            raise ApplicationError("Provider account is not connected", 404, "not_found")
-        try:
-            refreshed = adapter_for(account["provider"]).refresh(self._client_config(account), self._decrypt(token.get("refresh_token")) or "")
-        except ApplicationError:
-            raise
-        except Exception as exc:
-            raise ApplicationError("Provider token refresh failed", 502, "provider_error") from exc
-        if refreshed.get("access_token"):
-            from app.types.provider import ProviderTokenInput
-            self.set_token(account_id, ProviderTokenInput(**{**refreshed, "refresh_token": refreshed.get("refresh_token") or self._decrypt(token.get("refresh_token"))}))
-        return self._decode(self.repo.get_account(account_id))
+        return self.authorization.refresh(account_id)
 
     def quota(self, account_id):
         return self._provider_data(account_id, "quota")

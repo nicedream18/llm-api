@@ -3,10 +3,12 @@
 import asyncio
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.container import get_container
+from app.domain.provider_adapters import ConfiguredProviderAdapter
 from app.types.provider import (
+    PROVIDER_NAMES,
     ProviderAccountInput,
     ProviderAccountQuery,
     ProviderBulkInput,
@@ -15,6 +17,16 @@ from app.types.provider import (
 )
 
 router = APIRouter(prefix="/api/v1/providers", tags=["Providers"])
+
+
+def _principal(request):
+    context = getattr(request.state, "auth_context", None)
+    return (context.principal_type, context.principal_id) if context else ("admin", "system")
+
+
+@router.get("/capabilities")
+async def provider_capabilities():
+    return {"code": "0000", "info": "成功", "data": [{"provider": name, "adapter": ConfiguredProviderAdapter.__name__, "mode": "configured_oauth", "vendor_verified": False} for name in PROVIDER_NAMES]}
 
 
 @router.get("/accounts")
@@ -70,13 +82,14 @@ async def set_provider_token(account_id: str, dto: ProviderTokenInput):
 
 
 @router.post("/{account_id}/authorize")
-async def authorize_provider(account_id: str):
-    return {"code": "0000", "info": "成功", "data": await asyncio.to_thread(get_container().provider_service.authorize, account_id)}
+async def authorize_provider(account_id: str, request: Request):
+    return {"code": "0000", "info": "成功", "data": await asyncio.to_thread(get_container().provider_service.authorize, account_id, _principal(request))}
 
 
-@router.post("/callback/{provider}")
-async def provider_callback(provider: str, state: str, code: str):
-    return {"code": "0000", "info": "成功", "data": await asyncio.to_thread(get_container().provider_service.callback, state, code)}
+@router.api_route("/callback/{provider}", methods=["GET", "POST"])
+async def provider_callback(provider: str, request: Request, state: str = Query(min_length=16, max_length=256), code: str = Query(default="", max_length=16384), error: str | None = Query(default=None, max_length=256)):
+    request.scope["query_string"] = b""
+    return {"code": "0000", "info": "成功", "data": await asyncio.to_thread(get_container().provider_service.callback, state, code, _principal(request), provider, error)}
 
 
 @router.post("/{account_id}/refresh")

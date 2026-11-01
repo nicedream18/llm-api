@@ -2,11 +2,33 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
+
+from app.application.errors import ApplicationError
+
+
+def config_hash(account) -> str:
+    value = account.get("client_config") or {}
+    if isinstance(value, str):
+        value = json.loads(value)
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def require_endpoint(url: str) -> str:
+    try:
+        parsed = urlsplit(url)
+        _ = parsed.port
+    except ValueError:
+        raise ApplicationError("Invalid Provider endpoint", 422, "invalid_provider_endpoint") from None
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+        raise ApplicationError("Invalid Provider endpoint", 422, "invalid_provider_endpoint")
+    return url
 
 
 class ProviderAdapter(ABC):
@@ -16,7 +38,11 @@ class ProviderAdapter(ABC):
     def authorize_url(self, config: dict, state: str, code_challenge: str) -> str:
         base = str(config.get("authorization_url") or "")
         if not base:
-            return ""
+            raise ApplicationError("Provider authorization endpoint is not configured", 503, "provider_not_configured")
+        require_endpoint(base)
+        if not config.get("client_id") or not config.get("redirect_uri"):
+            raise ApplicationError("Provider client ID and redirect URI are required", 503, "provider_not_configured")
+        require_endpoint(str(config["redirect_uri"]))
         params = {
             "client_id": config.get("client_id", ""),
             "redirect_uri": config.get("redirect_uri", ""),
@@ -25,7 +51,9 @@ class ProviderAdapter(ABC):
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
-        return base + ("&" if "?" in base else "?") + urlencode(params)
+        parsed = urlsplit(base)
+        existing = [(key, value) for key, value in parse_qsl(parsed.query) if key not in params]
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode([*existing, *params.items()]), ""))
 
     @abstractmethod
     def exchange_code(self, config: dict, code: str, verifier: str) -> dict:
@@ -45,7 +73,7 @@ class ProviderAdapter(ABC):
 
 
 class ConfiguredProviderAdapter(ProviderAdapter):
-    """Provider adapter with configurable HTTP endpoints and test fallback."""
+    """Standard OAuth adapter; vendor-specific protocols require separate validation."""
 
     def exchange_code(self, config: dict, code: str, verifier: str) -> dict:
         if not code or not verifier:
@@ -62,15 +90,14 @@ class ConfiguredProviderAdapter(ProviderAdapter):
             if config.get("client_secret"):
                 payload["client_secret"] = config["client_secret"]
             return self._token_request(token_url, payload, config)
-        # Development fallback retained for deterministic local tests.
-        return {"access_token": code, "refresh_token": None, "expires_at": None}
+        raise ApplicationError("Provider token endpoint is not configured", 503, "provider_not_configured")
 
     def refresh(self, config: dict, refresh_token: str) -> dict:
         if not refresh_token:
             raise ValueError("Refresh token is required")
         token_url = str(config.get("token_url") or config.get("token_endpoint") or "")
         if not token_url:
-            return {"refresh_token": refresh_token}
+            raise ApplicationError("Provider token endpoint is not configured", 503, "provider_not_configured")
         payload = {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
@@ -83,7 +110,8 @@ class ConfiguredProviderAdapter(ProviderAdapter):
     def revoke(self, config: dict, access_token: str) -> None:
         url = str(config.get("revoke_url") or config.get("revoke_endpoint") or "")
         if not url:
-            return
+            raise ApplicationError("Provider does not support remote revocation", 501, "provider_capability_unsupported")
+        require_endpoint(url)
         try:
             response = httpx.post(
                 url,
@@ -95,19 +123,17 @@ class ConfiguredProviderAdapter(ProviderAdapter):
             raise ValueError("Provider revoke endpoint is unavailable") from exc
         if response.status_code < 200 or response.status_code >= 300:
             raise ValueError("Provider revoke endpoint rejected the request")
-        return
-
     def quota(self, config: dict, access_token: str) -> dict:
         url = str(config.get("quota_url") or "")
         if not url:
-            return {}
+            raise ApplicationError("Provider quota endpoint is not configured", 501, "provider_capability_unsupported")
         payload = self._json_request(url, access_token, config)
         return payload if isinstance(payload, dict) else {"value": payload}
 
     def models(self, config: dict, access_token: str) -> list[str]:
         url = str(config.get("models_url") or "")
         if not url:
-            return []
+            raise ApplicationError("Provider models endpoint is not configured", 501, "provider_capability_unsupported")
         payload = self._json_request(url, access_token, config)
         values = payload.get("data", payload.get("models", [])) if isinstance(payload, dict) else payload
         if not isinstance(values, list):
@@ -128,11 +154,14 @@ class ConfiguredProviderAdapter(ProviderAdapter):
 
     @classmethod
     def _token_request(cls, url: str, payload: dict, config: dict) -> dict:
+        require_endpoint(url)
         try:
             response = httpx.post(url, data=payload, timeout=cls._timeout(config), follow_redirects=False)
         except httpx.HTTPError as exc:
             raise ValueError("Provider token endpoint is unavailable") from exc
         if response.status_code < 200 or response.status_code >= 300:
+            if response.status_code in {400, 401, 403}:
+                raise ApplicationError("Provider rejected authorization; reconnect the account", 401, "provider_reauthorization_required")
             raise ValueError("Provider token endpoint rejected the request")
         try:
             result = response.json()
@@ -140,7 +169,7 @@ class ConfiguredProviderAdapter(ProviderAdapter):
             raise ValueError("Provider token endpoint returned invalid JSON") from exc
         if not isinstance(result, dict):
             raise TypeError("Provider token response must be an object")
-        if not isinstance(result.get("access_token"), str):
+        if not isinstance(result.get("access_token"), str) or not result["access_token"].strip():
             raise TypeError("Provider token response is missing access_token")
         expires_at = result.get("expires_at")
         if expires_at is None and result.get("expires_in") is not None:
@@ -156,6 +185,7 @@ class ConfiguredProviderAdapter(ProviderAdapter):
 
     @classmethod
     def _json_request(cls, url: str, access_token: str, config: dict):
+        require_endpoint(url)
         try:
             response = httpx.get(
                 url,

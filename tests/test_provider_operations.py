@@ -28,7 +28,7 @@ from app.types.provider import (
 def provider_service():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     with engine.begin() as db:
-        for name in ("014_provider_accounts", "017_provider_resilience", "020_provider_operations"):
+        for name in ("014_provider_accounts", "017_provider_resilience", "020_provider_operations", "021_provider_auth_lifecycle"):
             execute_migration(db, Path(f"docs/migrations/{name}.sql"))
         execute_migration(db, Path("docs/migrations/020_provider_operations.sql"))
     service = ProviderService(ProviderRepository(engine))
@@ -79,7 +79,7 @@ def test_bulk_partial_failure_disable_archive_restore_and_audit(provider_service
     assert service.repo.get_token(account_id) is None
     assert service.account_detail(account_id)["enabled"] is False
     events = service.repo.account_events(account_id)
-    assert {row["action"] for row in events} == {"enabled", "archive", "restore"}
+    assert {row["action"] for row in events} == {"token_updated", "enabled", "archive", "restore"}
     assert "never-return-this" not in str(events)
     assert len(service.repo.account_events(account_id, limit=1, offset=1)) == 1
 
@@ -136,4 +136,4 @@ def test_operations_transaction_rolls_back_when_audit_fails(provider_service, mo
     assert service.repo.get_token(account_id) is not None
     assert service.repo.get_account(account_id)["status"] == "active"
     with service.repo.engine.connect() as db:
-        assert db.execute(text("SELECT COUNT(*) FROM provider_account_profiles")).scalar() == 0
+        assert db.execute(text("SELECT COUNT(*) FROM provider_account_profiles")).scalar() == 1

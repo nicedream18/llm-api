@@ -38,7 +38,7 @@ def test_provider_routes_cover_account_authorization_and_query_operations(monkey
         "access_token": "access", "refresh_token": "refresh", "expires_at": "2026-12-01T00:00:00Z",
     })
     client.post("/api/v1/providers/account-1/authorize")
-    client.post("/api/v1/providers/callback/codex?state=state-1&code=oauth-code")
+    client.post("/api/v1/providers/callback/codex?state=state-012345678901&code=oauth-code")
     client.post("/api/v1/providers/account-1/refresh")
     client.post("/api/v1/providers/account-1/logout")
     client.get("/api/v1/providers/account-1/quota")
@@ -51,7 +51,7 @@ def test_provider_routes_cover_account_authorization_and_query_operations(monkey
         "delete_account",
     ]
     assert service.calls[3][1][0] == "account-1"
-    assert service.calls[5][1] == ("state-1", "oauth-code")
+    assert service.calls[5][1] == ("state-012345678901", "oauth-code", ("admin", "system"), "codex", None)
 
 
 def test_provider_routes_reject_invalid_account_input_before_dispatch(monkeypatch):
