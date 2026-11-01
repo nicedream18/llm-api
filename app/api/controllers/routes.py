@@ -31,6 +31,7 @@ from app.types.software import (
     OpenApiPreviewInput,
     SoftwareApprovalDecisionInput,
     SoftwareApprovalInput,
+    SoftwareInstallInput,
     SoftwareInstanceInput,
     SoftwareInvokeInput,
     SoftwareToolInput,
@@ -329,6 +330,16 @@ async def import_openapi(dto: OpenApiImportInput):
 @software_router.get("/instances")
 async def software_instances():
     return _success(await asyncio.to_thread(get_container().software_service.list_instances))
+
+
+@software_router.post("/scan")
+async def scan_software_tools():
+    return _success(await asyncio.to_thread(get_container().software_service.scan_local_tools))
+
+
+@software_router.post("/install")
+async def install_software_tool(dto: SoftwareInstallInput):
+    return _success(await asyncio.to_thread(get_container().software_service.install_local_tool, dto.package, dto.manager, dto.dry_run))
 
 
 @software_router.post("/instances")

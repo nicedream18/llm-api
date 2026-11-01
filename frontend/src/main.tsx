@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { del, get, post, put, upload } from "./api";
-import type { AccessGrant, ClientConfig, Dashboard, KnowledgeBase, OpenApiPreview, PromptTemplate, SoftwareApproval, SoftwareCall, SoftwareInstance, SoftwareTool } from "./types";
+import type { AccessGrant, ClientConfig, Dashboard, KnowledgeBase, OpenApiPreview, PromptTemplate, SoftwareApproval, SoftwareCall, SoftwareDiscovery, SoftwareInstance, SoftwareTool } from "./types";
 import { WikiManager } from "./WikiManager";
 import { ProviderManager } from "./ProviderManager";
 import { McpManager } from "./McpManager";
@@ -84,6 +84,10 @@ function SoftwarePage({ onError }: { onError: (message: string) => void }) {
   const [invokeArguments, setInvokeArguments] = useState("{}");
   const [invokeResult, setInvokeResult] = useState("");
   const [approved, setApproved] = useState(false);
+  const [discovery, setDiscovery] = useState<SoftwareDiscovery[]>([]);
+  const [installPackage, setInstallPackage] = useState("");
+  const [installManager, setInstallManager] = useState("pip");
+  const [installMessage, setInstallMessage] = useState("");
   const [preview, setPreview] = useState<OpenApiPreview | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [message, setMessage] = useState("");
@@ -133,6 +137,8 @@ function SoftwarePage({ onError }: { onError: (message: string) => void }) {
     try { await post(`/api/v1/software/approvals/${encodeURIComponent(approval.id)}/decision`, { approved }); await load(); }
     catch (error) { onError(error instanceof Error ? error.message : "审批处理失败"); }
   };
+  const scan = async () => { try { setDiscovery(await post<SoftwareDiscovery[]>("/api/v1/software/scan", {})); } catch (error) { onError(error instanceof Error ? error.message : "扫描本机工具失败"); } };
+  const install = async () => { if (!installPackage.trim()) return; try { const result = await post<{ status: string; command: string[]; output?: string }>("/api/v1/software/install", { package: installPackage.trim(), manager: installManager, dry_run: true }); setInstallMessage(`${result.status === "planned" ? "已生成安装计划" : "已安装"}：${result.command.join(" ")}`); } catch (error) { onError(error instanceof Error ? error.message : "生成安装计划失败"); } };
   const parseSpec = () => {
     const value: unknown = JSON.parse(specText);
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("OpenAPI 规范必须是 JSON 对象");
@@ -157,6 +163,7 @@ function SoftwarePage({ onError }: { onError: (message: string) => void }) {
     finally { setBusy(false); }
   };
   return <section>
+    <div className="panel"><div className="panel-head"><div><h2>本机工具发现</h2><p className="muted">仅检查固定的可执行文件白名单；安装默认只生成计划，不会修改本机。</p></div><button className="secondary" onClick={() => void scan()}>扫描本机</button></div>{discovery.length > 0 && <div className="table-wrap"><table><thead><tr><th>工具</th><th>状态</th><th>路径</th><th>版本</th></tr></thead><tbody>{discovery.map(row => <tr key={row.name}><td>{row.name}</td><td className={row.installed ? "success" : "muted"}>{row.installed ? "已安装" : "未发现"}</td><td>{row.path || "—"}</td><td>{row.version || "—"}</td></tr>)}</tbody></table></div>}<div className="inline-form software-install-form"><input value={installPackage} maxLength={128} onChange={event => setInstallPackage(event.target.value)} placeholder="包名，例如：ruff" /><select value={installManager} onChange={event => setInstallManager(event.target.value)}><option value="pip">pip</option><option value="npm">npm</option><option value="winget">winget</option><option value="brew">brew</option><option value="apt">apt</option></select><button className="secondary" onClick={() => void install()} disabled={!installPackage.trim()}>生成安装计划</button></div>{installMessage && <p className="success" role="status">{installMessage}</p>}</div>
     <div className="panel">
       <div className="panel-head"><div><h2>软件实例</h2><p className="muted">管理 CLI、HTTP、MCP 和 OpenAPI 连接器。凭据应通过部署配置注入。</p></div><button className="secondary" onClick={resetInstance}>新建实例</button></div>
       <div className="software-instance-form"><label className="field-label">实例名称<input value={instanceName} maxLength={128} onChange={event => setInstanceName(event.target.value)} placeholder="例如：本地工具" /></label><label className="field-label">连接器<select value={connectorType} onChange={event => setConnectorType(event.target.value)}><option value="http">HTTP</option><option value="cli">CLI</option><option value="mcp">MCP Server</option><option value="openapi">OpenAPI</option><option value="wechat">WeChat bridge</option><option value="clihub">CLIHub bridge</option></select></label><label className="field-label software-config">配置 JSON<textarea className="code-input" value={instanceConfig} onChange={event => setInstanceConfig(event.target.value)} spellCheck={false} /></label><div className="inline-form"><button className="primary" onClick={() => void saveInstance()}>{editingInstance ? "保存实例" : "创建实例"}</button>{editingInstance && <button className="secondary" onClick={resetInstance}>取消编辑</button>}</div></div>

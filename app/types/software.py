@@ -41,6 +41,13 @@ class SoftwareApprovalDecisionInput(BaseModel):
     approved: bool
 
 
+class SoftwareInstallInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    package: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.@/:-]+$")
+    manager: Literal["pip", "npm", "winget", "brew", "apt"]
+    dry_run: bool = True
+
+
 class OpenApiPreviewInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     spec: dict[str, Any]

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
+import sys
 import time
 from datetime import UTC, datetime
 from urllib.parse import urlparse
@@ -64,6 +66,67 @@ class SoftwareService:
                 decoded["arguments"] = {}
             result.append(decoded)
         return result
+
+    @staticmethod
+    def scan_local_tools(names=None):
+        """Discover a small explicit allowlist of local executables.
+
+        Discovery never executes shell strings and only asks each executable for
+        its version. Unknown names are ignored so a UI cannot turn this endpoint
+        into arbitrary command execution.
+        """
+        candidates = names or ["python", "git", "node", "npm", "docker", "curl"]
+        if not isinstance(candidates, list) or not all(isinstance(name, str) for name in candidates):
+            raise ApplicationError("Tool names must be a list of strings", 422, "invalid_scan_request")
+        allowed = {"python", "python3", "git", "node", "npm", "docker", "curl"}
+        result = []
+        for name in candidates[:32]:
+            if name not in allowed:
+                continue
+            executable = shutil.which(name)
+            version = None
+            if executable:
+                try:
+                    completed = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=3, check=False)
+                    version = (completed.stdout or completed.stderr).strip().splitlines()[0][:256] if completed.returncode == 0 else None
+                except (OSError, subprocess.TimeoutExpired):
+                    version = None
+            result.append({"name": name, "installed": bool(executable), "path": executable, "version": version})
+        return result
+
+    @staticmethod
+    def install_local_tool(package, manager, dry_run=True):
+        """Install a package only through a selected package manager.
+
+        Installation is disabled by default and must be explicitly enabled by
+        ``SOFTWARE_ALLOW_INSTALL=true``. Dry-run always returns the argv plan.
+        """
+        import os
+        if not isinstance(package, str) or not re.fullmatch(r"[A-Za-z0-9_.@/:-]{1,128}", package):
+            raise ApplicationError("Package name is invalid", 422, "invalid_install_request")
+        commands = {
+            "pip": [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", package],
+            "npm": ["npm", "install", "--global", package],
+            "winget": ["winget", "install", "--exact", "--id", package, "--accept-source-agreements", "--accept-package-agreements"],
+            "brew": ["brew", "install", package],
+            "apt": ["apt-get", "install", "--yes", package],
+        }
+        if manager not in commands:
+            raise ApplicationError("Package manager is not supported", 422, "invalid_install_request")
+        command = commands[manager]
+        if dry_run:
+            return {"status": "planned", "manager": manager, "package": package, "command": command}
+        if (os.getenv("SOFTWARE_ALLOW_INSTALL", "false").lower() not in {"1", "true", "yes", "on"}):
+            raise ApplicationError("Software installation is disabled", 403, "install_disabled")
+        if shutil.which(command[0]) is None and command[0] != sys.executable:
+            raise ApplicationError("Package manager is unavailable", 503, "manager_unavailable")
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ApplicationError("Software installation failed", 502, "install_failed") from exc
+        if completed.returncode != 0:
+            raise ApplicationError("Software installation failed", 502, "install_failed")
+        return {"status": "installed", "manager": manager, "package": package, "command": command, "output": (completed.stdout or completed.stderr).strip()[-2048:]}
 
     def create_tool(self, dto):
         if not self.repo.get_instance(dto.instance_id):

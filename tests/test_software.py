@@ -38,6 +38,23 @@ def test_software_requires_approval_and_rejects_shell_commands():
         service.invoke("tool", {})
 
 
+def test_local_software_scan_is_allowlisted_and_install_has_safe_dry_run(monkeypatch):
+    from app.application.services.software_service import SoftwareService
+
+    monkeypatch.setattr("app.application.services.software_service.shutil.which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr("app.application.services.software_service.subprocess.run", lambda command, **kwargs: type("Result", (), {"returncode": 0, "stdout": f"{command[0]} 1.0", "stderr": ""})())
+    rows = SoftwareService.scan_local_tools(["python", "unknown", "git"])
+    assert [row["name"] for row in rows] == ["python", "git"]
+    plan = SoftwareService.install_local_tool("example-package", "pip", dry_run=True)
+    assert plan["status"] == "planned" and "example-package" in plan["command"]
+
+
+def test_software_install_is_disabled_without_explicit_opt_in(monkeypatch):
+    monkeypatch.delenv("SOFTWARE_ALLOW_INSTALL", raising=False)
+    with pytest.raises(ApplicationError, match="disabled"):
+        SoftwareService.install_local_tool("example-package", "pip", dry_run=False)
+
+
 def test_http_connector_blocks_private_targets(monkeypatch):
     class Repo:
         def get_tool(self, _id):

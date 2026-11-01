@@ -5,6 +5,7 @@ export type SoftwareTool = { id: string; name: string; description: string; risk
 export type SoftwareInstance = { id: string; name: string; connector_type: string; config?: Record<string, unknown>; enabled: number };
 export type SoftwareCall = { id: string; tool_id: string; principal_id?: string | null; status: string; error_type?: string | null; duration_ms: number; request_summary?: string | null; response_summary?: string | null; created_at: string };
 export type SoftwareApproval = { id: string; tool_id: string; principal_id?: string | null; arguments?: Record<string, unknown>; status: string; created_at: string; decision_at?: string | null; error_type?: string | null };
+export type SoftwareDiscovery = { name: string; installed: boolean; path?: string | null; version?: string | null };
 export type AccessGrant = { id: string; principal_type: string; principal_id: string; resource_type: string; resource_id: string; action: string; created_at: string };
 export type OpenApiToolPreview = { name: string; description: string; risk_level: string; approval_mode: string; input_schema: Record<string, unknown> };
 export type OpenApiPreview = { openapi: string; tool_count: number; tools: OpenApiToolPreview[] };

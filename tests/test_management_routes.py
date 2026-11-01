@@ -143,6 +143,8 @@ def test_management_routes_dispatch_admin_operations_and_preserve_static_paths(m
     client.post("/api/v1/mcp/tools/test_tool/call", json={"arguments": {"q": "x"}})
 
     client.get("/api/v1/software/instances")
+    client.post("/api/v1/software/scan")
+    client.post("/api/v1/software/install", json={"package": "example", "manager": "pip", "dry_run": True})
     client.post("/api/v1/software/instances", json={"name": "cli", "connector_type": "cli"})
     client.put("/api/v1/software/instances/i-1", json={"name": "cli", "connector_type": "cli"})
     client.delete("/api/v1/software/instances/i-1")
@@ -189,7 +191,7 @@ def test_management_routes_dispatch_admin_operations_and_preserve_static_paths(m
         "list_findings", "get_findings_by_log_id",
     }
     assert {call[0] for call in services["software"].calls} == {
-        "list_instances", "create_instance", "update_instance", "delete_instance",
+        "list_instances", "scan_local_tools", "install_local_tool", "create_instance", "update_instance", "delete_instance",
         "list_tools", "create_tool", "set_tool_enabled", "delete_tool", "invoke",
         "list_calls", "list_approvals", "create_approval", "decide_approval", "preview_openapi", "import_openapi",
     }
