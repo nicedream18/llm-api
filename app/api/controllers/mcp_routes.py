@@ -72,6 +72,30 @@ def _validate_session(request: Request) -> bool:
     return True
 
 
+def _replay_error(status: str):
+    """Map persistent replay state to an explicit HTTP/protocol error."""
+    if status in {"not_found", "expired", "owner_mismatch"}:
+        return Response(status_code=404, headers={"Mcp-Error": status})
+    if status == "gap":
+        return Response(status_code=409, headers={"Mcp-Error": "event_gap"})
+    return None
+
+
+def _persistent_replay(session_id: str, request: Request, after_event_id: int):
+    repository = _session_repository()
+    if repository is None:
+        return None
+    try:
+        checked = repository.replay_checked(session_id, _principal(request), after_event_id)
+    except AttributeError:
+        # Compatibility for deployments that provide the old repository object.
+        return repository.replay(session_id, _principal(request), after_event_id)
+    error = _replay_error(checked.status)
+    if error is not None:
+        return error
+    return checked.events
+
+
 def _new_session(request: Request) -> str:
     _cleanup_sessions()
     session_id = secrets.token_urlsafe(32)
@@ -140,20 +164,47 @@ async def mcp_no_session(request: Request):
         except ValueError:
             last_event_id = 0
         repository = _session_repository()
+        initial_replay = _persistent_replay(session_id, request, last_event_id)
+        if isinstance(initial_replay, Response):
+            return initial_replay
 
         async def event_stream():
             yield f"event: ready\ndata: {json.dumps({'sessionId': session_id}, separators=(',', ':'))}\n\n"
-            if repository is not None:
-                try:
-                    for item in repository.replay(session_id, _principal(request), last_event_id):
-                        payload = json.dumps(item["payload"], ensure_ascii=False, separators=(",", ":"))
-                        yield f"id: {item['event_id']}\nevent: message\ndata: {payload}\n\n"
-                except Exception:
-                    logger.warning("Failed to replay MCP session events", exc_info=True)
+            cursor = last_event_id
+            if isinstance(initial_replay, list):
+                for item in initial_replay:
+                    cursor = max(cursor, int(item["event_id"]))
+                    payload = json.dumps(item["payload"], ensure_ascii=False, separators=(",", ":"))
+                    yield f"id: {item['event_id']}\nevent: message\ndata: {payload}\n\n"
             while not await request.is_disconnected():
                 try:
-                    yield await asyncio.wait_for(queue.get(), timeout=15)
+                    frame = await asyncio.wait_for(queue.get(), timeout=1)
+                    event_id = 0
+                    if frame.startswith("id:"):
+                        try:
+                            event_id = int(frame.splitlines()[0][3:].strip())
+                        except ValueError:
+                            event_id = 0
+                    if event_id and event_id <= cursor:
+                        continue
+                    if event_id:
+                        cursor = event_id
+                    yield frame
                 except TimeoutError:
+                    # The queue is process-local. Polling the repository keeps a
+                    # session usable after a worker restart or on another worker.
+                    if repository is not None:
+                        try:
+                            replayed = _persistent_replay(session_id, request, cursor)
+                            if isinstance(replayed, Response):
+                                return
+                            for item in replayed or []:
+                                cursor = max(cursor, int(item["event_id"]))
+                                payload = json.dumps(item["payload"], ensure_ascii=False, separators=(",", ":"))
+                                yield f"id: {item['event_id']}\nevent: message\ndata: {payload}\n\n"
+                            continue
+                        except Exception:
+                            logger.warning("Failed to replay MCP session events", exc_info=True)
                     yield ": keepalive\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
@@ -162,13 +213,17 @@ async def mcp_no_session(request: Request):
         if not session_id:
             return Response(status_code=405, headers={"Allow": "POST, DELETE"})
         _cleanup_sessions()
-        if session_id not in _sessions:
+        repository = _session_repository()
+        if repository is not None:
+            checked = _persistent_replay(session_id, request, 0)
+            if isinstance(checked, Response):
+                return checked
+        elif session_id not in _sessions:
             return Response(status_code=404)
         if not _validate_session(request):
             return Response(status_code=403)
         _sessions.pop(session_id, None)
         _session_events.pop(session_id, None)
-        repository = _session_repository()
         if repository is not None:
             repository.delete(session_id)
         return Response(status_code=204)
