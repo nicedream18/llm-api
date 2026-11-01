@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { del, get, post } from "./api";
+import { del, get, post, put } from "./api";
 import type { Dashboard, KnowledgeBase, PromptTemplate, Provider, SoftwareTool, WikiPage, WikiProject } from "./types";
 import "./styles.css";
 
@@ -80,7 +80,7 @@ function SoftwarePage({ onError }: { onError: (message: string) => void }) {
   const [tools, setTools] = useState<SoftwareTool[]>([]);
   const load = () => get<SoftwareTool[]>("/api/v1/software/tools").then(setTools).catch((error: Error) => onError(error.message));
   useEffect(() => { load(); }, []);
-  const toggle = (tool: SoftwareTool) => post<SoftwareTool>(`/api/v1/software/tools/${tool.id}/enabled?enabled=${tool.enabled ? "false" : "true"}`, {}).then(load).catch((error: Error) => onError(error.message));
+  const toggle = (tool: SoftwareTool) => put<SoftwareTool>(`/api/v1/software/tools/${tool.id}/enabled?enabled=${tool.enabled ? "false" : "true"}`, {}).then(load).catch((error: Error) => onError(error.message));
   return <section><div className="panel"><div className="panel-head"><h2>Software 工具</h2><button className="primary" onClick={load}>刷新</button></div><div className="card-list">{tools.map(tool => <article className="subcard" key={tool.id}><strong>{tool.name}</strong><span>{tool.description || "暂无描述"}</span><small>风险：{tool.risk_level} · {tool.enabled ? "已启用" : "已停用"}</small><button className="secondary" onClick={() => toggle(tool)}>{tool.enabled ? "停用" : "启用"}</button></article>)}</div>{tools.length === 0 && <p className="muted">暂无工具。</p>}</div></section>;
 }
 
