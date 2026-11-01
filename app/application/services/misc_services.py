@@ -516,11 +516,18 @@ class McpService:
             "get_knowledge_document": "Read one knowledge base document.",
             "list_knowledge_documents": "List documents in a knowledge base.",
             "reindex_knowledge_document": "Rebuild one knowledge base document index.",
+            "list_wiki_projects": "List Wiki projects available to the caller.",
+            "list_wiki_pages": "Search pages in a Wiki project.",
+            "get_wiki_page": "Read one Wiki page.",
+            "get_wiki_tags": "List Wiki page tags.",
+            "get_wiki_graph": "Return Wiki page relationships.",
+            "ask_wiki": "Ask a question against a Wiki project.",
         }
         return {"tools": [
             {"name": name, "description": descriptions[name],
              "inputSchema": schema.model_json_schema()}
             for name, schema in TOOL_ARGUMENTS.items()
+            if self.wiki_service is not None or not name.startswith(("list_wiki", "get_wiki", "ask_wiki"))
             if self.access is None or self.access.can(auth_context, "mcp_tool", name, "execute")
         ]}
 
@@ -547,6 +554,8 @@ class McpService:
                 return {"content": [{"type": "text", "text": "Tool access denied"}], "isError": True}
             if "kb_id" in arguments and not self.access.can(auth_context, "kb", arguments["kb_id"]):
                 return {"content": [{"type": "text", "text": "Knowledge base access denied"}], "isError": True}
+            if "project_id" in arguments and not self.access.can(auth_context, "wiki", arguments["project_id"]):
+                return {"content": [{"type": "text", "text": "Wiki access denied"}], "isError": True}
         handlers = {
             "ask_knowledge_base": lambda: self._handle_ask(arguments),
             "search_knowledge_base": lambda: self._handle_search(arguments),
@@ -554,6 +563,12 @@ class McpService:
             "get_knowledge_document": lambda: self._handle_get_document(arguments),
             "list_knowledge_documents": lambda: self._handle_list_documents(arguments),
             "reindex_knowledge_document": lambda: self._handle_reindex_document(arguments),
+            "list_wiki_projects": lambda: self._handle_wiki_projects(auth_context),
+            "list_wiki_pages": lambda: self._handle_wiki_pages(arguments),
+            "get_wiki_page": lambda: self._handle_wiki_page(arguments),
+            "get_wiki_tags": lambda: self._handle_wiki_tags(arguments),
+            "get_wiki_graph": lambda: self._handle_wiki_graph(arguments),
+            "ask_wiki": lambda: self._handle_wiki_ask(arguments, auth_context),
         }
         try:
             result = handlers[tool_name]()
@@ -625,3 +640,38 @@ class McpService:
         if isinstance(document, dict):
             return document
         return vars(document)
+
+    def _handle_wiki_projects(self, auth_context=None):
+        if self.wiki_service is None:
+            return {"content": [{"type": "text", "text": "Wiki service unavailable"}], "isError": True}
+        rows = self.wiki_service.repo.list_projects()
+        if self.access is not None:
+            allowed = self.access.allowed_resources(auth_context, "wiki")
+            rows = [row for row in rows if "*" in allowed or row["id"] in allowed]
+        return {"content": [{"type": "text", "text": json.dumps(rows, ensure_ascii=False, default=str)}], "projects": rows}
+
+    def _handle_wiki_pages(self, args):
+        rows = self.wiki_service.list_pages(args["project_id"], args.get("query", ""), args.get("tag"))
+        return {"content": [{"type": "text", "text": json.dumps(rows, ensure_ascii=False, default=str)}], "pages": rows}
+
+    def _handle_wiki_page(self, args):
+        page = self.wiki_service.repo.get_page(args["project_id"], args["page_id"])
+        if not page:
+            return {"content": [{"type": "text", "text": "Wiki page not found"}], "isError": True}
+        from app.application.services.wiki_service import page_view
+        page = page_view(page)
+        return {"content": [{"type": "text", "text": json.dumps(page, ensure_ascii=False, default=str)}], "page": page}
+
+    def _handle_wiki_tags(self, args):
+        tags = self.wiki_service.tags(args["project_id"])
+        return {"content": [{"type": "text", "text": json.dumps(tags, ensure_ascii=False)}], "tags": tags}
+
+    def _handle_wiki_graph(self, args):
+        graph = self.wiki_service.graph(args["project_id"])
+        return {"content": [{"type": "text", "text": json.dumps(graph, ensure_ascii=False)}], "graph": graph}
+
+    def _handle_wiki_ask(self, args, auth_context=None):
+        from app.types.wiki import WikiAskInput
+        dto = WikiAskInput(question=args["question"], model=args["model"], top_k=args["top_k"])
+        result = self.wiki_service.ask(args["project_id"], dto, auth_context=auth_context)
+        return {"content": [{"type": "text", "text": result.get("answer", "")}, {"type": "text", "text": json.dumps(result.get("sources", []), ensure_ascii=False)}], "answer": result}

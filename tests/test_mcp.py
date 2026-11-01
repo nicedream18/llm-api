@@ -224,3 +224,19 @@ async def test_official_sdk_interoperability(setup_mcp):
         assert len(tools.tools) == 6
         result = await session.call_tool("list_knowledge_bases", {})
         assert not result.isError and "kb-1" in result.content[0].text
+
+
+def test_wiki_tools_are_listed_and_execute_read_operations():
+    kb = Mock()
+    wiki = Mock()
+    wiki.repo.list_projects.return_value = [{"id": "wiki-1", "name": "Manual"}]
+    wiki.list_pages.return_value = [{"id": "page-1", "path": "intro.md", "title": "Intro", "tags": []}]
+    wiki.repo.get_page.return_value = {"id": "page-1", "path": "intro.md", "title": "Intro", "content": "hello", "tags": "[]"}
+    wiki.tags.return_value = [{"tag": "python", "count": 1}]
+    wiki.graph.return_value = {"nodes": [], "edges": []}
+    service = McpService(kb, wiki_service=wiki)
+    names = {tool["name"] for tool in service.list_tools()["tools"]}
+    assert {"list_wiki_projects", "list_wiki_pages", "get_wiki_page", "get_wiki_tags", "get_wiki_graph", "ask_wiki"} <= names
+    assert service.call_tool("list_wiki_projects", {})["projects"][0]["id"] == "wiki-1"
+    assert service.call_tool("list_wiki_pages", {"project_id": "wiki-1", "query": "Intro"})["pages"][0]["id"] == "page-1"
+    assert service.call_tool("get_wiki_tags", {"project_id": "wiki-1"})["tags"][0]["tag"] == "python"

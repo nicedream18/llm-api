@@ -31,6 +31,25 @@ class KnowledgeBaseArguments(EmptyArguments):
     kb_id: str = Field(min_length=1, max_length=128)
 
 
+class WikiProjectArguments(EmptyArguments):
+    project_id: str = Field(min_length=1, max_length=128)
+
+
+class WikiPageArguments(WikiProjectArguments):
+    page_id: str = Field(min_length=1, max_length=128)
+
+
+class WikiSearchArguments(WikiProjectArguments):
+    query: str = Field(default="", max_length=512)
+    tag: str | None = Field(default=None, max_length=64)
+
+
+class WikiAskArguments(WikiProjectArguments):
+    question: str = Field(min_length=1, max_length=32768)
+    model: str = Field(min_length=1, max_length=128)
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
 TOOL_ARGUMENTS = {
     "ask_knowledge_base": AskArguments,
     "search_knowledge_base": SearchArguments,
@@ -38,4 +57,10 @@ TOOL_ARGUMENTS = {
     "get_knowledge_document": DocumentArguments,
     "list_knowledge_documents": KnowledgeBaseArguments,
     "reindex_knowledge_document": DocumentArguments,
+    "list_wiki_projects": EmptyArguments,
+    "list_wiki_pages": WikiSearchArguments,
+    "get_wiki_page": WikiPageArguments,
+    "get_wiki_tags": WikiProjectArguments,
+    "get_wiki_graph": WikiProjectArguments,
+    "ask_wiki": WikiAskArguments,
 }
