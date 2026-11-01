@@ -41,6 +41,31 @@ async def test_gateway_switches_channel_after_503(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_gateway_routes_embeddings_to_embeddings_endpoint():
+    channel = ChannelEntity(id="c1", name="first", base_url="http://first/v1", models=["embed"])
+
+    class EmbeddingDispatcher:
+        def candidates(self, _model, _excluded=None):
+            return [DispatchResult(channel, "embed")]
+
+    calls = []
+
+    async def handler(request):
+        calls.append((request.url.path, request.content))
+        return httpx.Response(200, json={"data": [], "usage": {"total_tokens": 1}}, request=request)
+
+    service = GatewayService(EmbeddingDispatcher(), None)
+    await service.aclose()
+    service.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    response = await service.forward(ProxyRequestEntity(
+        "embed", {"model": "embed", "input": ["hello"]}, endpoint="/v1/embeddings"
+    ))
+    await service.aclose()
+    assert response.success
+    assert calls[0][0] == "/v1/embeddings"
+
+
+@pytest.mark.asyncio
 async def test_gateway_does_not_retry_400(monkeypatch):
     dispatcher = Dispatcher()
     service = GatewayService(dispatcher, None)

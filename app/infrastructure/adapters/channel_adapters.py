@@ -15,9 +15,7 @@ from typing import Any
 def _join(base_url: str | None, path: str) -> str:
     """Join a provider base URL and path without creating duplicate slashes."""
     base = (base_url or "").rstrip("/")
-    if not path.startswith("/"):
-        path = "/" + path
-    return f"{base}{path}"
+    return f"{base}/{path.lstrip('/')}"
 
 
 def _copy_headers(config: dict[str, Any] | None) -> dict[str, str]:
@@ -25,6 +23,16 @@ def _copy_headers(config: dict[str, Any] | None) -> dict[str, str]:
     if not isinstance(headers, dict):
         return {}
     return {str(key): str(value) for key, value in headers.items()}
+
+
+def _endpoint_path(request) -> str:
+    """Map an incoming public endpoint to a provider-relative API path."""
+    endpoint = str(getattr(request, "endpoint", "") or "")
+    if endpoint.startswith("/v1/"):
+        endpoint = endpoint[3:]
+    elif endpoint.startswith("/"):
+        endpoint = endpoint[1:]
+    return "/" + endpoint if endpoint else "/chat/completions"
 
 
 class ChannelAdapter(ABC):
@@ -50,7 +58,15 @@ class ChannelAdapter(ABC):
 
 class OpenAICompatibleAdapter(ChannelAdapter):
     def build_url(self, channel, request) -> str:
-        path = (channel.config or {}).get("path", "/chat/completions")
+        configured_path = (channel.config or {}).get("path")
+        if configured_path:
+            path = str(configured_path)
+        elif getattr(request, "protocol_type", "") == "responses":
+            # Responses requests are converted to Chat Completions before the
+            # gateway call, so the upstream receives the compatible endpoint.
+            path = "/chat/completions"
+        else:
+            path = _endpoint_path(request)
         return _join(channel.base_url, str(path))
 
     def build_headers(self, channel, request) -> dict[str, str]:

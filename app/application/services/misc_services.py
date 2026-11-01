@@ -232,7 +232,7 @@ class ProxyService:
             reservation_id = self.quota_repo.reserve(context.principal_id, request_id, self._estimate_tokens(body_json))
             if not reservation_id:
                 return 429, {"error": {"message": "API key quota exceeded", "type": "quota_error", "code": "quota_exceeded"}}
-        proxy_request = ProxyRequestEntity(model=model, body=body_json, stream=bool(body_json.get("stream")), api_key=None, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset())
+        proxy_request = ProxyRequestEntity(model=model, body=body_json, stream=bool(body_json.get("stream")), api_key=None, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset(), endpoint=endpoint)
         attempts = []
         try:
             if hasattr(self.gateway, "forward_with_attempts"):
@@ -357,7 +357,7 @@ class ProxyService:
                     pass
             event_name = None; data_lines = []
         try:
-            request = ProxyRequestEntity(model=model, body=body_json, stream=True, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset())
+            request = ProxyRequestEntity(model=model, body=body_json, stream=True, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset(), endpoint=endpoint)
             def record_attempt(attempt):
                 attempt_records.append(attempt)
                 try:

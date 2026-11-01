@@ -8,8 +8,8 @@ from app.domain.gateway import GatewayService
 from app.infrastructure.adapters.channel_adapters import adapter_for
 
 
-def request(body=None):
-    return ProxyRequestEntity("public-model", body or {"model": "public-model", "messages": [{"role": "user", "content": "hi"}]})
+def request(body=None, endpoint="/v1/chat/completions", protocol_type="openai"):
+    return ProxyRequestEntity("public-model", body or {"model": "public-model", "messages": [{"role": "user", "content": "hi"}]}, protocol_type=protocol_type, endpoint=endpoint)
 
 
 def test_openai_compatible_adapter_builds_url_headers_and_model_mapping():
@@ -21,6 +21,24 @@ def test_openai_compatible_adapter_builds_url_headers_and_model_mapping():
         "Authorization": "Bearer secret",
     }
     assert adapter.prepare_body(channel, request(), "upstream-model")["model"] == "upstream-model"
+
+
+@pytest.mark.parametrize("endpoint, path", [
+    ("/v1/chat/completions", "/chat/completions"),
+    ("/v1/completions", "/completions"),
+    ("/v1/embeddings", "/embeddings"),
+    ("/v1/images/generations", "/images/generations"),
+    ("/v1/audio/speech", "/audio/speech"),
+])
+def test_openai_compatible_adapter_preserves_endpoint_family(endpoint, path):
+    channel = ChannelEntity(type="openai", base_url="https://provider.example/v1")
+    assert adapter_for(channel).build_url(channel, request(endpoint=endpoint)) == "https://provider.example/v1" + path
+
+
+def test_responses_protocol_uses_chat_endpoint_after_conversion():
+    channel = ChannelEntity(type="openai", base_url="https://provider.example/v1")
+    req = request(endpoint="/v1/responses", protocol_type="responses")
+    assert adapter_for(channel).build_url(channel, req) == "https://provider.example/v1/chat/completions"
 
 
 def test_anthropic_adapter_converts_chat_request_and_response():

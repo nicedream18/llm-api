@@ -52,6 +52,7 @@ class ProxyRequestEntity:
     protocol_type: str = "openai"
     headers: dict = field(default_factory=dict)
     allowed_channels: frozenset[str] = frozenset()
+    endpoint: str = "/v1/chat/completions"
 
 
 @dataclass
