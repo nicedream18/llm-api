@@ -188,8 +188,8 @@ class KbKnowledgeBaseDTO(BaseModel):
 
 
 class UploadDocDTO(BaseModel):
-    filename: str
-    content: str
+    filename: str = Field(min_length=1, max_length=256)
+    content: str = Field(max_length=70_000_000)
     file_type: str | None = "txt"
     source_type: str | None = "file"
 

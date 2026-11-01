@@ -6,11 +6,13 @@ import uuid
 from datetime import UTC, datetime
 from io import BytesIO
 
+from app.application.errors import ApplicationError
 from app.domain.entities import (
     KbDocumentEntity,
     KbKnowledgeBaseEntity,
     KbTaskEntity,
 )
+from app.domain.importer import SUPPORTED_EXTS
 from app.types.models import (
     CreateKbDTO,
     KbAskRequestDTO,
@@ -25,6 +27,7 @@ from app.types.models import (
 )
 
 logger = logging.getLogger(__name__)
+MAX_DOCUMENT_CONTENT_CHARS = 70_000_000
 
 
 def _now():
@@ -94,10 +97,20 @@ class KbService:
         return True
 
     def upload_doc(self, kb_id, dto: UploadDocDTO):
+        if not self.repo.find_kb_by_id(kb_id):
+            raise ApplicationError("Knowledge base not found", 404, "not_found")
+        filename = dto.filename or ""
+        if not filename or len(filename) > 256 or any(char in filename for char in ("/", "\\", "\x00")) or filename in {".", ".."}:
+            raise ApplicationError("Invalid document filename", 422, "invalid_filename")
+        file_type = (dto.file_type or filename.rsplit(".", 1)[-1] or "txt").lower()
+        if file_type not in SUPPORTED_EXTS:
+            raise ApplicationError("Unsupported document type", 422, "unsupported_file_type")
+        if len(dto.content) > MAX_DOCUMENT_CONTENT_CHARS:
+            raise ApplicationError("Document exceeds the size limit", 413, "size_limit")
         now = _now()
         entity = KbDocumentEntity(
             id=str(uuid.uuid4()), kb_id=kb_id, name=dto.filename,
-            source_type=dto.source_type or "file", source_path=dto.filename,
+            source_type=dto.source_type or "file", source_path=filename,
             status="pending", chunk_count=0, total_tokens=0, created_at=now, updated_at=now,
         )
         self.repo.save_doc(entity)
@@ -105,7 +118,7 @@ class KbService:
             id=str(uuid.uuid4()), kb_id=kb_id, doc_id=entity.id, task_type="import",
             status="pending", progress=0, total_items=0, done_items=0, created_at=now,
         )
-        self.repo.save_task(task, {"filename": dto.filename, "content": dto.content, "file_type": dto.file_type, "source_type": dto.source_type})
+        self.repo.save_task(task, {"filename": filename, "content": dto.content, "file_type": file_type, "source_type": dto.source_type})
         return self._to_doc_dto(entity)
 
     def run_import_pipeline(self, kb_id, doc_id, task_id, dto):

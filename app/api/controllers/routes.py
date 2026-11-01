@@ -480,6 +480,8 @@ async def upload_doc_multipart(kb_id: str, request: Request):
     from app.domain.multipart import multipart_fields, multipart_files
 
     payload = await request.body()
+    if len(payload) > 52_500_000:
+        raise HTTPException(status_code=413, detail="document exceeds the size limit")
     content_type = request.headers.get("content-type", "")
     fields = multipart_fields(content_type, payload)
     files = multipart_files(content_type, payload)
