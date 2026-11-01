@@ -191,6 +191,9 @@ class KbService:
         return [self._to_doc_dto(e) for e in self.repo.find_doc_by_kb_id(kb_id)]
 
     def delete_doc(self, kb_id, doc_id):
+        document = self.repo.find_doc_by_id(doc_id)
+        if not document or document.kb_id != kb_id:
+            return False
         self.repo.delete_doc_by_id(doc_id)
         return True
 
@@ -351,12 +354,17 @@ class KbService:
 
     def create_source(self, kb_id, body):
         """Create import source. Route entry for POST /{id}/sources."""
+        if not self.repo.find_kb_by_id(kb_id):
+            raise ApplicationError("Knowledge base not found", 404, "not_found")
         from app.domain.importer import ImporterService
         importer = ImporterService(self.repo, self.splitter, self.embedder)
         return importer.import_source(kb_id, body)
 
     def delete_source(self, kb_id, source_id):
         """Delete import source. Route entry for DELETE /{id}/sources/{sourceId}."""
+        source = self.repo.find_source_by_id(source_id)
+        if not source or source.get("kb_id") != kb_id:
+            return False
         self.repo.delete_source(source_id)
         return True
 

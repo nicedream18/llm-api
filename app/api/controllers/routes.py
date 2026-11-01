@@ -597,12 +597,12 @@ async def list_sources(kb_id: str):
 
 @kb_router.post("/{kb_id}/sources")
 async def create_source(kb_id: str, body: dict):
-    return _success(get_container().kb_service.create_source(kb_id, body))
+    return _success(await asyncio.to_thread(get_container().kb_service.create_source, kb_id, body))
 
 
 @kb_router.delete("/{kb_id}/sources/{source_id}")
 async def delete_source(kb_id: str, source_id: str):
-    return _success(get_container().kb_service.delete_source(kb_id, source_id))
+    return _success(await asyncio.to_thread(get_container().kb_service.delete_source, kb_id, source_id))
 
 
 # ==================== Agent Controller ====================

@@ -375,6 +375,14 @@ class KbRepository:
             ), {"kb_id": kb_id}).mappings().all()
             return [dict(r) for r in rows]
 
+    def find_source_by_id(self, source_id: str) -> dict | None:
+        with get_db() as db:
+            row = db.execute(text(
+                "SELECT id, kb_id, source_type, source_url, source_path, branch, status, file_count, "
+                "error, created_at, updated_at FROM kb_sources WHERE id = :id"
+            ), {"id": source_id}).mappings().first()
+            return dict(row) if row else None
+
     def delete_source(self, source_id: str) -> bool:
         with get_db() as db:
             result = db.execute(text("DELETE FROM kb_sources WHERE id = :id"), {"id": source_id})
