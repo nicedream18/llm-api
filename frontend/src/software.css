@@ -10,4 +10,5 @@
 .operation-copy summary{cursor:pointer}
 .operation-copy pre{max-height:220px;overflow:auto;padding:12px;border-radius:8px;background:#0a1222;color:#c2d6f3;font-size:12px}
 .inline-form button:disabled{opacity:.5;cursor:not-allowed}
-@media(max-width:760px){.panel-head{align-items:flex-start;gap:12px;flex-direction:column}.code-input{min-height:210px}.operation-row{padding:11px}}
+.software-instance-form{display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-bottom:16px}.software-config{grid-column:1/-1}.software-config textarea{min-height:130px}.selected-card{border-color:#5977bf;background:#1a2844}.software-debug{display:grid;gap:10px;margin-top:18px;padding-top:16px;border-top:1px solid #263553}.checkbox-label{display:flex;align-items:center;gap:8px;color:#a8b4ca;font-size:13px}.software-result{max-height:280px;overflow:auto;margin:0;padding:12px;border-radius:10px;background:#080e1a;color:#d7e4f5;font:12px/1.5 "Cascadia Code",Consolas,monospace}.subcard{cursor:pointer}.subcard .inline-form{margin-left:auto}
+@media(max-width:760px){.panel-head{align-items:flex-start;gap:12px;flex-direction:column}.code-input{min-height:210px}.operation-row{padding:11px}.software-instance-form{grid-template-columns:1fr}.software-config{grid-column:auto}.subcard .panel-head{align-items:flex-start;flex-direction:column}.subcard .inline-form{margin-left:0}}
