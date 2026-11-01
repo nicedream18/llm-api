@@ -294,6 +294,9 @@ class ProxyService:
                     media_type=proxy_response.content_type,
                 )
             result = json.loads(proxy_response.body) if proxy_response.body else {}
+            if protocol == "anthropic":
+                from app.domain.anthropic_converter import AnthropicConverter
+                result = json.loads(AnthropicConverter.chat_to_messages(proxy_response.body, model))
             if protocol == "responses":
                 from app.domain.responses_converter import ResponsesConverter
                 result = json.loads(ResponsesConverter.openai_to_responses(proxy_response.body, model))

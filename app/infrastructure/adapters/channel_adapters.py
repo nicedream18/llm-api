@@ -48,6 +48,10 @@ class ChannelAdapter(ABC):
 
     def prepare_body(self, channel, request, upstream_model: str) -> dict[str, Any]:
         body = dict(request.body)
+        if getattr(request, "protocol_type", "") == "anthropic":
+            from app.domain.anthropic_converter import AnthropicConverter
+
+            body = json.loads(AnthropicConverter.messages_to_openai(json.dumps(body, ensure_ascii=False)))
         body["model"] = upstream_model
         return body
 
@@ -65,9 +69,9 @@ class OpenAICompatibleAdapter(ChannelAdapter):
         configured_path = (channel.config or {}).get("path")
         if configured_path:
             path = str(configured_path)
-        elif getattr(request, "protocol_type", "") == "responses":
-            # Responses requests are converted to Chat Completions before the
-            # gateway call, so the upstream receives the compatible endpoint.
+        elif getattr(request, "protocol_type", "") in {"responses", "anthropic"}:
+            # Non-OpenAI public requests are converted before the compatible
+            # upstream call, so use the Chat Completions endpoint.
             path = "/chat/completions"
         else:
             path = _endpoint_path(request)
@@ -102,6 +106,9 @@ class AnthropicAdapter(ChannelAdapter):
 
     def prepare_body(self, channel, request, upstream_model: str) -> dict[str, Any]:
         source = dict(request.body)
+        if getattr(request, "protocol_type", "") == "anthropic":
+            source["model"] = upstream_model
+            return source
         messages = source.pop("messages", [])
         system: list[Any] = []
         anthropic_messages: list[dict[str, Any]] = []

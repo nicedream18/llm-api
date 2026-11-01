@@ -41,6 +41,21 @@ def test_responses_protocol_uses_chat_endpoint_after_conversion():
     assert adapter_for(channel).build_url(channel, req) == "https://provider.example/v1/chat/completions"
 
 
+def test_anthropic_public_protocol_uses_openai_compatible_upstream():
+    channel = ChannelEntity(type="openai", base_url="https://provider.example/v1")
+    req = request({
+        "model": "public-model",
+        "system": "Be concise",
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        "max_tokens": 8,
+    }, endpoint="/v1/messages", protocol_type="anthropic")
+    adapter = adapter_for(channel)
+    assert adapter.build_url(channel, req) == "https://provider.example/v1/chat/completions"
+    body = adapter.prepare_body(channel, req, "upstream-model")
+    assert body["model"] == "upstream-model"
+    assert body["messages"] == [{"role": "system", "content": "Be concise"}, {"role": "user", "content": "hi"}]
+
+
 def test_anthropic_adapter_converts_chat_request_and_response():
     channel = ChannelEntity(type="claude", base_url="https://api.anthropic.com/v1", api_key="secret")
     adapter = adapter_for(channel)
