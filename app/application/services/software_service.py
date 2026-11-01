@@ -9,7 +9,8 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
@@ -29,6 +30,11 @@ class SoftwareService:
         re.IGNORECASE,
     )
     _ENV_REFERENCE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,255}$")
+    _LOCAL_TOOL_NAMES = (
+        "python", "python3", "py", "uv", "pip", "pipx", "git", "gh", "node", "npm", "pnpm", "yarn",
+        "bun", "deno", "docker", "podman", "curl", "wget", "go", "rustc", "cargo", "java", "mvn",
+        "gradle", "ollama", "codex", "claude", "gemini", "qoder", "workbuddy",
+    )
 
     def __init__(self, repository):
         self.repo = repository
@@ -94,25 +100,24 @@ class SoftwareService:
         return result
 
     @staticmethod
-    def scan_local_tools(names=None):
+    def scan_local_tools(names=None, timeout_seconds=3):
         """Discover a small explicit allowlist of local executables.
 
         Discovery never executes shell strings and only asks each executable for
         its version. Unknown names are ignored so a UI cannot turn this endpoint
         into arbitrary command execution.
         """
-        candidates = names or [
-            "python", "python3", "git", "node", "npm", "bun", "deno", "docker", "curl",
-            "go", "rustc", "cargo", "java", "ollama", "codex", "claude", "gemini",
-        ]
+        candidates = list(names) if names is not None else list(SoftwareService._LOCAL_TOOL_NAMES)
         if not isinstance(candidates, list) or not all(isinstance(name, str) for name in candidates):
             raise ApplicationError("Tool names must be a list of strings", 422, "invalid_scan_request")
-        allowed = {
-            "python", "python3", "git", "node", "npm", "bun", "deno", "docker", "curl",
-            "go", "rustc", "cargo", "java", "ollama", "codex", "claude", "gemini",
-        }
+        try:
+            timeout = min(max(float(timeout_seconds), 0.1), 30.0)
+        except (TypeError, ValueError):
+            raise ApplicationError("Scan timeout is invalid", 422, "invalid_scan_request") from None
+        allowed = set(SoftwareService._LOCAL_TOOL_NAMES)
         result = []
         seen = set()
+        seen_paths = set()
         for name in candidates[:64]:
             if name in seen:
                 continue
@@ -120,14 +125,26 @@ class SoftwareService:
             if name not in allowed:
                 continue
             executable = shutil.which(name)
-            version = None
+            normalized = None
             if executable:
                 try:
-                    completed = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=3, check=False)
+                    normalized = str(Path(executable).resolve(strict=True))
+                    if not Path(normalized).is_file():
+                        normalized = None
+                except (OSError, RuntimeError):
+                    normalized = None
+            if normalized and normalized.casefold() in seen_paths:
+                continue
+            if normalized:
+                seen_paths.add(normalized.casefold())
+            version = None
+            if normalized:
+                try:
+                    completed = subprocess.run([normalized, "--version"], capture_output=True, text=True, timeout=timeout, check=False)
                     version = (completed.stdout or completed.stderr).strip().splitlines()[0][:256] if completed.returncode == 0 else None
                 except (OSError, subprocess.TimeoutExpired):
                     version = None
-            result.append({"name": name, "installed": bool(executable), "path": executable, "version": version})
+            result.append({"name": name, "installed": bool(normalized), "path": normalized, "version": version})
         return result
 
     @staticmethod
@@ -207,12 +224,16 @@ class SoftwareService:
     def set_tool_enabled(self, tool_id, enabled):
         return self.update_tool(tool_id, {"enabled": 1 if enabled else 0})
 
-    def create_approval(self, tool_id, arguments, principal=None):
+    def create_approval(self, tool_id, arguments, principal=None, expires_in_seconds=300):
         tool = self.repo.get_tool(tool_id)
         if not tool or not tool.get("enabled"):
             raise ApplicationError("Software tool is unavailable", 404, "not_found")
         tool = self._decode(tool)
         self._validate_arguments(tool, arguments)
+        try:
+            expires_in = min(max(int(expires_in_seconds), 1), 86_400)
+        except (TypeError, ValueError):
+            raise ApplicationError("Approval expiry is invalid", 422, "invalid_approval") from None
         return self.repo.create_approval({
             "tool_id": tool_id,
             "principal_type": getattr(principal, "principal_type", None),
@@ -222,6 +243,7 @@ class SoftwareService:
             "decision_by": None,
             "decision_at": None,
             "error_type": None,
+            "expires_at": (datetime.now(UTC) + timedelta(seconds=expires_in)).isoformat(),
         })
 
     def decide_approval(self, approval_id, approved, principal=None):
@@ -230,7 +252,18 @@ class SoftwareService:
             raise ApplicationError("Software approval request not found", 404, "not_found")
         if request.get("status") != "pending":
             raise ApplicationError("Software approval request is already decided", 409, "approval_conflict")
+        expires_at = request.get("expires_at")
+        if expires_at:
+            try:
+                expired = datetime.fromisoformat(str(expires_at)) <= datetime.now(UTC)
+            except ValueError:
+                expired = True
+            if expired:
+                self.repo.update_approval(approval_id, {"status": "expired", "error_type": "approval_expired"}, "pending")
+                raise ApplicationError("Software approval request has expired", 409, "approval_expired")
         decision_by = getattr(principal, "principal_id", None)
+        if principal is not None and not getattr(principal, "is_admin", False):
+            raise ApplicationError("Only administrators can decide software approvals", 403, "permission_error")
         if not approved:
             if not self.repo.update_approval(approval_id, {"status": "rejected", "decision_by": decision_by, "decision_at": _now()}, "pending"):
                 raise ApplicationError("Software approval request is already decided", 409, "approval_conflict")
@@ -253,8 +286,6 @@ class SoftwareService:
         tool = self._decode(tool)
         if approved and principal is not None and not getattr(principal, "is_admin", False):
             raise ApplicationError("Only administrators can approve software tools", 403, "permission_error")
-        if self._requires_approval(tool) and not approved:
-            raise ApplicationError("Tool approval is required", 403, "approval_required")
         started = time.monotonic()
         status = "failed"
         error_type = None
@@ -265,6 +296,8 @@ class SoftwareService:
             if not instance or not instance.get("enabled"):
                 raise ApplicationError("Software instance is unavailable", 404, "not_found")
             instance = self._decode(instance)
+            if self._requires_approval(tool, instance) and not approved:
+                raise ApplicationError("Tool approval is required", 403, "approval_required")
             result = self._invoke_connector(instance, tool, arguments)
             status = "succeeded"
             response_summary = json.dumps(result, ensure_ascii=False, default=str)[:16_384]
@@ -344,9 +377,22 @@ class SoftwareService:
         return value
 
     @staticmethod
-    def _requires_approval(tool):
+    def _requires_approval(tool, instance=None):
         risk = str(tool.get("risk_level") or "medium").lower()
         mode = str(tool.get("approval_mode") or "per_call").lower()
+        policy = {}
+        for source in ((instance or {}).get("config") or {}, (tool.get("config") or {})):
+            configured = source.get("approval_policy") if isinstance(source, dict) else None
+            if isinstance(configured, dict):
+                policy.update(configured)
+        operation = str((tool.get("config") or {}).get("operation") or tool.get("name") or "")
+        tool_rules = policy.get("tools") if isinstance(policy.get("tools"), dict) else {}
+        operation_rules = policy.get("operations") if isinstance(policy.get("operations"), dict) else {}
+        risk_rules = policy.get("risk") if isinstance(policy.get("risk"), dict) else {}
+        selected = tool_rules.get(str(tool.get("name")), operation_rules.get(operation, risk_rules.get(risk)))
+        selected = selected if selected is not None else policy.get("default")
+        if selected is not None:
+            return str(selected).lower() not in {"none", "allow", "false", "0"}
         return risk in {"high", "critical"} or mode in {"per_call", "always"}
 
     @staticmethod

@@ -6,7 +6,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import inspect, text
+from sqlalchemy import bindparam, inspect, text
 
 from app.infrastructure.database.connection import engine as default_engine
 
@@ -151,17 +151,29 @@ class SoftwareRepository:
 
     def create_approval(self, values):
         row = {"id": str(uuid.uuid4()), "created_at": _now(), "updated_at": _now(), **values}
+        expires_at = row.pop("expires_at", None)
         row["arguments"] = json.dumps(row.get("arguments") or {}, ensure_ascii=False)
         with self.engine.begin() as db:
             db.execute(text("""INSERT INTO software_approval_requests
                 (id,tool_id,principal_type,principal_id,arguments,status,decision_by,decision_at,error_type,created_at,updated_at)
                 VALUES (:id,:tool_id,:principal_type,:principal_id,:arguments,:status,:decision_by,:decision_at,:error_type,:created_at,:updated_at)"""), row)
+            if expires_at is not None and inspect(db).has_table("software_approval_expiry"):
+                db.execute(text("""INSERT INTO software_approval_expiry (approval_id, expires_at, created_at)
+                    VALUES (:approval_id, :expires_at, :created_at)"""),
+                    {"approval_id": row["id"], "expires_at": expires_at, "created_at": row["created_at"]})
         return self.get_approval(row["id"])
 
     def get_approval(self, approval_id):
         with self.engine.connect() as db:
             row = db.execute(text("SELECT * FROM software_approval_requests WHERE id=:id"), {"id": approval_id}).mappings().first()
-            return dict(row) if row else None
+            if not row:
+                return None
+            result = dict(row)
+            if inspect(db).has_table("software_approval_expiry"):
+                expiry = db.execute(text("SELECT expires_at FROM software_approval_expiry WHERE approval_id=:id"), {"id": approval_id}).scalar()
+                if expiry is not None:
+                    result["expires_at"] = expiry
+            return result
 
     def list_approvals(self, status=None, limit=100):
         query = "SELECT * FROM software_approval_requests"
@@ -171,7 +183,18 @@ class SoftwareRepository:
             params["status"] = status
         query += " ORDER BY created_at DESC, id DESC LIMIT :limit"
         with self.engine.connect() as db:
-            return [dict(row) for row in db.execute(text(query), params).mappings()]
+            rows = [dict(row) for row in db.execute(text(query), params).mappings()]
+            if inspect(db).has_table("software_approval_expiry") and rows:
+                ids = [row["id"] for row in rows]
+                expiry_query = text(
+                    "SELECT approval_id, expires_at FROM software_approval_expiry WHERE approval_id IN :ids"
+                ).bindparams(bindparam("ids", expanding=True))
+                expiry_rows = db.execute(expiry_query, {"ids": ids}).mappings()
+                expiry_by_id = {row["approval_id"]: row["expires_at"] for row in expiry_rows}
+                for row in rows:
+                    if row["id"] in expiry_by_id:
+                        row["expires_at"] = expiry_by_id[row["id"]]
+            return rows
 
     def update_approval(self, approval_id, values, expected_status=None):
         values = {**values, "updated_at": _now(), "id": approval_id}

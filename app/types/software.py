@@ -34,6 +34,7 @@ class SoftwareInvokeInput(BaseModel):
 class SoftwareApprovalInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     arguments: dict = Field(default_factory=dict)
+    expires_in_seconds: int = Field(default=300, ge=1, le=86_400)
 
 
 class SoftwareApprovalDecisionInput(BaseModel):

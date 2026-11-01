@@ -248,6 +248,57 @@ def test_software_approval_is_persistent_and_decision_is_single_use(tmp_path):
         service.decide_approval(approval["id"], False)
 
 
+def test_software_approval_expiry_is_persisted_and_expired_requests_are_rejected():
+    from sqlalchemy import create_engine
+
+    engine = create_engine("sqlite://")
+    with engine.begin() as db:
+        for migration in ("013_software_tools.sql", "016_software_approvals.sql", "019_software_approval_expiry.sql"):
+            execute_migration(db, Path("docs/migrations") / migration)
+    repo = SoftwareRepository(engine)
+    service = SoftwareService(repo)
+    instance = service.create_instance(SoftwareInstanceInput(name="Echo", connector_type="cli", config={"command": ["echo"]}))
+    tool = service.create_tool(SoftwareToolInput(instance_id=instance["id"], name="echo", approval_mode="per_call"))
+    approval = service.create_approval(tool["id"], {}, expires_in_seconds=60)
+    assert approval["expires_at"]
+    with engine.begin() as db:
+        db.execute(
+            __import__("sqlalchemy").text("UPDATE software_approval_expiry SET expires_at='2000-01-01T00:00:00+00:00' WHERE approval_id=:id"),
+            {"id": approval["id"]},
+        )
+    with pytest.raises(ApplicationError, match="expired"):
+        service.decide_approval(approval["id"], True)
+    assert repo.get_approval(approval["id"])["status"] == "expired"
+
+
+def test_software_approval_policy_can_override_tool_default():
+    class Repo:
+        def get_tool(self, _id):
+            return {"id": "tool", "name": "read", "instance_id": "instance", "enabled": 1,
+                    "approval_mode": "per_call", "risk_level": "low", "config": '{"operation":"read"}',
+                    "input_schema": '{"type":"object"}'}
+
+        def get_instance(self, _id):
+            import sys
+            return {"id": "instance", "enabled": 1, "connector_type": "cli",
+                    "config": {"command": [sys.executable, "-c", "print('ok')"],
+                               "approval_policy": {"operations": {"read": "none"}}}}
+
+        def record_call(self, values):
+            self.call = values
+
+    assert SoftwareService(Repo()).invoke("tool", {})["stdout"].strip() == "ok"
+
+
+def test_local_scan_normalizes_paths_and_deduplicates_aliases(tmp_path, monkeypatch):
+    executable = tmp_path / "tool.exe"
+    executable.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr("app.application.services.software_service.shutil.which", lambda name: str(executable))
+    monkeypatch.setattr("app.application.services.software_service.subprocess.run", lambda *args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "tool 1", "stderr": ""})())
+    rows = SoftwareService.scan_local_tools(["python", "python3"], timeout_seconds=1)
+    assert len(rows) == 1 and rows[0]["path"] == str(executable.resolve())
+
+
 def test_configured_wechat_and_clihub_connectors_use_safe_http_bridge(monkeypatch):
     class Response:
         status_code = 200

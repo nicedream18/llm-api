@@ -395,7 +395,7 @@ async def software_approvals(status: str | None = "pending", limit: int = 100):
 
 @software_router.post("/tools/{tool_id}/approvals", status_code=201)
 async def create_software_approval(tool_id: str, dto: SoftwareApprovalInput, request: Request):
-    return _success(await asyncio.to_thread(get_container().software_service.create_approval, tool_id, dto.arguments, getattr(request.state, "auth_context", None)))
+    return _success(await asyncio.to_thread(get_container().software_service.create_approval, tool_id, dto.arguments, getattr(request.state, "auth_context", None), dto.expires_in_seconds))
 
 
 @software_router.post("/approvals/{approval_id}/decision")
