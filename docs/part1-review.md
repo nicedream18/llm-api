@@ -18,7 +18,7 @@
 ## 工程与验证
 
 - 最新完整 Python 测试：332 passed，2 skipped，覆盖率 85.74%；GitHub Actions 全量测试命令执行 85% 门槛。
-- 跳过项为隔离 MySQL 集成测试，因为本机未提供测试 MySQL 服务；SQLite 测试不能替代 MySQL 的锁、事务和迁移验证。
+- 跳过项为隔离 MySQL 集成测试，因为本机未提供测试 MySQL 服务；GitHub Actions 已配置 MySQL 8.4 service，SQLite 测试不能替代 MySQL 的锁、事务和迁移验证。
 - React 前端 10 项 Vitest 通过，TypeScript 检查和 Vite 生产构建通过；Node 静态 Wiki 渲染测试 3 项通过。
 - 全仓 Ruff、Mypy（81 个源文件）、compileall、diff 检查、Node/Vitest 测试和前端生产构建均已通过。
 - 仓储行为测试在临时 SQLite 文件/数据库上执行，不使用应用配置的数据库。

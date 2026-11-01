@@ -7,7 +7,7 @@
 - Python 全量测试：**332 passed, 2 skipped**；全仓覆盖率 **85.74%**。GitHub Actions 在全量测试命令中执行 85% 覆盖率门槛。
 - 全仓 Ruff、全仓 Mypy（81 个源文件）、`compileall` 和 `git diff --check` 通过。
 - 前端 Node 静态 Wiki 测试 3 项通过，Vitest 10 项通过；TypeScript 检查与 Vite 生产构建通过。
-- 两项真实 MySQL 集成测试因本机没有隔离 MySQL 服务而跳过；不得视为 MySQL 验收通过。
+- 本机没有隔离 MySQL 服务，因此本地两项真实 MySQL 集成测试跳过；GitHub Actions 已配置 MySQL 8.4 service，会在 CI 中执行这两项测试。
 - 远程模型和 Provider 实际 OAuth 服务未接入测试；使用本地 SQLite 与模拟 HTTP 响应验证。
 
 ## 已实现并有自动化测试
@@ -74,7 +74,7 @@
 
 ## 尚未完成的计划项
 
-1. 在隔离 MySQL 环境跑完整迁移、并发/锁语义、级联清理和仓储回归。
+1. 在 CI 的 MySQL 8.4 service 中持续验证完整迁移、并发/锁语义、级联清理和仓储回归；本机仍需连接隔离实例才能执行。
 2. Provider 真实厂商 OAuth 互通和厂商专属协议适配；账号池失败计数、冷却和过期 Token 刷新已实现。
 3. Software 扩展扫描器覆盖范围、实例凭据配置和更细粒度的审批策略。
 4. Wiki 移动端真实浏览器验收；页面编辑和备份恢复已在管理台接入，仍需端到端浏览器回归。

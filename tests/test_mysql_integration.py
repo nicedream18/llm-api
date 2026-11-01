@@ -18,20 +18,25 @@ from app.infrastructure.repositories.wiki_repo import WikiRepository
 from app.types.wiki import WikiBackup, WikiPageInput
 
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("WALIAPI_TEST_MYSQL_SOCKET"),
-    reason="Set WALIAPI_TEST_MYSQL_SOCKET to an isolated MySQL test server",
+    not (os.environ.get("WALIAPI_TEST_MYSQL_SOCKET") or os.environ.get("WALIAPI_TEST_MYSQL_HOST")),
+    reason="Set WALIAPI_TEST_MYSQL_SOCKET or WALIAPI_TEST_MYSQL_HOST to an isolated MySQL test server",
 )
 
 
 @pytest.fixture
 def mysql_engine(monkeypatch):
-    socket = os.environ["WALIAPI_TEST_MYSQL_SOCKET"]
+    socket = os.environ.get("WALIAPI_TEST_MYSQL_SOCKET")
+    host = os.environ.get("WALIAPI_TEST_MYSQL_HOST", "127.0.0.1")
+    port = int(os.environ.get("WALIAPI_TEST_MYSQL_PORT", "3306"))
+    username = os.environ.get("WALIAPI_TEST_MYSQL_USER", "root")
+    password = os.environ.get("WALIAPI_TEST_MYSQL_PASSWORD", "")
     database = "waliapi_test_" + uuid.uuid4().hex
-    url = URL.create(
-        "mysql+pymysql",
-        username="root",
-        query={"unix_socket": socket, "charset": "utf8mb4"},
-    )
+    query = {"charset": "utf8mb4"}
+    if socket:
+        query["unix_socket"] = socket
+        url = URL.create("mysql+pymysql", username=username, password=password, query=query)
+    else:
+        url = URL.create("mysql+pymysql", username=username, password=password, host=host, port=port, query=query)
     admin_engine = create_engine(url)
     with admin_engine.begin() as db:
         db.execute(
