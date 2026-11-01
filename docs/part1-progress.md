@@ -4,7 +4,7 @@
 
 ## 当前验收状态（2026-11-01）
 
-- Python 全量测试：**330 passed, 2 skipped**；全仓覆盖率 **85.81%**。GitHub Actions 在全量测试命令中执行 85% 覆盖率门槛。
+- Python 全量测试：**332 passed, 2 skipped**；全仓覆盖率 **85.74%**。GitHub Actions 在全量测试命令中执行 85% 覆盖率门槛。
 - 全仓 Ruff、全仓 Mypy（81 个源文件）、`compileall` 和 `git diff --check` 通过。
 - 前端 Node 静态 Wiki 测试 3 项通过，Vitest 10 项通过；TypeScript 检查与 Vite 生产构建通过。
 - 两项真实 MySQL 集成测试因本机没有隔离 MySQL 服务而跳过；不得视为 MySQL 验收通过。

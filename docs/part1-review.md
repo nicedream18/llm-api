@@ -17,7 +17,7 @@
 
 ## 工程与验证
 
-- 最新完整 Python 测试：330 passed，2 skipped，覆盖率 85.81%；GitHub Actions 全量测试命令执行 85% 门槛。
+- 最新完整 Python 测试：332 passed，2 skipped，覆盖率 85.74%；GitHub Actions 全量测试命令执行 85% 门槛。
 - 跳过项为隔离 MySQL 集成测试，因为本机未提供测试 MySQL 服务；SQLite 测试不能替代 MySQL 的锁、事务和迁移验证。
 - React 前端 10 项 Vitest 通过，TypeScript 检查和 Vite 生产构建通过；Node 静态 Wiki 渲染测试 3 项通过。
 - 全仓 Ruff、Mypy（81 个源文件）、compileall、diff 检查、Node/Vitest 测试和前端生产构建均已通过。
