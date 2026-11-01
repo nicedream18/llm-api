@@ -509,6 +509,7 @@ LOG_LEVEL=info              # 日志级别
 | GET | /api/v1/security/findings | 安全发现 |
 | GET/POST/PUT/DELETE | /api/v1/wiki/* | Wiki 项目、页面、来源、附件、图谱与备份 |
 | GET/POST/PUT/DELETE | /api/v1/software/* | Software 实例、工具、启停、调用与调用记录 |
+| POST | /api/v1/software/openapi/preview、/api/v1/software/openapi/import | 预览 OpenAPI 3.0/3.1 操作并将选中项导入为审批工具 |
 | GET/POST/PUT/DELETE | /api/v1/providers/* | Provider 账户、OAuth、Token、配额与模型 |
 | GET/POST/PUT/DELETE | /api/v1/platform/* | Prompt、语义缓存和客户端配置 |
 | GET/POST/DELETE | /api/v1/access/* | 按资源和主体配置授权 |

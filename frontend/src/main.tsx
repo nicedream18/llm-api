@@ -1,8 +1,9 @@
 import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { del, get, post, put, upload } from "./api";
-import type { ClientConfig, Dashboard, KnowledgeBase, PromptTemplate, Provider, SoftwareTool, WikiPage, WikiProject } from "./types";
+import type { ClientConfig, Dashboard, KnowledgeBase, OpenApiPreview, PromptTemplate, Provider, SoftwareTool, WikiPage, WikiProject } from "./types";
 import "./styles.css";
+import "./software.css";
 
 type Page = "dashboard" | "channels" | "software" | "providers" | "wiki" | "knowledge" | "settings";
 const nav: Array<[Page, string]> = [["dashboard", "仪表盘"], ["channels", "渠道"], ["knowledge", "知识库"], ["wiki", "Wiki"], ["software", "Software"], ["providers", "Auth Provider"], ["settings", "设置"]];
@@ -80,10 +81,51 @@ function WikiPageView({ onError }: { onError: (message: string) => void }) {
 
 function SoftwarePage({ onError }: { onError: (message: string) => void }) {
   const [tools, setTools] = useState<SoftwareTool[]>([]);
+  const [specText, setSpecText] = useState("");
+  const [instanceName, setInstanceName] = useState("");
+  const [preview, setPreview] = useState<OpenApiPreview | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
   const load = () => get<SoftwareTool[]>("/api/v1/software/tools").then(setTools).catch((error: Error) => onError(error.message));
   useEffect(() => { load(); }, []);
   const toggle = (tool: SoftwareTool) => put<SoftwareTool>(`/api/v1/software/tools/${tool.id}/enabled?enabled=${tool.enabled ? "false" : "true"}`, {}).then(load).catch((error: Error) => onError(error.message));
-  return <section><div className="panel"><div className="panel-head"><h2>Software 工具</h2><button className="primary" onClick={load}>刷新</button></div><div className="card-list">{tools.map(tool => <article className="subcard" key={tool.id}><strong>{tool.name}</strong><span>{tool.description || "暂无描述"}</span><small>风险：{tool.risk_level} · {tool.enabled ? "已启用" : "已停用"}</small><button className="secondary" onClick={() => toggle(tool)}>{tool.enabled ? "停用" : "启用"}</button></article>)}</div>{tools.length === 0 && <p className="muted">暂无工具。</p>}</div></section>;
+  const parseSpec = () => {
+    const value: unknown = JSON.parse(specText);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("OpenAPI 规范必须是 JSON 对象");
+    return value;
+  };
+  const inspect = async () => {
+    setBusy(true); setMessage(""); setPreview(null);
+    try {
+      const result = await post<OpenApiPreview>("/api/v1/software/openapi/preview", { spec: parseSpec() });
+      setPreview(result); setSelected(result.tools.map(tool => tool.name));
+    } catch (error) { onError(error instanceof Error ? error.message : "无法预览 OpenAPI 规范"); }
+    finally { setBusy(false); }
+  };
+  const importSelected = async () => {
+    if (!preview || !instanceName.trim() || selected.length === 0) return;
+    setBusy(true); setMessage("");
+    try {
+      const result = await post<{ instance: { name: string }; tools: SoftwareTool[] }>("/api/v1/software/openapi/import", { name: instanceName.trim(), spec: parseSpec(), tools: selected });
+      setMessage(`已导入 ${result.tools.length} 个操作到“${result.instance.name}”。`);
+      setPreview(null); setSelected([]); setInstanceName(""); load();
+    } catch (error) { onError(error instanceof Error ? error.message : "导入 OpenAPI 规范失败"); }
+    finally { setBusy(false); }
+  };
+  return <section>
+    <div className="panel">
+      <div className="panel-head"><div><h2>从 OpenAPI 创建工具</h2><p className="muted">粘贴 OpenAPI 3.0/3.1 JSON，先预览操作，再选择要导入的工具。</p></div></div>
+      <label className="field-label">实例名称<input value={instanceName} maxLength={128} onChange={event => setInstanceName(event.target.value)} placeholder="例如：订单服务" /></label>
+      <label className="field-label">OpenAPI JSON<textarea className="code-input" spellCheck={false} value={specText} onChange={event => setSpecText(event.target.value)} placeholder={'{\n  "openapi": "3.0.3",\n  "info": { "title": "Example", "version": "1.0.0" },\n  "servers": [{ "url": "https://api.example.com" }],\n  "paths": { ... }\n}'} /></label>
+      <div className="inline-form"><button className="primary" onClick={inspect} disabled={busy || !specText.trim()}>{busy ? "处理中…" : "预览操作"}</button>{preview && <button className="secondary" onClick={() => { setPreview(null); setSelected([]); }}>清除预览</button>}</div>
+      {message && <p className="success" role="status">{message}</p>}
+      {preview && <div className="preview-block"><div className="panel-head"><div><h3>操作预览</h3><p className="muted">OpenAPI {preview.openapi} · {preview.tool_count} 个可导入操作</p></div><button className="primary" onClick={importSelected} disabled={busy || !instanceName.trim() || selected.length === 0}>导入所选（{selected.length}）</button></div>
+        <div className="operation-list">{preview.tools.map(tool => <label className="operation-row" key={tool.name}><input type="checkbox" checked={selected.includes(tool.name)} onChange={event => setSelected(current => event.target.checked ? [...current, tool.name] : current.filter(name => name !== tool.name))} /><span className="operation-copy"><strong>{tool.name}</strong><small>{tool.description || "无描述"}</small><small>风险：{tool.risk_level} · 每次调用需审批</small><details><summary>参数定义</summary><pre>{JSON.stringify(tool.input_schema, null, 2)}</pre></details></span></label>)}</div>
+      </div>}
+    </div>
+    <div className="panel"><div className="panel-head"><h2>已注册工具</h2><button className="secondary" onClick={load}>刷新</button></div><div className="card-list">{tools.map(tool => <article className="subcard" key={tool.id}><strong>{tool.name}</strong><span>{tool.description || "暂无描述"}</span><small>风险：{tool.risk_level} · {tool.enabled ? "已启用" : "已停用"}</small><button className="secondary" onClick={() => toggle(tool)}>{tool.enabled ? "停用" : "启用"}</button></article>)}</div>{tools.length === 0 && <p className="muted">暂无工具。</p>}</div>
+  </section>;
 }
 
 function ProviderPage({ onError }: { onError: (message: string) => void }) {

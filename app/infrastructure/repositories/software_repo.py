@@ -71,6 +71,31 @@ class SoftwareRepository:
                 VALUES (:id,:instance_id,:name,:description,:input_schema,:risk_level,:approval_mode,:config,:enabled,:created_at,:updated_at)"""), row)
         return self.get_tool(row["id"])
 
+    def import_openapi(self, instance_values, tools):
+        """Create an OpenAPI instance and its selected tools atomically."""
+        instance = {"id": str(uuid.uuid4()), "created_at": _now(), "updated_at": _now(), **instance_values}
+        instance["config"] = json.dumps(instance.get("config") or {}, ensure_ascii=False)
+        tool_rows = []
+        for values in tools:
+            row = {"id": str(uuid.uuid4()), "created_at": _now(), "updated_at": _now(), **values}
+            row["instance_id"] = instance["id"]
+            row.setdefault("description", "")
+            row.setdefault("risk_level", "medium")
+            row.setdefault("approval_mode", "per_call")
+            row.setdefault("enabled", 1)
+            row["input_schema"] = json.dumps(row.get("input_schema") or {}, ensure_ascii=False)
+            row["config"] = json.dumps(row.get("config") or {}, ensure_ascii=False)
+            tool_rows.append(row)
+        with self.engine.begin() as db:
+            db.execute(text("""INSERT INTO software_instances
+                (id,name,connector_type,config,enabled,created_at,updated_at)
+                VALUES (:id,:name,:connector_type,:config,:enabled,:created_at,:updated_at)"""), instance)
+            for row in tool_rows:
+                db.execute(text("""INSERT INTO software_tools
+                    (id,instance_id,name,description,input_schema,risk_level,approval_mode,config,enabled,created_at,updated_at)
+                    VALUES (:id,:instance_id,:name,:description,:input_schema,:risk_level,:approval_mode,:config,:enabled,:created_at,:updated_at)"""), row)
+        return {"instance": self.get_instance(instance["id"]), "tools": self.list_tools(instance["id"])}
+
     def update_tool(self, tool_id, values):
         values = {**values, "updated_at": _now(), "id": tool_id}
         for key in ("input_schema", "config"):

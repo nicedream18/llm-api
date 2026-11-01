@@ -1,0 +1,13 @@
+.field-label{display:grid;gap:8px;margin:16px 0;color:#a8b4ca;font-size:13px}
+.code-input{width:100%;min-height:260px;resize:vertical;border:1px solid #34425f;border-radius:12px;padding:15px;background:#0a1222;color:#d7e4f5;font:13px/1.6 "Cascadia Code",Consolas,monospace}
+.preview-block{margin-top:24px;border-top:1px solid #263553;padding-top:18px}
+.operation-list{display:grid;gap:10px;margin-top:14px}
+.operation-row{display:flex;align-items:flex-start;gap:12px;border:1px solid #263553;border-radius:12px;padding:14px;background:#111a2c}
+.operation-row>input{margin-top:4px;accent-color:#81a7ff}
+.operation-copy{display:grid;gap:6px;min-width:0}
+.operation-copy small{color:#8998b4;overflow-wrap:anywhere}
+.operation-copy details{margin-top:5px;color:#a8b4ca;font-size:12px}
+.operation-copy summary{cursor:pointer}
+.operation-copy pre{max-height:220px;overflow:auto;padding:12px;border-radius:8px;background:#0a1222;color:#c2d6f3;font-size:12px}
+.inline-form button:disabled{opacity:.5;cursor:not-allowed}
+@media(max-width:760px){.panel-head{align-items:flex-start;gap:12px;flex-direction:column}.code-input{min-height:210px}.operation-row{padding:11px}}

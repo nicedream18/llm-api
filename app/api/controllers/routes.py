@@ -27,6 +27,8 @@ from app.types.models import (
     UploadDocDTO,
 )
 from app.types.software import (
+    OpenApiImportInput,
+    OpenApiPreviewInput,
     SoftwareInstanceInput,
     SoftwareInvokeInput,
     SoftwareToolInput,
@@ -307,6 +309,19 @@ dashboard_router = APIRouter(prefix="/api/v1")
 
 
 software_router = APIRouter(prefix="/api/v1/software", tags=["Software"])
+
+
+@software_router.post("/openapi/preview")
+async def preview_openapi(dto: OpenApiPreviewInput):
+    return _success(await asyncio.to_thread(get_container().software_service.preview_openapi, dto.spec))
+
+
+@software_router.post("/openapi/import", status_code=201)
+async def import_openapi(dto: OpenApiImportInput):
+    return _success(await asyncio.to_thread(
+        get_container().software_service.import_openapi,
+        dto.name, dto.spec, dto.tools,
+    ))
 
 
 @software_router.get("/instances")
