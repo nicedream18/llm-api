@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import email.utils
+import hashlib
 import json
 import logging
 import random
@@ -14,6 +15,7 @@ import httpx
 
 from app.config import config
 from app.domain.entities import ProxyRequestEntity, ProxyResponseEntity
+from app.domain.routing import RoutingPlanner, supports_endpoint
 from app.domain.streaming import StreamCodec
 from app.infrastructure.adapters.channel_adapters import adapter_for, models_url
 
@@ -59,9 +61,10 @@ def _response_headers(response: httpx.Response) -> dict[str, str]:
 
 
 class GatewayService:
-    def __init__(self, dispatcher, channel_repository):
+    def __init__(self, dispatcher, channel_repository, routing_repository=None):
         self.dispatcher = dispatcher
         self.channel_repository = channel_repository
+        self.routing = RoutingPlanner(routing_repository, dispatcher) if routing_repository is not None else None
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(config.gateway.request_timeout_seconds, connect=30.0),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
@@ -100,15 +103,24 @@ class GatewayService:
         keys = [key for key in getattr(channel, "api_keys", []) if getattr(key, "status", 1) and getattr(key, "api_key", None)]
         if not keys:
             return None, None
-        active = [key for key in keys if self._key_cooldown_until.get(str(key.id or key.api_key), 0.0) <= time.monotonic()]
+        active = [key for key in keys if self._key_cooldown_until.get(self._api_key_id(key), 0.0) <= time.monotonic()]
+        if self.routing:
+            from datetime import UTC, datetime
+
+            now = datetime.now(UTC).isoformat()
+            active = [key for key in active if (self.routing.repo.state("key:" + self._api_key_id(key)).get("cooldown_until") or "") <= now]
         if not active:
             return "", "__all_keys_cooled__"
         selected = random.choices(active, weights=[max(1, int(getattr(key, "weight", 1) or 1)) for key in active], k=1)[0]
-        return selected.api_key, str(selected.id or selected.api_key)
+        return selected.api_key, self._api_key_id(selected)
+
+    @staticmethod
+    def _api_key_id(key):
+        return str(key.id) if key.id else hashlib.sha256(key.api_key.encode()).hexdigest()
 
     def _has_available_api_key(self, channel) -> bool:
         keys = [key for key in getattr(channel, "api_keys", []) if getattr(key, "status", 1) and getattr(key, "api_key", None)]
-        return not keys or any(self._key_cooldown_until.get(str(key.id or key.api_key), 0.0) <= time.monotonic() for key in keys)
+        return not keys or any(self._key_cooldown_until.get(self._api_key_id(key), 0.0) <= time.monotonic() for key in keys)
 
     def _provider_outcome(self, channel, success: bool) -> None:
         account_id = (getattr(channel, "config", None) or {}).get("provider_account_id")
@@ -168,30 +180,89 @@ class GatewayService:
         result = self.dispatcher.dispatch(model)
         return [result]
 
+    async def _retry_budget(self, request):
+        policy = await asyncio.to_thread(self.routing.policy, request) if self.routing else None
+        return min(config.gateway.retry_times, policy.retry_budget) if policy and request.route_group else config.gateway.retry_times
+
+    async def _next_candidate(self, request, excluded):
+        if self.routing:
+            candidates, policy, _ = await asyncio.to_thread(self.routing.plan, request, excluded)
+        else:
+            candidates = self._candidates(request.model, excluded, request.allowed_channels)
+            policy = None
+        for item in candidates:
+            if not supports_endpoint(item.channel, request.endpoint) or self._is_cooled(item.channel) or not self._has_available_api_key(item.channel):
+                continue
+            lease = None
+            if self.routing:
+                upstream_api_key, key_id = await asyncio.to_thread(self._select_api_key, item.channel)
+                if key_id == "__all_keys_cooled__":
+                    continue
+                lease = await asyncio.to_thread(self.routing.repo.acquire, self._channel_key(item.channel), policy.max_concurrent)
+                if not lease:
+                    continue
+                lease["upstream_api_key"], lease["key_id"] = upstream_api_key, key_id
+                if key_id:
+                    lease["key_lease"] = await asyncio.to_thread(self.routing.repo.acquire, "key:" + key_id, policy.max_concurrent)
+                    if not lease["key_lease"]:
+                        await asyncio.to_thread(self.routing.repo.finish, lease)
+                        continue
+                lease["multi_key"] = self._has_key_failover(item.channel)
+                lease["heartbeat"] = asyncio.create_task(self._renew_route(lease, asyncio.current_task()))
+            return item, lease
+        return None, None
+
+    async def _renew_route(self, lease, parent):
+        try:
+            while True:
+                await asyncio.sleep(20)
+                if not await asyncio.to_thread(self.routing.repo.renew, lease):
+                    parent.cancel()
+                    return
+                if lease.get("key_lease") and not await asyncio.to_thread(self.routing.repo.renew, lease["key_lease"]):
+                    parent.cancel()
+                    return
+        except Exception:  # noqa: BLE001 - fail closed if distributed capacity cannot be renewed
+            parent.cancel()
+
+    async def _release_route(self, lease, attempt, retry_after=None):
+        if not lease:
+            return
+        lease["heartbeat"].cancel()
+        await asyncio.gather(lease["heartbeat"], return_exceptions=True)
+        failure = bool(attempt.error_type and (not attempt.status_code or attempt.status_code in {401, 403, 408, 425, 429} or attempt.status_code >= 500))
+        try:
+            hint = self._retry_after_seconds(retry_after, maximum=config.gateway.retry_after_max_seconds)
+            if lease.get("key_lease"):
+                await asyncio.to_thread(self.routing.repo.finish, lease["key_lease"], attempt.succeeded, failure, hint)
+            await asyncio.to_thread(self.routing.repo.finish, lease, attempt.succeeded, failure and not lease.get("multi_key"), hint)
+        except Exception:  # noqa: BLE001 - leases expire when persistence is unavailable
+            logger.warning("Failed to release route capacity")
+
     async def forward_with_attempts(self, request: ProxyRequestEntity, on_attempt: Callable[[GatewayAttempt], None] | None = None) -> tuple[ProxyResponseEntity, list[GatewayAttempt]]:
         attempts: list[GatewayAttempt] = []
         excluded: set[str] = set()
         last_response: ProxyResponseEntity | None = None
-        for attempt_no in range(config.gateway.retry_times + 1):
-            candidates = self._candidates(request.model, excluded, request.allowed_channels)
-            if not candidates:
+        budget = await self._retry_budget(request)
+        for attempt_no in range(budget + 1):
+            dispatch_result, lease = await self._next_candidate(request, excluded)
+            if dispatch_result is None:
                 break
-            dispatch_result = candidates[0]
             channel = dispatch_result.channel
             excluded.add(channel.id or channel.name)
             upstream_model = dispatch_result.upstream_model
-            upstream_api_key, key_id = self._select_api_key(channel)
+            upstream_api_key, key_id = (lease["upstream_api_key"], lease["key_id"]) if lease else self._select_api_key(channel)
             attempt_request = request.__class__(**{**request.__dict__, "upstream_api_key": upstream_api_key,
                                                   "upstream_model": upstream_model})
-            body = adapter_for(channel).prepare_body(channel, attempt_request, upstream_model)
-            raw_body = adapter_for(channel).prepare_raw_body(channel, attempt_request, upstream_model)
-            request_headers = _build_headers(channel, attempt_request)
-            if raw_body is not None:
-                request_headers["Content-Type"] = attempt_request.content_type or "application/octet-stream"
             started = time.monotonic()
             item = GatewayAttempt(attempt_no + 1, channel.id, channel.name)
             retry_after = None
             try:
+                body = adapter_for(channel).prepare_body(channel, attempt_request, upstream_model)
+                raw_body = adapter_for(channel).prepare_raw_body(channel, attempt_request, upstream_model)
+                request_headers = _build_headers(channel, attempt_request)
+                if raw_body is not None:
+                    request_headers["Content-Type"] = attempt_request.content_type or "application/octet-stream"
                 request_kwargs = {"content": raw_body, "headers": request_headers} if raw_body is not None else {"json": body, "headers": request_headers}
                 response = await self.client.post(_build_url(channel, attempt_request), **request_kwargs)
                 item.status_code = response.status_code
@@ -200,12 +271,14 @@ class GatewayService:
                 retry_after = response.headers.get("retry-after")
                 if response.is_success:
                     self._cooldown_until.pop(self._channel_key(channel), None)
-                self._provider_outcome(channel, response.is_success)
+                if response.is_success or response.status_code in {401, 403, 408, 425, 429} or response.status_code >= 500:
+                    self._provider_outcome(channel, response.is_success)
                 if not response.is_success:
                     item.error_type = "upstream_http"
                     item.error_message = f"upstream returned HTTP {response.status_code}"
-                    if self._retryable_status(response.status_code) and not self._has_key_failover(channel):
-                        self._cooldown(channel, self._retry_after_seconds(response.headers.get("retry-after"), maximum=config.gateway.retry_after_max_seconds))
+                    if self._retryable_status(response.status_code):
+                        if not self._has_key_failover(channel):
+                            self._cooldown(channel, self._retry_after_seconds(response.headers.get("retry-after"), maximum=config.gateway.retry_after_max_seconds))
                         self._cooldown_key(key_id, retry_after)
                         if self._has_key_failover(channel):
                             excluded.discard(channel.id or channel.name)
@@ -239,6 +312,7 @@ class GatewayService:
                 item.error_message = "upstream connection failed"
                 item.duration_ms = int((time.monotonic() - started) * 1000)
                 item.succeeded = False
+                self._provider_outcome(channel, False)
                 attempts.append(item)
                 if on_attempt:
                     on_attempt(item)
@@ -250,7 +324,9 @@ class GatewayService:
                 if self._has_key_failover(channel):
                     excluded.discard(channel.id or channel.name)
                 last_response = ProxyResponseEntity(success=False, status_code=502, error_message="upstream connection failed", duration_ms=item.duration_ms, channel_id=channel.id, channel_name=channel.name, upstream_model=upstream_model)
-            if attempt_no < config.gateway.retry_times:
+            finally:
+                await self._release_route(lease, item, retry_after)
+            if attempt_no < budget:
                 await self._backoff_with_hint(attempt_no + 1, retry_after)
         return last_response or ProxyResponseEntity(success=False, status_code=503, error_message="No available upstream channel"), attempts
 
@@ -265,29 +341,20 @@ class GatewayService:
     async def stream(self, request: ProxyRequestEntity, on_attempt: Callable[[GatewayAttempt], None] | None = None) -> AsyncIterator[str]:
         excluded: set[str] = set()
         last_error: Exception | None = None
-        for attempt_no in range(config.gateway.retry_times + 1):
-            candidates = self._candidates(request.model, excluded, request.allowed_channels)
-            if not candidates:
+        budget = await self._retry_budget(request)
+        for attempt_no in range(budget + 1):
+            dispatch_result, lease = await self._next_candidate(request, excluded)
+            if dispatch_result is None:
                 break
-            dispatch_result = candidates[0]
             channel = dispatch_result.channel
             excluded.add(channel.id or channel.name)
-            upstream_api_key, key_id = self._select_api_key(channel)
+            upstream_api_key, key_id = (lease["upstream_api_key"], lease["key_id"]) if lease else self._select_api_key(channel)
             attempt_request = request.__class__(**{**request.__dict__, "upstream_api_key": upstream_api_key,
                                                   "upstream_model": dispatch_result.upstream_model})
-            adapter = adapter_for(channel)
-            source_protocol = adapter.stream_protocol(channel)
-            body = adapter_for(channel).prepare_body(channel, attempt_request, dispatch_result.upstream_model)
-            raw_body = adapter_for(channel).prepare_raw_body(channel, attempt_request, dispatch_result.upstream_model)
-            request_headers = _build_headers(channel, attempt_request)
-            if raw_body is not None:
-                request_headers["Content-Type"] = attempt_request.content_type or "application/octet-stream"
-            if source_protocol != "gemini":
-                body["stream"] = True
-            codec = StreamCodec(source_protocol, request.protocol_type, request.model)
             stream_started = False
             started = time.monotonic()
             attempt = GatewayAttempt(attempt_no + 1, channel.id, channel.name)
+            retry_after = None
 
             def record_attempt(current_attempt=attempt, attempt_started=started) -> None:
                 current_attempt.duration_ms = int((time.monotonic() - attempt_started) * 1000)
@@ -298,6 +365,16 @@ class GatewayService:
                         logger.warning("Failed to record streaming gateway attempt", exc_info=True)
 
             try:
+                adapter = adapter_for(channel)
+                source_protocol = adapter.stream_protocol(channel)
+                body = adapter.prepare_body(channel, attempt_request, dispatch_result.upstream_model)
+                raw_body = adapter.prepare_raw_body(channel, attempt_request, dispatch_result.upstream_model)
+                request_headers = _build_headers(channel, attempt_request)
+                if raw_body is not None:
+                    request_headers["Content-Type"] = attempt_request.content_type or "application/octet-stream"
+                if source_protocol != "gemini":
+                    body["stream"] = True
+                codec = StreamCodec(source_protocol, request.protocol_type, request.model)
                 request_kwargs = {"content": raw_body, "headers": request_headers} if raw_body is not None else {"json": body, "headers": request_headers}
                 async with self.client.stream(
                     "POST", _build_url(channel, attempt_request), **request_kwargs,
@@ -309,7 +386,9 @@ class GatewayService:
                         attempt.error_type = "upstream_http"
                         attempt.error_message = f"upstream returned HTTP {status}"
                         retry_after = response.headers.get("retry-after")
-                        if self._retryable_status(status) and attempt_no < config.gateway.retry_times:
+                        if status in {401, 403, 408, 425, 429} or status >= 500:
+                            self._provider_outcome(channel, False)
+                        if self._retryable_status(status) and attempt_no < budget:
                             if not self._has_key_failover(channel):
                                 self._cooldown(channel, self._retry_after_seconds(retry_after, maximum=config.gateway.retry_after_max_seconds))
                             self._cooldown_key(key_id, retry_after)
@@ -348,10 +427,13 @@ class GatewayService:
                 self._cooldown_key(key_id)
                 if self._has_key_failover(channel):
                     excluded.discard(channel.id or channel.name)
-                if stream_started or attempt_no >= config.gateway.retry_times:
+                self._provider_outcome(channel, False)
+                if stream_started or attempt_no >= budget:
                     raise RuntimeError("upstream stream connection failed") from exc
                 await self._backoff(attempt_no + 1)
                 continue
+            finally:
+                await self._release_route(lease, attempt, retry_after)
             return
         if last_error:
             raise RuntimeError("upstream stream connection failed") from last_error

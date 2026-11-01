@@ -9,6 +9,7 @@ import logging
 import os
 import re
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -50,7 +51,7 @@ class ProviderService:
         result.setdefault("group_name", "")
         result.setdefault("tags", [])
         result["auth_status"] = result.get("status", "pending")
-        result["health_status"] = "cooling" if result.get("cooldown_until") and not ProviderService._expired(result["cooldown_until"]) else "healthy"
+        result["health_status"] = "cooling" if result.get("cooldown_until") and not ProviderService._expired(result["cooldown_until"], skew=0) else "healthy"
         return result
 
     @staticmethod
@@ -165,22 +166,22 @@ class ProviderService:
         return None
 
     @staticmethod
-    def _expired(expires_at):
+    def _expired(expires_at, skew=30):
         if not expires_at:
             return False
         try:
             value = float(expires_at)
-            return value <= datetime.now(UTC).timestamp() + 30
+            return value <= datetime.now(UTC).timestamp() + skew
         except (TypeError, ValueError):
             try:
                 parsed = datetime.fromisoformat(str(expires_at))
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=UTC)
-                return parsed <= datetime.now(UTC) + timedelta(seconds=30)
+                return parsed <= datetime.now(UTC) + timedelta(seconds=skew)
             except ValueError:
                 return False
 
-    def routing_channels(self, model: str):
+    def routing_channels(self, model: str, *, preview=False):
         """Expose explicitly configured OAuth accounts as gateway candidates.
 
         A provider account participates in routing only after it has a token and
@@ -200,7 +201,7 @@ class ProviderService:
             if not token_row:
                 continue
             if self._expired(token_row.get("expires_at")):
-                if not token_row.get("refresh_token"):
+                if preview or not token_row.get("refresh_token"):
                     continue
                 try:
                     self.refresh(row["id"])
@@ -209,7 +210,7 @@ class ProviderService:
                     self.record_failure(row["id"])
                     continue
             cooldown_until = account.get("cooldown_until")
-            if cooldown_until and not self._expired(cooldown_until):
+            if cooldown_until and not self._expired(cooldown_until, skew=0):
                 continue
             try:
                 client_config = self._client_config(account)
@@ -225,9 +226,12 @@ class ProviderService:
                     mapping = {}
                 upstream_model = mapping.get(model, model)
                 models = [str(key) for key in mapping if key]
+                quota_info = self._routing_quota(account["id"])
+                if quota_info["quota_status"] == "exhausted":
+                    continue
                 if models and model not in models:
                     continue
-                access_token = self._decrypt(token_row.get("access_token"))
+                access_token = "preview" if preview else self._decrypt(token_row.get("access_token"))
                 if not access_token:
                     continue
                 result.append(ChannelEntity(
@@ -240,11 +244,25 @@ class ProviderService:
                     priority=int(account.get("priority") or 0),
                     weight=1,
                     model_mapping={model: upstream_model} if upstream_model != model else {},
-                    config={"provider_account_id": account["id"]},
+                    config={"provider_account_id": account["id"], "provider": account["provider"],
+                            "endpoints": client_config.get("endpoints", ["/v1/chat/completions"]), **quota_info},
                 ))
             except (ApplicationError, TypeError, ValueError, json.JSONDecodeError):
                 continue
         return result
+
+    def _routing_quota(self, account_id):
+        if not hasattr(self.repo, "synchronization_state"):
+            return {"quota_status": "unknown", "quota_fraction": 0.1}
+        state = self.repo.synchronization_state(account_id)
+        quota = state["snapshots"].get("quota")
+        if not quota or not quota["payload"] or quota["generation"] != state["generation"]:
+            return {"quota_status": "unknown", "quota_fraction": 0.1}
+        value = quota["payload"]
+        status = quota_status({**value, "fetched_at": quota["fetched_at"]})
+        fractions = [Decimal(window["remaining"]) / Decimal(window["limit"]) for window in value.get("windows", [])
+                     if window.get("remaining") is not None and window.get("limit") and window.get("unit") != "unknown"]
+        return {"quota_status": status, "quota_fraction": float(max(Decimal("0.01"), min(fractions))) if fractions and status in {"normal", "low"} else 0.1}
 
     def _provider_data(self, account_id, operation, job=None):
         account = self.repo.get_account(account_id)

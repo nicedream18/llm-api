@@ -42,6 +42,7 @@ from app.infrastructure.repositories.mcp_session_repo import McpSessionRepositor
 from app.infrastructure.repositories.platform_repo import PlatformRepository
 from app.infrastructure.repositories.provider_repo import ProviderRepository
 from app.infrastructure.repositories.quota_repo import QuotaRepository
+from app.infrastructure.repositories.routing_repo import RoutingRepository
 from app.infrastructure.repositories.security_repo import SecurityRepository
 from app.infrastructure.repositories.software_repo import SoftwareRepository
 from app.infrastructure.repositories.wiki_repo import WikiRepository
@@ -65,6 +66,7 @@ class Container:
         self.kb_repo = KbRepository()
         self.agent_repo = AgentRepository()
         self.quota_repo = QuotaRepository()
+        self.routing_repo = RoutingRepository()
         self.admin_repo = AdminRepository()
         self.admin_service = AdminService(self.admin_repo)
         self.provider_service = ProviderService(self.provider_repo)
@@ -80,7 +82,7 @@ class Container:
 
         # Domain services
         self.dispatcher = Dispatcher(self.channel_repo, self.provider_service)
-        self.gateway = GatewayService(self.dispatcher, self.channel_repo)
+        self.gateway = GatewayService(self.dispatcher, self.channel_repo, self.routing_repo)
         self.security_scanner = SecurityScanner()
         self.security_settings = config.security
         self.text_splitter = TextSplitter()

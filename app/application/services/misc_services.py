@@ -247,7 +247,7 @@ class ProxyService:
             if not reservation_id:
                 return 429, {"error": {"message": "API key quota exceeded", "type": "quota_error", "code": "quota_exceeded"}}
         upstream_endpoint = "/v1/chat/completions" if protocol in {"responses", "anthropic", "completions"} else endpoint
-        proxy_request = ProxyRequestEntity(model=model, body=body_json, stream=bool(body_json.get("stream")), api_key=None, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset(), endpoint=upstream_endpoint, raw_body=raw_body, content_type=content_type)
+        proxy_request = ProxyRequestEntity(model=model, body=body_json, stream=bool(body_json.get("stream")), api_key=None, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset(), endpoint=upstream_endpoint, raw_body=raw_body, content_type=content_type, route_group=headers.get("x-route-group", ""), principal_id=context.principal_id if context else None)
         attempts = []
         try:
             if hasattr(self.gateway, "forward_with_attempts"):
@@ -394,7 +394,7 @@ class ProxyService:
             event_name = None; data_lines = []
         try:
             upstream_endpoint = "/v1/chat/completions" if protocol in {"responses", "anthropic", "completions"} else endpoint
-            request = ProxyRequestEntity(model=model, body=body_json, stream=True, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset(), endpoint=upstream_endpoint)
+            request = ProxyRequestEntity(model=model, body=body_json, stream=True, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset(), endpoint=upstream_endpoint, route_group=headers.get("x-route-group", ""), principal_id=context.principal_id if context else None)
             def record_attempt(attempt):
                 attempt_records.append(attempt)
                 try:

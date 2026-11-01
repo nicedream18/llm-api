@@ -19,11 +19,11 @@ class Dispatcher:
     def _resolve_model(self, channel: ChannelEntity, model: str) -> str:
         return (channel.model_mapping or {}).get(model, model)
 
-    def candidates(self, model: str, excluded: set[str] | None = None) -> list[DispatchResult]:
+    def candidates(self, model: str, excluded: set[str] | None = None, *, preview=False) -> list[DispatchResult]:
         excluded = excluded or set()
         channels = self.channel_repository.get_enabled_channels()
         if self.provider_source is not None:
-            channels = [*channels, *self.provider_source.routing_channels(model)]
+            channels = [*channels, *self.provider_source.routing_channels(model, **({"preview": True} if preview else {}))]
         eligible = [c for c in channels if (c.id or c.name) not in excluded and self._supports_model(c, model)]
         if not eligible:
             return []

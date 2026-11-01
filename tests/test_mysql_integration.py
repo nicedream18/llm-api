@@ -230,3 +230,27 @@ def test_mysql_provider_sync_jobs_and_snapshot_fencing(mysql_engine):
     with mysql_engine.connect() as db:
         assert db.execute(text("SELECT COUNT(*) FROM provider_sync_jobs")).scalar_one() == 0
         assert db.execute(text("SELECT COUNT(*) FROM provider_snapshots")).scalar_one() == 0
+
+
+def test_mysql_route_capacity_and_half_open_probe(mysql_engine):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.infrastructure.repositories.routing_repo import RoutingRepository
+    from app.types.routing import RoutePolicy
+
+    migrations.apply_migrations()
+    repo = RoutingRepository(mysql_engine)
+    repo.save_policy("test", RoutePolicy(max_concurrent=1).model_dump())
+    repo.save_policy("test", RoutePolicy(max_concurrent=2).model_dump())
+    assert repo.policy("test")["max_concurrent"] == 2
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        leases = [lease for lease in pool.map(lambda _: repo.acquire("channel", 2), range(8)) if lease]
+    assert len(leases) == 2
+    assert repo.finish(leases[0], failure=True)
+    assert repo.finish(leases[1], success=True)
+    assert repo.acquire("channel") is None
+    with mysql_engine.begin() as db:
+        db.execute(text("UPDATE route_runtime SET cooldown_until='2000-01-01'"))
+    probe = repo.acquire("channel")
+    assert probe and repo.acquire("channel") is None
+    assert repo.finish(probe, success=True)

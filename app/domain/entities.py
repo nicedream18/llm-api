@@ -74,6 +74,9 @@ class ProxyRequestEntity:
     content_type: str | None = None
     upstream_model: str | None = None
 
+    route_group: str = ""
+    principal_id: str | None = None
+
 
 @dataclass
 class ProxyResponseEntity:

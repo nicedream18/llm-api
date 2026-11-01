@@ -14,13 +14,13 @@ def test_container_wires_shared_services_to_expected_dependencies(monkeypatch):
         "ChannelService", "DashboardService", "KbService", "KnowledgeTaskWorker",
         "SecurityService", "AgentService", "ProxyService", "AccessRepository", "AccessService",
         "WikiRepository", "WikiService", "SoftwareService", "ProviderService", "PlatformService",
-        "McpService", "ProviderSyncWorker",
+        "McpService", "ProviderSyncWorker", "RoutingRepository",
     )
     for name in factory_names:
         monkeypatch.setattr(container_module, name, Factory)
 
     container = container_module.Container()
-    assert container.gateway.args == (container.dispatcher, container.channel_repo)
+    assert container.gateway.args == (container.dispatcher, container.channel_repo, container.routing_repo)
     assert container.embedder.args == (container.dispatcher, container.channel_repo)
     assert container.retriever.args == (container.kb_repo, container.embedder, container.index_service)
     assert container.rag.args == (
