@@ -94,8 +94,15 @@ class KbService:
 
     def delete_kb(self, kb_id):
         from app.domain.index_service import IndexService
-        IndexService(self.repo).drop_index(kb_id)
-        self.repo.delete_kb_by_id(kb_id)
+        index_service = IndexService(self.repo)
+        index_service.validate_kb_id(kb_id)
+        deleted = self.repo.delete_kb_by_id(kb_id)
+        if deleted is False:
+            return False
+        try:
+            index_service.remove_index_file(kb_id)
+        except OSError:
+            logger.warning("Failed to remove deleted knowledge base index file", exc_info=True)
         return True
 
     def upload_doc(self, kb_id, dto: UploadDocDTO):

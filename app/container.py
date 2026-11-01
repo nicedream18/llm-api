@@ -21,6 +21,7 @@ from app.config import config
 from app.domain.agent_service import AgentChatService
 from app.domain.dispatcher import Dispatcher
 from app.domain.gateway import GatewayService
+from app.domain.index_service import IndexService
 from app.domain.knowledge import (
     EmbedderService,
     RagContextBuilder,
@@ -28,7 +29,6 @@ from app.domain.knowledge import (
     RetrieverService,
     TextSplitter,
 )
-from app.domain.index_service import IndexService
 from app.domain.security import SecurityScanner
 from app.infrastructure.database.admin_repo import AdminRepository
 from app.infrastructure.repositories.access_repo import AccessRepository

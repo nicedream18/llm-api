@@ -1,14 +1,14 @@
 """HNSW index service for knowledge base vector search."""
 import heapq
+import json
 import logging
 import math
 import os
-import pickle
 import re
 import struct
 import tempfile
 import threading
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ DEFAULT_MAX_M = 16
 DEFAULT_EF_CONSTRUCTION = 200
 DEFAULT_EF_SEARCH = 50
 INDEX_FORMAT_VERSION = 1
+MAX_INDEX_FILE_BYTES = 512 * 1024 * 1024
 _INDEX_IO_LOCK = threading.RLock()
 
 
@@ -132,7 +133,18 @@ class HnswIndex:
             try:
                 with tempfile.NamedTemporaryFile(prefix=".hnsw-", suffix=".tmp", dir=directory, delete=False) as f:
                     temporary = f.name
-                    pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
+                    payload = {
+                        "format": "waliapi-hnsw",
+                        "format_version": self.format_version,
+                        "dim": self.dim,
+                        "max_m": self.max_m,
+                        "ef_construction": self.ef_construction,
+                        "ef_search": self.ef_search,
+                        "entry_point": self.entry_point,
+                        "initialized": self.initialized,
+                        "nodes": self.nodes,
+                    }
+                    f.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
                     f.flush()
                     os.fsync(f.fileno())
                 os.replace(temporary, path)
@@ -144,24 +156,49 @@ class HnswIndex:
     @staticmethod
     def load(path: str) -> Optional["HnswIndex"]:
         try:
-            with _INDEX_IO_LOCK, open(path, "rb") as f:
-                index = pickle.load(f)
-            if isinstance(index, HnswIndex) and not hasattr(index, "format_version"):
-                index.format_version = INDEX_FORMAT_VERSION
-            if not isinstance(index, HnswIndex) or not index._valid_index():
+            with _INDEX_IO_LOCK:
+                if os.path.getsize(path) > MAX_INDEX_FILE_BYTES:
+                    raise ValueError("HNSW index file exceeds the size limit")
+                with open(path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+            if not isinstance(payload, dict) or payload.get("format") != "waliapi-hnsw":
+                raise ValueError("Invalid HNSW index format")
+            index = HnswIndex(
+                payload["dim"], payload["max_m"],
+                payload["ef_construction"], payload["ef_search"],
+            )
+            index.format_version = cast(int, payload.get("format_version"))
+            index.entry_point = cast(int, payload.get("entry_point"))
+            index.initialized = cast(bool, payload.get("initialized"))
+            index.nodes = cast(list[dict[str, Any]], payload.get("nodes"))
+            if not index._valid_index():
                 raise ValueError("Invalid HNSW index format")
             logger.info(f"HNSW index loaded: {path}")
             return index
-        except (OSError, EOFError, pickle.UnpicklingError, ValueError, TypeError, AttributeError) as e:
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError, KeyError, AttributeError) as e:
             logger.error(f"HNSW index load failed: {path}: {e}")
             return None
 
     def _valid_index(self) -> bool:
-        if getattr(self, "format_version", None) != INDEX_FORMAT_VERSION:
+        if type(getattr(self, "format_version", None)) is not int or self.format_version != INDEX_FORMAT_VERSION:
             return False
-        if self.dim <= 0 or self.entry_point < 0 or self.entry_point >= len(self.nodes):
+        if (type(self.dim) is not int or self.dim <= 0
+                or type(self.entry_point) is not int or not self.initialized
+                or not isinstance(self.nodes, list) or not self.nodes
+                or self.entry_point < 0 or self.entry_point >= len(self.nodes)):
             return False
-        return all(self._valid_vector(node.get("vector"), self.dim) for node in self.nodes)
+        ids = set()
+        for node in self.nodes:
+            if not isinstance(node, dict) or type(node.get("id")) is not int or node["id"] in ids:
+                return False
+            ids.add(node["id"])
+            if not self._valid_vector(node.get("vector"), self.dim):
+                return False
+            neighbours = node.get("neighbours")
+            if (not isinstance(neighbours, list)
+                    or any(type(index) is not int or index < 0 or index >= len(self.nodes) for index in neighbours)):
+                return False
+        return True
 
     @staticmethod
     def _valid_vector(vector: Any, dim: int) -> bool:
@@ -197,6 +234,10 @@ class IndexService:
         if not isinstance(kb_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", kb_id):
             raise ValueError("Invalid knowledge base id")
         return kb_id
+
+    @staticmethod
+    def validate_kb_id(kb_id: str) -> str:
+        return IndexService._safe_kb_id(kb_id)
 
     def _index_path(self, kb_id: str) -> str:
         return os.path.join(INDEX_DIR, f"{self._safe_kb_id(kb_id)}.index")
@@ -255,18 +296,21 @@ class IndexService:
         return self.repo.find_index_meta_by_kb_id(kb_id)
 
     def drop_index(self, kb_id: str) -> dict[str, Any]:
-        index_path = self._index_path(kb_id)
-        file_deleted = False
-        if os.path.exists(index_path):
-            os.remove(index_path)
-            file_deleted = True
-
+        file_deleted = self.remove_index_file(kb_id)
         self.repo.upsert_index_meta(kb_id, "status", "none")
         self.repo.upsert_index_meta(kb_id, "chunk_count", "0")
         self.repo.upsert_index_meta(kb_id, "built_at", "")
 
         logger.info(f"Index dropped: kbId={kb_id}, fileDeleted={file_deleted}")
         return {"success": True, "fileDeleted": file_deleted}
+
+    def remove_index_file(self, kb_id: str) -> bool:
+        index_path = self._index_path(kb_id)
+        file_deleted = False
+        if os.path.exists(index_path):
+            os.remove(index_path)
+            file_deleted = True
+        return file_deleted
 
     def search_with_index(self, kb_id: str, query_vector: list[float], top_k: int):
         if top_k <= 0:

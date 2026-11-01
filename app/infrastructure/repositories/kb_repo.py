@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
 
+from app.application.errors import ApplicationError
 from app.config import config
 from app.domain.entities import (
     KbChunkEntity,
@@ -79,10 +80,26 @@ class KbRepository:
 
     def delete_kb_by_id(self, kb_id: str):
         with get_db() as db:
+            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
+            exists = db.execute(text(
+                "SELECT id FROM kb_knowledge_bases WHERE id=:kb_id" + lock_suffix
+            ), {"kb_id": kb_id}).first()
+            if not exists:
+                return False
+            running = db.execute(text(
+                "SELECT id FROM kb_tasks WHERE kb_id=:kb_id AND status='running'" + lock_suffix
+            ), {"kb_id": kb_id}).first()
+            if running:
+                raise ApplicationError("Knowledge base has running tasks", 409, "task_running")
+            db.execute(text("DELETE FROM kb_tasks WHERE kb_id = :id"), {"id": kb_id})
+            db.execute(text("DELETE FROM kb_sources WHERE kb_id = :id"), {"id": kb_id})
+            db.execute(text("DELETE FROM kb_index_meta WHERE kb_id = :id"), {"id": kb_id})
+            db.execute(text("DELETE FROM kb_conversations WHERE kb_id = :id"), {"id": kb_id})
             db.execute(text("DELETE FROM kb_chunks WHERE kb_id = :id"), {"id": kb_id})
             db.execute(text("DELETE FROM kb_documents WHERE kb_id = :id"), {"id": kb_id})
-            db.execute(text("DELETE FROM kb_conversations WHERE kb_id = :id"), {"id": kb_id})
-            db.execute(text("DELETE FROM kb_knowledge_bases WHERE id = :id"), {"id": kb_id})
+            result = db.execute(text("DELETE FROM kb_knowledge_bases WHERE id = :id"), {"id": kb_id})
+            return affected_rows(result) == 1
 
     # ---- Document ----
 
@@ -134,6 +151,17 @@ class KbRepository:
             if not row:
                 return False
             kb_id = row["kb_id"]
+            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
+            db.execute(text("SELECT id FROM kb_knowledge_bases WHERE id=:kb_id" + lock_suffix),
+                       {"kb_id": kb_id}).first()
+            running = db.execute(text(
+                "SELECT id FROM kb_tasks WHERE doc_id=:doc_id AND status='running'" + lock_suffix
+            ), {"doc_id": doc_id}).first()
+            if running:
+                raise ApplicationError("Document has a running task", 409, "task_running")
+            db.execute(text("UPDATE kb_tasks SET status='cancelled' WHERE doc_id=:doc_id AND status='pending'"),
+                       {"doc_id": doc_id})
             db.execute(text("DELETE FROM kb_chunks WHERE doc_id = :id"), {"id": doc_id})
             result = db.execute(text("DELETE FROM kb_documents WHERE id = :id"), {"id": doc_id})
             if affected_rows(result) != 1:
@@ -235,10 +263,26 @@ class KbRepository:
     def claim_next_task(self, worker_id: str, lease_seconds: int):
         lease_until = (datetime.now(UTC) + timedelta(seconds=lease_seconds)).strftime("%Y-%m-%d %H:%M:%S")
         with get_db() as db:
+            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
+            candidates = db.execute(text("SELECT id,kb_id,doc_id FROM kb_tasks WHERE status='pending' AND task_type IN ('import','reindex') ORDER BY created_at ASC LIMIT 50")).mappings().all()
             task_id = None
-            for row in db.execute(text("SELECT id, doc_id FROM kb_tasks WHERE status='pending' AND task_type IN ('import','reindex') ORDER BY created_at ASC LIMIT 50 FOR UPDATE SKIP LOCKED")).mappings().all():
+            for row in candidates:
+                # Deletion locks the same KB row before inspecting/deleting its
+                # tasks. This serializes task claiming with KB/document removal.
+                kb_row = db.execute(text("SELECT id FROM kb_knowledge_bases WHERE id=:kb_id" + lock_suffix),
+                                    {"kb_id": row["kb_id"]}).first()
+                if not kb_row:
+                    continue
                 if row["doc_id"]:
-                    active = db.execute(text("SELECT 1 FROM kb_tasks WHERE status='running' AND doc_id=:doc_id LIMIT 1"), {"doc_id": row["doc_id"]}).first()
+                    document = db.execute(text("SELECT id FROM kb_documents WHERE id=:doc_id AND kb_id=:kb_id"),
+                                          {"doc_id": row["doc_id"], "kb_id": row["kb_id"]}).first()
+                    if not document:
+                        db.execute(text("UPDATE kb_tasks SET status='cancelled',completed_at=:now WHERE id=:id AND status='pending'"),
+                                   {"now": _now(), "id": row["id"]})
+                        continue
+                    active = db.execute(text("SELECT 1 FROM kb_tasks WHERE status='running' AND doc_id=:doc_id LIMIT 1"),
+                                        {"doc_id": row["doc_id"]}).first()
                     if active:
                         continue
                 candidate_id = row["id"]

@@ -102,3 +102,44 @@ def test_importer_persists_source_file_count():
 
     assert result["totalChunks"] == 4
     assert repo.updates[-1] == (result["sourceId"], "ingested", None, 3)
+
+
+def test_importer_refreshes_kb_counts_and_invalidates_index():
+    class Repo:
+        def __init__(self):
+            from app.domain.entities import KbKnowledgeBaseEntity
+
+            self.kb = KbKnowledgeBaseEntity(id="kb-1", index_status="ready")
+            self.docs = [type("Doc", (), {"status": "ready", "total_tokens": 12})()]
+            self.chunks = [object(), object()]
+            self.source = None
+
+        def save_source(self, _kb_id, _source_type, **_kwargs):
+            pass
+
+        def update_source_status(self, _source_id, _status, _error=None, _file_count=None):
+            pass
+
+        def find_kb_by_id(self, _kb_id):
+            return self.kb
+
+        def find_doc_by_kb_id(self, _kb_id):
+            return self.docs
+
+        def find_chunk_by_kb_id(self, _kb_id):
+            return self.chunks
+
+        def update_kb(self, kb):
+            self.kb = kb
+
+    repo = Repo()
+    importer = ImporterService(repo, TextSplitter(), object())
+    importer.strategies["test"] = type("Successful", (), {
+        "get_source_type": lambda self: "test",
+        "import_source": lambda self, _kb_id, _source_id, context, _params: setattr(context, "file_count", 2) or 4,
+    })()
+
+    importer.import_source("kb-1", {"source_type": "test"})
+
+    assert (repo.kb.doc_count, repo.kb.chunk_count, repo.kb.total_tokens) == (1, 2, 12)
+    assert repo.kb.index_status == "stale"
