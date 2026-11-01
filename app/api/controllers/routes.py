@@ -105,6 +105,20 @@ async def models(request: Request):
         if context and context.is_api_key and context.allowed_channels and channel.id not in context.allowed_channels and channel.name not in context.allowed_channels:
             continue
         names.update(channel.models or [])
+    for account in get_container().provider_repo.list_accounts():
+        if account.get("status") not in {"active", "pending"}:
+            continue
+        mapping = account.get("model_mapping") or {}
+        if isinstance(mapping, str):
+            import json
+
+            try:
+                mapping = json.loads(mapping)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                mapping = {}
+        if isinstance(mapping, dict):
+            names.update(str(name) for name in mapping if name)
+            names.update(str(name) for name in mapping.values() if name)
     if context and context.is_api_key and context.allowed_models:
         names.intersection_update(context.allowed_models)
     if not names and not context:
