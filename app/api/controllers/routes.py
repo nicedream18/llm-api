@@ -405,6 +405,16 @@ async def log_filter_options():
     return _success(await asyncio.to_thread(get_container().dashboard_service.filter_options))
 
 
+@dashboard_router.delete("/logs/before")
+async def delete_logs_before(cutoff: str):
+    return _success(await asyncio.to_thread(get_container().dashboard_service.delete_before, cutoff))
+
+
+@dashboard_router.delete("/logs/by-channel/{channel_id}")
+async def delete_logs_by_channel(channel_id: str):
+    return _success(await asyncio.to_thread(get_container().dashboard_service.delete_by_channel, channel_id))
+
+
 @dashboard_router.get("/logs/{log_id}")
 async def get_log(log_id: str):
     return _success(get_container().dashboard_service.get_log(log_id))
@@ -423,16 +433,6 @@ async def delete_log(log_id: str):
 @dashboard_router.delete("/logs")
 async def delete_all_logs():
     return _success(get_container().dashboard_service.delete_all_logs())
-
-
-@dashboard_router.delete("/logs/before")
-async def delete_logs_before(cutoff: str):
-    return _success(await asyncio.to_thread(get_container().dashboard_service.delete_before, cutoff))
-
-
-@dashboard_router.delete("/logs/by-channel/{channel_id}")
-async def delete_logs_by_channel(channel_id: str):
-    return _success(await asyncio.to_thread(get_container().dashboard_service.delete_by_channel, channel_id))
 
 
 # ==================== KB Controller ====================
