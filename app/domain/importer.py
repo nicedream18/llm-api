@@ -434,14 +434,31 @@ class ImporterService:
             total_chunks = strategy.import_source(kb_id, source_id, self.context, params)
         except Exception as exc:
             self.repo.update_source_status(source_id, "failed", str(exc)[:2000], self.context.file_count)
+            self._refresh_kb_stats(kb_id)
             raise
         if total_chunks <= 0:
             self.repo.update_source_status(source_id, "failed", "No documents were imported", self.context.file_count)
         else:
             self.repo.update_source_status(source_id, "ingested", None, self.context.file_count)
+        self._refresh_kb_stats(kb_id)
         return {
             "success": True,
             "sourceId": source_id,
             "sourceType": source_type,
             "totalChunks": total_chunks,
         }
+
+    def _refresh_kb_stats(self, kb_id: str) -> None:
+        if not all(hasattr(self.repo, name) for name in ("find_kb_by_id", "find_doc_by_kb_id", "find_chunk_by_kb_id", "update_kb")):
+            return
+        kb = self.repo.find_kb_by_id(kb_id)
+        if not kb:
+            return
+        documents = self.repo.find_doc_by_kb_id(kb_id)
+        chunks = self.repo.find_chunk_by_kb_id(kb_id)
+        kb.doc_count = sum(1 for document in documents if document.status == "ready")
+        kb.chunk_count = len(chunks)
+        kb.total_tokens = sum(document.total_tokens for document in documents if document.status == "ready")
+        if kb.index_status == "ready":
+            kb.index_status = "stale"
+        self.repo.update_kb(kb)

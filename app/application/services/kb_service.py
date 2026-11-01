@@ -93,6 +93,8 @@ class KbService:
         return True
 
     def delete_kb(self, kb_id):
+        from app.domain.index_service import IndexService
+        IndexService(self.repo).drop_index(kb_id)
         self.repo.delete_kb_by_id(kb_id)
         return True
 
@@ -178,7 +180,9 @@ class KbService:
             kb.doc_count = sum(1 for d in docs if d.status == "ready")
             kb.chunk_count = len(all_chunks)
             kb.total_tokens = sum(d.total_tokens for d in docs if d.status == "ready")
-            kb.index_status = "ready"
+            # New chunks invalidate any previously built HNSW index. A
+            # separate build request is required before vector search uses it.
+            kb.index_status = "stale"
             kb.updated_at = _now()
             self.repo.update_kb(kb)
             self.repo.update_task_status(task_id, "completed", None)
@@ -194,8 +198,8 @@ class KbService:
         document = self.repo.find_doc_by_id(doc_id)
         if not document or document.kb_id != kb_id:
             return False
-        self.repo.delete_doc_by_id(doc_id)
-        return True
+        result = self.repo.delete_doc_by_id(doc_id)
+        return result is not False
 
     def ask(self, kb_id, request: KbAskRequestDTO):
         kb = self.repo.find_kb_by_id(kb_id)
@@ -308,6 +312,10 @@ class KbService:
                 if chunk.embedding is not None and chunk.id:
                     self.repo.update_chunk_embedding(chunk.id, chunk.embedding)
             self.repo.update_doc_status(doc_id, "ready", None)
+            if kb:
+                kb.index_status = "stale"
+                kb.updated_at = _now()
+                self.repo.update_kb(kb)
             self.repo.update_task_status(task_id, "completed", None)
             logger.info(f"Reindex done: kbId={kb_id}, docId={doc_id}, chunks={len(chunks)}")
         except Exception as e:
@@ -341,13 +349,25 @@ class KbService:
         """Build HNSW index for KB. Route entry for POST /{id}/index."""
         from app.domain.index_service import IndexService
         index_service = IndexService(self.repo)
-        return index_service.build_index(kb_id)
+        result = index_service.build_index(kb_id)
+        kb = self.repo.find_kb_by_id(kb_id)
+        if kb:
+            kb.index_status = "ready" if result.get("success") else "error"
+            if result.get("success") and result.get("embeddingDim"):
+                kb.embedding_dim = int(result["embeddingDim"])
+            self.repo.update_kb(kb)
+        return result
 
     def drop_index(self, kb_id):
         """Drop HNSW index for KB. Route entry for DELETE /{id}/index."""
         from app.domain.index_service import IndexService
         index_service = IndexService(self.repo)
-        return index_service.drop_index(kb_id)
+        result = index_service.drop_index(kb_id)
+        kb = self.repo.find_kb_by_id(kb_id)
+        if kb:
+            kb.index_status = "none"
+            self.repo.update_kb(kb)
+        return result
 
     def list_sources(self, kb_id):
         """List import sources. Route entry for GET /{id}/sources."""

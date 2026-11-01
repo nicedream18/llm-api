@@ -227,11 +227,30 @@ def cosine_similarity(a, b):
 class RetrieverService:
     """Retrieves chunks via vector search, keyword (fulltext) search, and hybrid."""
 
-    def __init__(self, kb_repository, embedder):
+    def __init__(self, kb_repository, embedder, index_service=None):
         self.kb_repository = kb_repository
         self.embedder = embedder
+        if index_service is None:
+            from app.domain.index_service import IndexService
+            index_service = IndexService(kb_repository)
+        self.index_service = index_service
 
     def vector_search(self, kb_id, query_embedding, top_k):
+        # Prefer a persisted HNSW index after an explicit build. If the index
+        # is absent, stale, corrupt, or incompatible, retain the exact vector
+        # scan as a correctness-preserving fallback.
+        try:
+            kb = self.kb_repository.find_kb_by_id(kb_id)
+            if kb is not None and kb.index_status == "ready":
+                indexed = self.index_service.search_with_index(kb_id, query_embedding, top_k)
+                if indexed:
+                    return [SearchResultEntity(
+                        chunk_id=row.get("chunk_id"), doc_id=row.get("doc_id"),
+                        filename=row.get("filename"), content=row.get("content"),
+                        score=float(row.get("score", 0.0)), metadata=row.get("metadata") or {},
+                    ) for row in indexed]
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            logger.warning("HNSW lookup failed, falling back to vector scan", exc_info=True)
         chunks = self.kb_repository.find_chunk_by_kb_id(kb_id)
         scored = []
         for chunk in chunks:

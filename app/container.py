@@ -28,6 +28,7 @@ from app.domain.knowledge import (
     RetrieverService,
     TextSplitter,
 )
+from app.domain.index_service import IndexService
 from app.domain.security import SecurityScanner
 from app.infrastructure.database.admin_repo import AdminRepository
 from app.infrastructure.repositories.access_repo import AccessRepository
@@ -79,7 +80,8 @@ class Container:
         self.security_settings = config.security
         self.text_splitter = TextSplitter()
         self.embedder = EmbedderService(self.dispatcher, self.channel_repo)
-        self.retriever = RetrieverService(self.kb_repo, self.embedder)
+        self.index_service = IndexService(self.kb_repo)
+        self.retriever = RetrieverService(self.kb_repo, self.embedder, self.index_service)
         self.context_builder = RagContextBuilder()
         self.rag = RagService(self.retriever, self.embedder, self.gateway, self.context_builder)
         self.agent_chat = AgentChatService(self.agent_repo, self.channel_repo, self.gateway)

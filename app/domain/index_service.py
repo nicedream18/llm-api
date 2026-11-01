@@ -245,6 +245,7 @@ class IndexService:
             "success": True,
             "totalChunks": len(chunks),
             "indexedChunks": len(ids),
+            "embeddingDim": dim,
             "skipped": skipped,
             "indexPath": index_path,
         }

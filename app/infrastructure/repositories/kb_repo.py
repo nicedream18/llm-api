@@ -128,10 +128,23 @@ class KbRepository:
             ), {"kb_id": kb_id}).mappings().all()
             return [self._to_doc_entity(r) for r in rows]
 
-    def delete_doc_by_id(self, doc_id: str):
+    def delete_doc_by_id(self, doc_id: str) -> bool:
         with get_db() as db:
+            row = db.execute(text("SELECT kb_id FROM kb_documents WHERE id=:id"), {"id": doc_id}).mappings().first()
+            if not row:
+                return False
+            kb_id = row["kb_id"]
             db.execute(text("DELETE FROM kb_chunks WHERE doc_id = :id"), {"id": doc_id})
-            db.execute(text("DELETE FROM kb_documents WHERE id = :id"), {"id": doc_id})
+            result = db.execute(text("DELETE FROM kb_documents WHERE id = :id"), {"id": doc_id})
+            if affected_rows(result) != 1:
+                return False
+            db.execute(text("""UPDATE kb_knowledge_bases SET
+                doc_count=(SELECT COUNT(*) FROM kb_documents WHERE kb_id=:kb_id AND status='ready'),
+                chunk_count=(SELECT COUNT(*) FROM kb_chunks WHERE kb_id=:kb_id),
+                total_tokens=(SELECT COALESCE(SUM(total_tokens),0) FROM kb_documents WHERE kb_id=:kb_id AND status='ready'),
+                index_status=CASE WHEN index_status='ready' THEN 'stale' ELSE index_status END,
+                updated_at=:updated_at WHERE id=:kb_id"""), {"kb_id": kb_id, "updated_at": _now()})
+            return True
 
     def update_doc_status(self, doc_id: str, status: str, error_message: str | None):
         with get_db() as db:
