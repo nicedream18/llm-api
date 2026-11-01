@@ -1,16 +1,19 @@
 """Importer strategy system for knowledge base (aligned with Java importer/strategy package)."""
+import ipaddress
 import logging
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 from datetime import UTC
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from app.application.errors import ApplicationError
 from app.domain.entities import KbChunkEntity, KbDocumentEntity
 from app.domain.knowledge import ChunkConfig, serialize_embedding
 
@@ -36,29 +39,100 @@ SUPPORTED_EXTS = {
 }
 
 DEFAULT_MAX_FILE_SIZE = 512 * 1024  # 512KB
+DEFAULT_MAX_FILES = 10_000
+DEFAULT_MAX_TOTAL_BYTES = 50 * 1024 * 1024
+MAX_URL_BYTES = 10 * 1024 * 1024
+MAX_REDIRECTS = 3
 
 
-def file_walk(root_path: str, excluded_dirs: list[str] = None,
-              included_files: list[str] = None, max_file_size: int = 0,
-              handler=None) -> int:
+class ImportGuard:
+    """Validate filesystem and remote import boundaries before reading data."""
+
+    @staticmethod
+    def local_root(root_path: str) -> Path:
+        if not root_path:
+            raise ApplicationError("Directory path is required", 422, "invalid_import_path")
+        raw = Path(root_path).expanduser()
+        if raw.is_symlink():
+            raise ApplicationError("Symbolic-link roots are not allowed", 422, "invalid_import_path")
+        try:
+            root = raw.resolve(strict=True)
+        except OSError as exc:
+            raise ApplicationError("Directory does not exist", 422, "invalid_import_path") from exc
+        if not root.is_dir():
+            raise ApplicationError("Directory does not exist", 422, "invalid_import_path")
+        return root
+
+    @staticmethod
+    def file_path(root: Path, candidate: Path) -> tuple[Path, int]:
+        if candidate.is_symlink():
+            raise ApplicationError("Symbolic-link files are not allowed", 422, "invalid_import_path")
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(root)
+            size = resolved.stat().st_size
+        except (OSError, ValueError) as exc:
+            raise ApplicationError("Import path is outside the selected directory", 422, "invalid_import_path") from exc
+        if not resolved.is_file():
+            raise ApplicationError("Import path is not a regular file", 422, "invalid_import_path")
+        return resolved, size
+
+    @staticmethod
+    def remote_url(url: str) -> str:
+        parsed = urlparse(url or "")
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            raise ApplicationError("Only http and https import URLs are allowed", 422, "invalid_import_url")
+        if parsed.username or parsed.password:
+            raise ApplicationError("Import URLs cannot contain credentials", 422, "invalid_import_url")
+        host = parsed.hostname
+        try:
+            ipaddress.ip_address(host)
+            addresses = [host]
+        except ValueError:
+            try:
+                addresses = [item[4][0] for item in socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)]
+            except (OSError, socket.gaierror) as exc:
+                raise ApplicationError("Import URL host could not be resolved", 422, "invalid_import_url") from exc
+        for address in set(addresses):
+            try:
+                ip = ipaddress.ip_address(address)
+            except ValueError as exc:
+                raise ApplicationError("Import URL resolved to an invalid address", 422, "invalid_import_url") from exc
+            if not ip.is_global:
+                raise ApplicationError("Private or local import URLs are not allowed", 422, "ssrf_blocked")
+        return url
+
+    @staticmethod
+    def branch(branch: str | None) -> str:
+        value = branch or "main"
+        if len(value) > 256 or value.startswith("-") or ".." in value or any(char.isspace() for char in value):
+            raise ApplicationError("Invalid Git branch", 422, "invalid_import_branch")
+        return value
+
+
+def file_walk(root_path: str, excluded_dirs: list[str] | None = None,
+              included_files: list[str] | None = None, max_file_size: int = 0,
+              handler=None, max_files: int = DEFAULT_MAX_FILES,
+              max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
     """Walk a directory and call handler(filename, relative_path, content) for each file."""
-    root = Path(root_path)
-    if not root.is_dir():
-        logger.error(f"Directory not found: {root_path}")
-        return 0
+    root = ImportGuard.local_root(root_path)
 
     max_size = max_file_size if max_file_size and max_file_size > 0 else DEFAULT_MAX_FILE_SIZE
     exclude_set = set(excluded_dirs or []) | IGNORED_DIRS
     include_set = set(included_files) if included_files else None
 
     total_chunks = 0
-    files = []
+    file_count = 0
+    total_bytes = 0
     for dirpath, dirnames, filenames in os.walk(root):
         # Skip excluded dirs in-place (prunes traversal)
-        dirnames[:] = [d for d in dirnames if d not in exclude_set]
+        dirnames[:] = [d for d in dirnames if d not in exclude_set and not (Path(dirpath) / d).is_symlink()]
         for filename in filenames:
-            filepath = os.path.join(dirpath, filename)
-            if os.path.getsize(filepath) > max_size:
+            filepath = Path(dirpath) / filename
+            if filepath.is_symlink():
+                continue
+            filepath, size = ImportGuard.file_path(root, filepath)
+            if size > max_size:
                 continue
             ext = _get_extension(filename)
             if include_set is not None:
@@ -66,28 +140,29 @@ def file_walk(root_path: str, excluded_dirs: list[str] = None,
                     continue
             elif ext not in SUPPORTED_EXTS:
                 continue
-            files.append(filepath)
+            file_count += 1
+            total_bytes += size
+            if file_count > max_files:
+                raise ApplicationError("Import contains too many files", 413, "import_limit")
+            if total_bytes > max_total_bytes:
+                raise ApplicationError("Import exceeds total size limit", 413, "import_limit")
+            try:
+                with filepath.open("r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                relative_path = os.path.relpath(filepath, root)
+                total_chunks += handler(filename, relative_path, content)
+            except ApplicationError:
+                raise
+            except (OSError, UnicodeError):
+                logger.warning("File processing failed: %s", filepath, exc_info=False)
 
-    for filepath in files:
-        try:
-            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-            relative_path = os.path.relpath(filepath, root)
-            filename = os.path.basename(filepath)
-            total_chunks += handler(filename, relative_path, content)
-        except Exception as e:
-            logger.warning(f"File processing failed: {filepath} -> {e}")
-
-    logger.info(f"Directory walk done: {root_path} -> {len(files)} files, {total_chunks} chunks")
+    logger.info("Directory walk done: %s -> %s files, %s chunks", root_path, file_count, total_chunks)
     return total_chunks
 
 
 def delete_directory(path: str):
     """Recursively delete a directory."""
-    try:
-        shutil.rmtree(path, ignore_errors=True)
-    except Exception:
-        pass
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def _get_extension(filename: str) -> str:
@@ -100,10 +175,10 @@ def _get_extension(filename: str) -> str:
 # ============================================================
 
 class ImportParams:
-    def __init__(self, repo_url: str = None, branch: str = None, token: str = None,
-                 url: str = None, dir_path: str = None,
-                 excluded_dirs: list[str] = None, included_files: list[str] = None,
-                 max_file_size: int = None):
+    def __init__(self, repo_url: str | None = None, branch: str | None = None, token: str | None = None,
+                 url: str | None = None, dir_path: str | None = None,
+                 excluded_dirs: list[str] | None = None, included_files: list[str] | None = None,
+                 max_file_size: int | None = None):
         self.repo_url = repo_url
         self.branch = branch
         self.token = token
@@ -173,7 +248,7 @@ class ImportContext:
 
         return len(chunks)
 
-    def save_source(self, kb_id: str, doc_id: str = None, source_type: str = None):
+    def save_source(self, kb_id: str, doc_id: str | None = None, source_type: str | None = None):
         self.repo.save_source(kb_id, source_type)
 
     def _embed_and_save(self, kb_id: str, chunks: list[KbChunkEntity]):
@@ -187,8 +262,8 @@ class ImportContext:
             for i, chunk in enumerate(chunks):
                 if i < len(embeddings) and embeddings[i]:
                     chunk.embedding = serialize_embedding(embeddings[i])
-        except Exception as e:
-            logger.warning(f"Embedding batch failed: {e}")
+        except (OSError, ValueError, RuntimeError, httpx.HTTPError) as exc:
+            logger.warning("Embedding batch failed: %s", type(exc).__name__)
 
 
 def _guess_file_type(filename: str) -> str:
@@ -220,13 +295,17 @@ class GitImportStrategy(ImportStrategy):
         temp_dir = None
         try:
             temp_dir = tempfile.mkdtemp(prefix="waliapi-git-")
-            clone_url = params.repo_url
-            if params.token:
-                clone_url = params.repo_url.replace("https://", f"https://{params.token}@")
-
-            branch = params.branch or "main"
+            clone_url = ImportGuard.remote_url(params.repo_url)
+            branch = ImportGuard.branch(params.branch)
             cmd = ["git", "clone", "--depth", "1", "--branch", branch, clone_url, temp_dir]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            env = os.environ.copy()
+            if params.token:
+                env.update({
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "http.extraheader",
+                    "GIT_CONFIG_VALUE_0": f"Authorization: Bearer {params.token}",
+                })
+            result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=120, env=env)
             if result.returncode != 0:
                 logger.error(f"Git clone failed: {result.stderr}")
                 return 0
@@ -239,7 +318,9 @@ class GitImportStrategy(ImportStrategy):
             context.save_source(kb_id, None, "git")
             logger.info(f"Git import done: {params.repo_url} -> {total_chunks} chunks")
             return total_chunks
-        except Exception as e:
+        except ApplicationError:
+            raise
+        except (OSError, subprocess.TimeoutExpired) as e:
             logger.error(f"Git import failed: {params.repo_url}: {e}")
             return 0
         finally:
@@ -252,31 +333,45 @@ class UrlImportStrategy(ImportStrategy):
         return "url"
 
     def import_source(self, kb_id, source_id, context, params):
-        url = params.url
+        url = ImportGuard.remote_url(params.url)
         try:
-            with httpx.Client(follow_redirects=True, timeout=30) as client:
-                resp = client.get(url, headers={"User-Agent": "WaLiAPI/1.0"})
-                if resp.status_code != 200:
-                    logger.error(f"URL fetch failed: {url} -> HTTP {resp.status_code}")
-                    return 0
-                content = resp.text
-                filename = self._extract_filename(url)
-                chunk_count = context.import_content(kb_id, filename, "url", url, content)
-                context.save_source(kb_id, None, "url")
-                logger.info(f"URL import done: {url} -> {chunk_count} chunks")
-                return chunk_count
-        except Exception as e:
-            logger.error(f"URL fetch failed: {url}: {e}")
+            with httpx.Client(follow_redirects=False, timeout=30) as client:
+                current = url
+                for _ in range(MAX_REDIRECTS + 1):
+                    ImportGuard.remote_url(current)
+                    with client.stream("GET", current, headers={"User-Agent": "WaLiAPI/1.0"}) as resp:
+                        if 300 <= resp.status_code < 400:
+                            location = resp.headers.get("location")
+                            if not location:
+                                raise ApplicationError("Import redirect has no destination", 422, "invalid_import_url")
+                            current = urljoin(current, location)
+                            continue
+                        if resp.status_code != 200:
+                            logger.error("URL fetch failed: %s -> HTTP %s", current, resp.status_code)
+                            return 0
+                        data = bytearray()
+                        for chunk in resp.iter_bytes():
+                            data.extend(chunk)
+                            if len(data) > MAX_URL_BYTES:
+                                raise ApplicationError("URL import exceeds size limit", 413, "import_limit")
+                        content = bytes(data).decode("utf-8", errors="replace")
+                        filename = self._extract_filename(current)
+                        chunk_count = context.import_content(kb_id, filename, "url", current, content)
+                        context.save_source(kb_id, None, "url")
+                        logger.info("URL import done: %s -> %s chunks", current, chunk_count)
+                        return chunk_count
+                raise ApplicationError("Too many redirects", 422, "invalid_import_url")
+        except ApplicationError:
+            raise
+        except (httpx.HTTPError, OSError) as e:
+            logger.error("URL fetch failed: %s: %s", url, type(e).__name__)
             return 0
 
     @staticmethod
     def _extract_filename(url: str) -> str:
-        try:
-            path = urlparse(url).path
-            name = path.rsplit("/", 1)[-1]
-            return name if name else "imported_url"
-        except Exception:
-            return "imported_url"
+        path = urlparse(url).path
+        name = path.rsplit("/", 1)[-1]
+        return name if name else "imported_url"
 
 
 class LocalDirImportStrategy(ImportStrategy):
