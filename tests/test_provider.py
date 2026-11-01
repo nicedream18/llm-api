@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -82,3 +83,68 @@ def test_provider_account_delete_removes_encrypted_token(tmp_path):
     assert repo.get_account(account["id"]) is None
     assert repo.get_token(account["id"]) is None
     assert repo.delete_account(account["id"]) is False
+
+
+@pytest.mark.parametrize("provider", ["codex", "gemini", "grok", "kimi", "qoder", "workbuddy"])
+def test_all_provider_adapters_share_redacted_http_contract(monkeypatch, provider):
+    from httpx import Response
+
+    from app.domain.provider_adapters import adapter_for
+
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(("post", url, kwargs))
+        if kwargs.get("data", {}).get("grant_type") == "refresh_token":
+            return Response(200, json={"access_token": "rotated", "refresh_token": "next", "expires_in": 60})
+        return Response(200, json={"access_token": "access", "refresh_token": "refresh", "expires_in": 60})
+
+    def fake_get(url, **kwargs):
+        calls.append(("get", url, kwargs))
+        if url.endswith("/models"):
+            return Response(200, json={"data": [{"id": "model-a"}, {"id": "model-a"}]})
+        return Response(200, json={"remaining": 42})
+
+    monkeypatch.setattr("app.domain.provider_adapters.httpx.post", fake_post)
+    monkeypatch.setattr("app.domain.provider_adapters.httpx.get", fake_get)
+    adapter = adapter_for(provider)
+    config = {
+        "token_url": "https://provider.example/token",
+        "models_url": "https://provider.example/models",
+        "quota_url": "https://provider.example/quota",
+        "revoke_url": "https://provider.example/revoke",
+        "client_id": "public-client",
+    }
+    assert adapter.exchange_code(config, "code", "verifier")["access_token"] == "access"
+    assert adapter.refresh(config, "refresh")["access_token"] == "rotated"
+    assert adapter.models(config, "access") == ["model-a"]
+    assert adapter.quota(config, "access")["remaining"] == 42
+    adapter.revoke(config, "access")
+    revoke_call = calls[-1]
+    assert revoke_call[2]["data"]["token"] == "access"
+
+
+def test_provider_client_secrets_require_environment_references(monkeypatch):
+    service = ProviderService(type("Repo", (), {})())
+    with pytest.raises(Exception, match="environment reference"):
+        service.create_account(ProviderAccountInput(provider="codex", name="Invalid", client_config={"client_secret": "inline"}))
+    monkeypatch.setenv("WALIAPI_PROVIDER_CLIENT_SECRET", "secret")
+    assert service._resolve_client_value({"client_secret": {"env": "WALIAPI_PROVIDER_CLIENT_SECRET"}})["client_secret"] == "secret"
+    monkeypatch.delenv("WALIAPI_PROVIDER_MISSING", raising=False)
+    with pytest.raises(Exception, match="not configured"):
+        service._resolve_client_value({"client_secret": {"env": "WALIAPI_PROVIDER_MISSING"}})
+
+
+@pytest.mark.skipif(
+    not (os.environ.get("WALIAPI_PROVIDER_LIVE_URL") and os.environ.get("WALIAPI_PROVIDER_LIVE_TOKEN")),
+    reason="Set WALIAPI_PROVIDER_LIVE_URL and WALIAPI_PROVIDER_LIVE_TOKEN for real Provider contract validation",
+)
+def test_provider_live_contract_is_opt_in():
+    """Run only in a controlled environment; credentials never enter test output."""
+    from app.domain.provider_adapters import ConfiguredProviderAdapter
+
+    adapter = ConfiguredProviderAdapter("live")
+    base_url = os.environ["WALIAPI_PROVIDER_LIVE_URL"].rstrip("/")
+    config = {"quota_url": base_url + "/quota", "models_url": base_url + "/models"}
+    assert isinstance(adapter.quota(config, os.environ["WALIAPI_PROVIDER_LIVE_TOKEN"]), dict)
+    assert isinstance(adapter.models(config, os.environ["WALIAPI_PROVIDER_LIVE_TOKEN"]), list)

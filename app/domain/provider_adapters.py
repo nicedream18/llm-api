@@ -80,6 +80,23 @@ class ConfiguredProviderAdapter(ProviderAdapter):
             payload["client_secret"] = config["client_secret"]
         return self._token_request(token_url, payload, config)
 
+    def revoke(self, config: dict, access_token: str) -> None:
+        url = str(config.get("revoke_url") or config.get("revoke_endpoint") or "")
+        if not url:
+            return
+        try:
+            response = httpx.post(
+                url,
+                data={"token": access_token, "token_type_hint": "access_token", "client_id": config.get("client_id", "")},
+                timeout=self._timeout(config),
+                follow_redirects=False,
+            )
+        except httpx.HTTPError as exc:
+            raise ValueError("Provider revoke endpoint is unavailable") from exc
+        if response.status_code < 200 or response.status_code >= 300:
+            raise ValueError("Provider revoke endpoint rejected the request")
+        return
+
     def quota(self, config: dict, access_token: str) -> dict:
         url = str(config.get("quota_url") or "")
         if not url:

@@ -5,6 +5,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
+import os
+import re
 import secrets
 from datetime import UTC, datetime, timedelta
 
@@ -15,8 +18,16 @@ from app.config import config
 from app.domain.entities import ChannelEntity
 from app.domain.provider_adapters import adapter_for
 
+logger = logging.getLogger(__name__)
+
 
 class ProviderService:
+    _SECRET_KEY = re.compile(
+        r"(?:client[_-]?secret|api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|credential|^authorization$|^cookie$|private[_-]?key)",
+        re.IGNORECASE,
+    )
+    _ENV_REFERENCE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,255}$")
+
     def __init__(self, repository):
         self.repo = repository
         self._oauth_states: dict[str, tuple[str, str]] = {}
@@ -58,10 +69,14 @@ class ProviderService:
         return [self._decode(row) for row in self.repo.list_accounts()]
 
     def create_account(self, dto):
+        self._validate_client_config(dto.client_config)
         return self._decode(self.repo.create_account(dto.model_dump()))
 
     def update_account(self, account_id, dto):
-        return self._decode(self.repo.update_account(account_id, dto.model_dump(exclude_unset=True)))
+        values = dto.model_dump(exclude_unset=True)
+        if "client_config" in values:
+            self._validate_client_config(values["client_config"])
+        return self._decode(self.repo.update_account(account_id, values))
 
     def delete_account(self, account_id):
         return self.repo.delete_account(account_id)
@@ -85,7 +100,7 @@ class ProviderService:
         self._oauth_states[state] = (account_id, verifier)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
         adapter = adapter_for(account["provider"])
-        return {"state": state, "authorization_url": adapter.authorize_url(json.loads(account["client_config"]), state, challenge)}
+        return {"state": state, "authorization_url": adapter.authorize_url(self._client_config(account), state, challenge)}
 
     def callback(self, state, code):
         record = self._oauth_states.pop(state, None)
@@ -96,7 +111,7 @@ class ProviderService:
         if not account:
             raise ApplicationError("Provider account not found", 404, "not_found")
         try:
-            token = adapter_for(account["provider"]).exchange_code(json.loads(account["client_config"]), code, verifier)
+            token = adapter_for(account["provider"]).exchange_code(self._client_config(account), code, verifier)
         except ApplicationError:
             raise
         except Exception as exc:
@@ -105,7 +120,19 @@ class ProviderService:
         return self.set_token(account_id, ProviderTokenInput(**token))
 
     def sign_out(self, account_id):
-        self.repo.delete_token(account_id)
+        account = self.repo.get_account(account_id)
+        token = self.repo.get_token(account_id) if account else None
+        try:
+            if account and token:
+                access_token = self._decrypt(token.get("access_token"))
+                revoke = getattr(adapter_for(account["provider"]), "revoke", None)
+                if access_token and callable(revoke):
+                    revoke(self._client_config(account), access_token)
+        except (ApplicationError, ValueError, TypeError) as exc:
+            # Local sign-out must still remove the token if a provider is down.
+            logger.warning("Provider revoke failed during local sign-out", exc_info=exc)
+        finally:
+            self.repo.delete_token(account_id)
         return True
 
     def refresh(self, account_id):
@@ -114,7 +141,7 @@ class ProviderService:
         if not account or not token:
             raise ApplicationError("Provider account is not connected", 404, "not_found")
         try:
-            refreshed = adapter_for(account["provider"]).refresh(json.loads(account["client_config"]), self._decrypt(token.get("refresh_token")) or "")
+            refreshed = adapter_for(account["provider"]).refresh(self._client_config(account), self._decrypt(token.get("refresh_token")) or "")
         except ApplicationError:
             raise
         except Exception as exc:
@@ -187,9 +214,7 @@ class ProviderService:
             if cooldown_until and not self._expired(cooldown_until):
                 continue
             try:
-                client_config = account.get("client_config") or {}
-                if isinstance(client_config, str):
-                    client_config = json.loads(client_config)
+                client_config = self._client_config(account)
                 if not isinstance(client_config, dict):
                     continue
                 base_url = client_config.get("gateway_url") or client_config.get("base_url")
@@ -231,7 +256,7 @@ class ProviderService:
         adapter = adapter_for(account["provider"])
         access_token = self._decrypt(token.get("access_token")) or ""
         try:
-            value = getattr(adapter, operation)(json.loads(account["client_config"]), access_token)
+            value = getattr(adapter, operation)(self._client_config(account), access_token)
         except ApplicationError:
             raise
         except Exception as exc:
@@ -240,3 +265,63 @@ class ProviderService:
             self.repo.update_account(account_id, {"status": "active"})
             return {"models": value}
         return value
+
+    @classmethod
+    def _validate_client_config(cls, value, key_path="client_config"):
+        if not isinstance(value, dict):
+            raise ApplicationError("Provider client configuration must be an object", 422, "invalid_provider_config")
+        for key, child in value.items():
+            if cls._SECRET_KEY.search(str(key)) and isinstance(child, str):
+                raise ApplicationError(
+                    f"Provider secret '{key_path}.{key}' must use an environment reference",
+                    422,
+                    "provider_secret_reference_required",
+                )
+            cls._validate_client_value(child, f"{key_path}.{key}")
+
+    @classmethod
+    def _validate_client_value(cls, value, key_path):
+        if isinstance(value, dict):
+            if set(value) == {"env"}:
+                name = value["env"]
+                if not isinstance(name, str) or not cls._ENV_REFERENCE.fullmatch(name):
+                    raise ApplicationError("Provider environment reference is invalid", 422, "invalid_provider_config")
+                return
+            for key, child in value.items():
+                if cls._SECRET_KEY.search(str(key)) and isinstance(child, str):
+                    raise ApplicationError(
+                        f"Provider secret '{key_path}.{key}' must use an environment reference",
+                        422,
+                        "provider_secret_reference_required",
+                    )
+                cls._validate_client_value(child, f"{key_path}.{key}")
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                cls._validate_client_value(child, f"{key_path}[{index}]")
+
+    @classmethod
+    def _resolve_client_value(cls, value, key_path="client_config"):
+        if isinstance(value, dict):
+            if set(value) == {"env"}:
+                name = value["env"]
+                if not isinstance(name, str) or not cls._ENV_REFERENCE.fullmatch(name):
+                    raise ApplicationError("Provider environment reference is invalid", 422, "invalid_provider_config")
+                resolved = os.getenv(name)
+                if resolved is None:
+                    raise ApplicationError(f"Provider environment variable '{name}' is not configured", 503, "provider_secret_unavailable")
+                return resolved
+            return {key: cls._resolve_client_value(child, f"{key_path}.{key}") for key, child in value.items()}
+        if isinstance(value, list):
+            return [cls._resolve_client_value(child, f"{key_path}[{index}]") for index, child in enumerate(value)]
+        return value
+
+    @classmethod
+    def _client_config(cls, account):
+        raw = account.get("client_config") or {}
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ApplicationError("Provider client configuration is invalid", 422, "invalid_provider_config") from exc
+        cls._validate_client_config(raw)
+        return cls._resolve_client_value(raw)
