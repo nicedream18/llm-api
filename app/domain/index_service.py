@@ -84,9 +84,9 @@ class HnswIndex:
 
         visited = set()
         # Use a min-heap for candidates (distance, node_index)
-        candidates = []
+        candidates: list[tuple[float, int]] = []
         # Use a max-heap for results (negate distance for max-heap behaviour in Python's min-heap)
-        results = []
+        results: list[tuple[float, int]] = []
 
         entry_dist = self._cosine_distance(query_vector, self.nodes[self.entry_point]["vector"])
         heapq.heappush(candidates, (entry_dist, self.entry_point))

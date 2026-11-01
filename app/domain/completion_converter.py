@@ -25,7 +25,7 @@ class CompletionConverter:
     @staticmethod
     def chat_to_completions(body: str, model: str) -> str:
         response = json.loads(body)
-        choices = []
+        choices: list[dict[str, Any]] = []
         for choice in response.get("choices") or []:
             message = choice.get("message") or {}
             choices.append({

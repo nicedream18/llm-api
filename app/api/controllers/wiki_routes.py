@@ -56,7 +56,7 @@ def service():
 def list_projects(request: Request):
     rows = service().repo.list_projects()
     context = getattr(request.state, "auth_context", None)
-    if not context.is_admin:
+    if not context or not context.is_admin:
         allowed = get_container().access_service.allowed_resources(context, "wiki")
         rows = [row for row in rows if "*" in allowed or row["id"] in allowed]
     return success(rows)

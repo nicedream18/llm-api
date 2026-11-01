@@ -172,10 +172,10 @@ class StreamCodec:
         if self.source_protocol in {"ollama", "gemini"} and not raw.startswith(("data:", "event:", "id:", "retry:", ":")):
             if not raw:
                 return []
-            event = SSEEvent(data=raw)
-            return self._convert(event)
-        event = self.decoder.feed_line(raw)
-        return self._convert(event) if event else []
+            direct_event = SSEEvent(data=raw)
+            return self._convert(direct_event)
+        decoded_event: SSEEvent | None = self.decoder.feed_line(raw)
+        return self._convert(decoded_event) if decoded_event else []
 
     def finish(self) -> list[str]:
         output: list[str] = []
@@ -257,7 +257,13 @@ class StreamCodec:
         if event_type == "message_delta":
             message_delta = payload.get("delta") or {}
             stop = message_delta.get("stop_reason")
-            finish = {"end_turn": "stop", "max_tokens": "length", "stop_sequence": "stop", "tool_use": "tool_calls"}.get(stop, stop)
+            stop_key = stop if isinstance(stop, str) else None
+            stop_map: dict[str, str] = {
+                "end_turn": "stop", "max_tokens": "length", "stop_sequence": "stop", "tool_use": "tool_calls",
+            }
+            finish = stop_map.get(stop_key) if stop_key else None
+            if finish is None:
+                finish = stop_key
             chunk = _openai_chunk({}, model=self.model, finish_reason=finish, usage=self.usage, response_id=self.response_id)
             return self._emit_openai_payload(chunk)
         if event_type == "message_stop":
@@ -343,7 +349,7 @@ class StreamCodec:
         return output
 
     def _openai_to_completions(self, payload: dict[str, Any]) -> list[str]:
-        choices = []
+        choices: list[dict[str, Any]] = []
         for choice in payload.get("choices") or []:
             delta = choice.get("delta") or {}
             choices.append({

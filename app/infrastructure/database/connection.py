@@ -1,5 +1,6 @@
 """Database connection pool using SQLAlchemy."""
 import logging
+from collections.abc import Iterator
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine
@@ -23,7 +24,7 @@ SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, futu
 
 
 @contextmanager
-def get_db() -> Session:
+def get_db() -> Iterator[Session]:
     db = SessionLocal()
     try:
         yield db

@@ -3,6 +3,8 @@ from enum import Enum
 
 
 class ResponseCode(str, Enum):
+    code: str
+    info: str
     SUCCESS = ("0000", "\u6210\u529f")
     UN_ERROR = ("0001", "\u672a\u77e5\u5931\u8d25")
     ILLEGAL_PARAMETER = ("0002", "\u975e\u6cd5\u53c2\u6570")

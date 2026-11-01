@@ -108,7 +108,7 @@ TRACKING_RULES = [
 
 
 def _run_rules(rules, text, json_path, phase, category, builtin_rules=None) -> list[SecurityFindingEntity]:
-    findings = []
+    findings: list[SecurityFindingEntity] = []
     if not text:
         return findings
     text = text[:1_000_000]
@@ -204,7 +204,7 @@ class SecurityScanner:
         if not settings.enabled:
             return SecurityScanResult(risk_level="Clean", summary="Security scanner is disabled.")
 
-        findings = []
+        findings: list[SecurityFindingEntity] = []
         import json
         try:
             parsed = json.loads(body)

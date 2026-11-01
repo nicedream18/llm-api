@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from datetime import UTC
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -90,7 +90,7 @@ class ImportGuard:
             addresses = [host]
         except ValueError:
             try:
-                addresses = [item[4][0] for item in socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)]
+                addresses = [cast(str, item[4][0]) for item in socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)]
             except (OSError, socket.gaierror) as exc:
                 raise ApplicationError("Import URL host could not be resolved", 422, "invalid_import_url") from exc
         for address in set(addresses):
