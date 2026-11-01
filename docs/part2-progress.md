@@ -101,7 +101,7 @@ MySQL DDL 不承诺事务回滚；迁移必须可恢复，既有 checksum 不可
 - 升级流程：先备份数据库与 `data/client-config`，执行 `python -m app.infrastructure.database.migrations validate` 和 `upgrade`，再启动服务；checksum 不一致必须停止升级，不能手工覆盖既有记录。
 - 本机客户端操作必须先 `config preview`、人工检查脱敏 diff，再使用 `config apply --expected-sha256`；恢复必须使用备份 ID，文件发生外部修改时拒绝恢复。真实客户端配置、真实 Provider 账号和外部 MCP Server 不在本轮自动修改。
 - 质量门禁最终结果：后端 **513 passed / 13 skipped，覆盖率 88.34%**；Ruff、Mypy、compileall、Node 4、前端 Vitest **33 项**、TypeScript、Vite 构建和 `git diff --check` 全部通过。
-- 最终本地节点提交：`658e3f1`（N7）、`776ad18`（N8）、`5caf4e6`（N9）、`c51509d`（容器上下文）、后续容器健康检查提交（N10）；此前 N0–N6 提交保持独立可回溯。
+- 最终本地节点提交：`658e3f1`（N7）、`776ad18`（N8）、`5caf4e6`（N9）、`c51509d`（容器上下文）、`8f78f7f`（N10）；此前 N0–N6 提交保持独立可回溯。
 - 外部待验收：MySQL 8.4 方言/并发/级联，真实 Provider OAuth 与专属协议，带凭据 Wiki 浏览器全流程，Docker 镜像构建和 OTLP 收集器端到端。
 - 明确不支持：商业计费/SaaS 租户、原生桌面壳、自动安装第三方软件、自动修改用户真实客户端账号、向量语义匹配（当前缓存是请求哈希精确匹配）、未声明厂商专属 OAuth 保证。
 
