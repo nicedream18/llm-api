@@ -49,7 +49,8 @@ class UsageRepository:
                 with db.begin_nested():
                     db.execute(text(f"INSERT INTO usage_ledger ({fields}) VALUES ({','.join(':' + key for key in row)})"), row)
             except IntegrityError:
-                existing = db.execute(text("SELECT payload_hash FROM usage_ledger WHERE id=:id"), {"id": fact_id}).scalar()
+                suffix = " FOR UPDATE" if db.engine.dialect.name == "mysql" else ""
+                existing = db.execute(text("SELECT payload_hash FROM usage_ledger WHERE id=:id" + suffix), {"id": fact_id}).scalar()
                 if existing != digest:
                     raise ApplicationError("Usage event conflicts with an existing fact", 409, "usage_conflict") from None
                 return False

@@ -13,6 +13,10 @@ from app.application.services.misc_services import (
     ProxyService,
     SecurityService,
 )
+from app.application.services.operations_service import (
+    OperationsService,
+    OperationsWorker,
+)
 from app.application.services.platform_service import PlatformService
 from app.application.services.provider_service import ProviderService
 from app.application.services.provider_sync_worker import ProviderSyncWorker
@@ -34,6 +38,8 @@ from app.domain.security import SecurityScanner
 from app.infrastructure.database.admin_repo import AdminRepository
 from app.infrastructure.repositories.access_repo import AccessRepository
 from app.infrastructure.repositories.agent_repo import AgentRepository
+from app.infrastructure.repositories.alert_repo import AlertRepository
+from app.infrastructure.repositories.analytics_repo import AnalyticsRepository
 from app.infrastructure.repositories.channel_repo import ChannelRepository
 from app.infrastructure.repositories.kb_repo import KbRepository
 from app.infrastructure.repositories.log_repo import LogRepository
@@ -69,6 +75,10 @@ class Container:
         self.quota_repo = QuotaRepository()
         self.routing_repo = RoutingRepository()
         self.usage_repo = UsageRepository()
+        self.analytics_repo = AnalyticsRepository()
+        self.alert_repo = AlertRepository()
+        self.operations_service = OperationsService(self.analytics_repo, self.alert_repo)
+        self.operations_worker = OperationsWorker(self.operations_service)
         self.admin_repo = AdminRepository()
         self.admin_service = AdminService(self.admin_repo)
         self.provider_service = ProviderService(self.provider_repo)

@@ -25,7 +25,9 @@ class UsageRecorder:
 
     def finish(self, outcome, status_code, duration_ms):
         self._finished_at = self._finished_at or datetime.now(UTC).isoformat()
-        self.repo.append(UsageFact(**self.common, event_key="outcome", kind="outcome", outcome=outcome,
+        last = self.attempts[-1] if self.attempts else None
+        dimensions = {"provider": last.provider, "account_id": last.account_id, "channel_id": last.channel_id} if last else {}
+        self.repo.append(UsageFact(**self.common, **dimensions, event_key="outcome", kind="outcome", outcome=outcome,
             status_code=status_code, duration_ms=duration_ms, occurred_at=self._finished_at))
 
     @property

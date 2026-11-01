@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.controllers.access_routes import router as access_router
 from app.api.controllers.auth_routes import router as auth_router
 from app.api.controllers.mcp_routes import router as standard_mcp_router
+from app.api.controllers.operations_routes import router as operations_router
 from app.api.controllers.platform_routes import router as platform_router
 from app.api.controllers.provider_routes import router as provider_router
 from app.api.controllers.routes import (
@@ -40,9 +41,11 @@ async def lifespan(app):
     apply_migrations()
     await get_container().kb_worker.start()
     await get_container().provider_sync_worker.start()
+    await get_container().operations_worker.start()
     try:
         yield
     finally:
+        await get_container().operations_worker.stop()
         await get_container().provider_sync_worker.stop()
         await get_container().kb_worker.stop()
         try:
@@ -89,6 +92,7 @@ app.include_router(software_router)
 app.include_router(provider_router)
 app.include_router(routing_router)
 app.include_router(usage_router)
+app.include_router(operations_router)
 app.include_router(platform_router)
 app.add_exception_handler(ApplicationError, application_error_handler)
 

@@ -8,6 +8,7 @@ pydantic==2.10.4
 python-dotenv==1.0.1
 sse-starlette==2.2.1
 pypdf>=5,<6
+tzdata==2025.2
 
 pytest==8.3.4
 pytest-asyncio==0.25.3

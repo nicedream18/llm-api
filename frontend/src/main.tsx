@@ -5,11 +5,12 @@ import type { AccessGrant, ClientConfig, Dashboard, KnowledgeBase, OpenApiPrevie
 import { WikiManager } from "./WikiManager";
 import { ProviderManager } from "./ProviderManager";
 import { McpManager } from "./McpManager";
+import { OperationsPage } from "./OperationsPage";
 import "./styles.css";
 import "./software.css";
 
-type Page = "dashboard" | "channels" | "software" | "providers" | "wiki" | "knowledge" | "mcp" | "settings";
-const nav: Array<[Page, string]> = [["dashboard", "仪表盘"], ["channels", "渠道"], ["knowledge", "知识库"], ["wiki", "Wiki"], ["software", "Software"], ["providers", "Auth Provider"], ["mcp", "MCP 调试"], ["settings", "设置"]];
+type Page = "dashboard" | "channels" | "software" | "providers" | "wiki" | "knowledge" | "mcp" | "operations" | "settings";
+const nav: Array<[Page, string]> = [["dashboard", "仪表盘"], ["operations", "运营统计"], ["channels", "渠道"], ["knowledge", "知识库"], ["wiki", "Wiki"], ["software", "Software"], ["providers", "Auth Provider"], ["mcp", "MCP 调试"], ["settings", "设置"]];
 
 function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
@@ -31,6 +32,7 @@ function LoginPage({ onSuccess }: { onSuccess: () => void }) {
 
 function PageView({ page, onError }: { page: Page; onError: (message: string) => void }) {
   if (page === "dashboard") return <DashboardPage onError={onError} />;
+  if (page === "operations") return <OperationsPage onError={onError} />;
   if (page === "channels") return <ListPage title="渠道" path="/api/v1/channels" columns={["name", "type", "status"]} onError={onError} />;
   if (page === "software") return <SoftwarePage onError={onError} />;
   if (page === "providers") return <ProviderManager onError={onError} />;

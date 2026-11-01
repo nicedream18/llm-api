@@ -269,3 +269,22 @@ def test_mysql_usage_ledger_deduplication_and_decimal_prices(mysql_engine):
     with ThreadPoolExecutor(max_workers=4) as pool:
         assert sum(pool.map(lambda _: repo.append(value), range(8))) == 1
     assert repo.execution("mysql")[0]["cost"] == "0.000003"
+
+
+def test_mysql_operational_alert_deduplication_and_analytics(mysql_engine):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.infrastructure.repositories.alert_repo import AlertRepository
+    from app.infrastructure.repositories.analytics_repo import AnalyticsRepository
+    from app.types.analytics import AlertRule, AnalyticsQuery
+
+    migrations.apply_migrations()
+    repo = AlertRepository(mysql_engine)
+    repo.save_rule("failure", AlertRule(metric="failure_rate", threshold=0.1).model_dump())
+    repo.save_rule("failure", AlertRule(metric="failure_rate", threshold=0.2).model_dump())
+    assert repo.rules()[0]["threshold"] == 0.2
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        ids = list(pool.map(lambda _: repo.transition("failure:provider", True), range(8)))
+    assert len(set(ids)) == 1
+    assert repo.acknowledge(ids[0], "admin")
+    assert not AnalyticsRepository(mysql_engine).report(AnalyticsQuery())["items"]

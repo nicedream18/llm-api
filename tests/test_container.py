@@ -14,7 +14,7 @@ def test_container_wires_shared_services_to_expected_dependencies(monkeypatch):
         "ChannelService", "DashboardService", "KbService", "KnowledgeTaskWorker",
         "SecurityService", "AgentService", "ProxyService", "AccessRepository", "AccessService",
         "WikiRepository", "WikiService", "SoftwareService", "ProviderService", "PlatformService",
-        "McpService", "ProviderSyncWorker", "RoutingRepository", "UsageRepository",
+        "McpService", "ProviderSyncWorker", "RoutingRepository", "UsageRepository", "AnalyticsRepository", "AlertRepository", "OperationsService", "OperationsWorker",
     )
     for name in factory_names:
         monkeypatch.setattr(container_module, name, Factory)
