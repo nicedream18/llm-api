@@ -31,6 +31,16 @@ class SoftwareInvokeInput(BaseModel):
     approved: bool = False
 
 
+class SoftwareApprovalInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    arguments: dict = Field(default_factory=dict)
+
+
+class SoftwareApprovalDecisionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approved: bool
+
+
 class OpenApiPreviewInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     spec: dict[str, Any]

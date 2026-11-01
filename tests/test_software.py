@@ -129,6 +129,27 @@ def test_mcp_connector_initializes_and_calls_tool_with_session(monkeypatch):
     assert calls[2][1]["json"]["method"] == "tools/call"
 
 
+def test_software_approval_is_persistent_and_decision_is_single_use(tmp_path):
+    from sqlalchemy import create_engine
+
+    engine = create_engine("sqlite://")
+    with engine.begin() as db:
+        execute_migration(db, Path("docs/migrations/013_software_tools.sql"))
+        execute_migration(db, Path("docs/migrations/016_software_approvals.sql"))
+    repo = SoftwareRepository(engine)
+    service = SoftwareService(repo)
+    instance = service.create_instance(SoftwareInstanceInput(name="Echo", connector_type="cli", config={"command": ["python", "-c", "print('approved')"]}))
+    tool = service.create_tool(SoftwareToolInput(instance_id=instance["id"], name="echo", approval_mode="per_call"))
+    approval = service.create_approval(tool["id"], {})
+    assert approval["status"] == "pending"
+    assert service.list_approvals()[0]["arguments"] == {}
+    result = service.decide_approval(approval["id"], True)
+    assert result["status"] == "executed" and result["result"]["stdout"].strip() == "approved"
+    assert repo.get_approval(approval["id"])["status"] == "executed"
+    with pytest.raises(ApplicationError, match="already decided"):
+        service.decide_approval(approval["id"], False)
+
+
 def test_configured_wechat_and_clihub_connectors_use_safe_http_bridge(monkeypatch):
     class Response:
         status_code = 200

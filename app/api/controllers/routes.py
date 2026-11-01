@@ -29,6 +29,8 @@ from app.types.models import (
 from app.types.software import (
     OpenApiImportInput,
     OpenApiPreviewInput,
+    SoftwareApprovalDecisionInput,
+    SoftwareApprovalInput,
     SoftwareInstanceInput,
     SoftwareInvokeInput,
     SoftwareToolInput,
@@ -373,6 +375,21 @@ async def invoke_software_tool(tool_id: str, dto: SoftwareInvokeInput, request: 
 @software_router.get("/calls")
 async def software_calls(limit: int = 100):
     return _success(await asyncio.to_thread(get_container().software_repo.list_calls, limit))
+
+
+@software_router.get("/approvals")
+async def software_approvals(status: str | None = "pending", limit: int = 100):
+    return _success(await asyncio.to_thread(get_container().software_service.list_approvals, status, limit))
+
+
+@software_router.post("/tools/{tool_id}/approvals", status_code=201)
+async def create_software_approval(tool_id: str, dto: SoftwareApprovalInput, request: Request):
+    return _success(await asyncio.to_thread(get_container().software_service.create_approval, tool_id, dto.arguments, getattr(request.state, "auth_context", None)))
+
+
+@software_router.post("/approvals/{approval_id}/decision")
+async def decide_software_approval(approval_id: str, dto: SoftwareApprovalDecisionInput, request: Request):
+    return _success(await asyncio.to_thread(get_container().software_service.decide_approval, approval_id, dto.approved, getattr(request.state, "auth_context", None)))
 
 
 @dashboard_router.get("/dashboard")

@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import time
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import httpx
@@ -13,6 +14,10 @@ import httpx
 from app.application.errors import ApplicationError
 from app.domain.importer import ImportGuard
 from app.domain.openapi_tools import parse_openapi_tools
+
+
+def _now():
+    return datetime.now(UTC).isoformat()
 
 
 class SoftwareService:
@@ -47,6 +52,18 @@ class SoftwareService:
 
     def list_tools(self, instance_id=None):
         return [self._decode(row) for row in self.repo.list_tools(instance_id)]
+
+    def list_approvals(self, status=None, limit=100):
+        rows = self.repo.list_approvals(status, limit)
+        result = []
+        for row in rows:
+            decoded = self._decode(row)
+            try:
+                decoded["arguments"] = json.loads(row.get("arguments") or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                decoded["arguments"] = {}
+            result.append(decoded)
+        return result
 
     def create_tool(self, dto):
         if not self.repo.get_instance(dto.instance_id):
@@ -87,6 +104,45 @@ class SoftwareService:
 
     def set_tool_enabled(self, tool_id, enabled):
         return self.update_tool(tool_id, {"enabled": 1 if enabled else 0})
+
+    def create_approval(self, tool_id, arguments, principal=None):
+        tool = self.repo.get_tool(tool_id)
+        if not tool or not tool.get("enabled"):
+            raise ApplicationError("Software tool is unavailable", 404, "not_found")
+        tool = self._decode(tool)
+        self._validate_arguments(tool, arguments)
+        return self.repo.create_approval({
+            "tool_id": tool_id,
+            "principal_type": getattr(principal, "principal_type", None),
+            "principal_id": getattr(principal, "principal_id", None),
+            "arguments": arguments,
+            "status": "pending",
+            "decision_by": None,
+            "decision_at": None,
+            "error_type": None,
+        })
+
+    def decide_approval(self, approval_id, approved, principal=None):
+        request = self.repo.get_approval(approval_id)
+        if not request:
+            raise ApplicationError("Software approval request not found", 404, "not_found")
+        if request.get("status") != "pending":
+            raise ApplicationError("Software approval request is already decided", 409, "approval_conflict")
+        decision_by = getattr(principal, "principal_id", None)
+        if not approved:
+            if not self.repo.update_approval(approval_id, {"status": "rejected", "decision_by": decision_by, "decision_at": _now()}, "pending"):
+                raise ApplicationError("Software approval request is already decided", 409, "approval_conflict")
+            return {"id": approval_id, "status": "rejected"}
+        if not self.repo.update_approval(approval_id, {"status": "approved", "decision_by": decision_by, "decision_at": _now()}, "pending"):
+            raise ApplicationError("Software approval request is already decided", 409, "approval_conflict")
+        try:
+            arguments = json.loads(request.get("arguments") or "{}")
+            result = self.invoke(request["tool_id"], arguments, principal, approved=True)
+        except Exception as exc:
+            self.repo.update_approval(approval_id, {"status": "failed", "error_type": getattr(exc, "code", type(exc).__name__)})
+            raise
+        self.repo.update_approval(approval_id, {"status": "executed", "error_type": None})
+        return {"id": approval_id, "status": "executed", "result": result}
 
     def invoke(self, tool_id, arguments, principal=None, approved=False):
         tool = self.repo.get_tool(tool_id)

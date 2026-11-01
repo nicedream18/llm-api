@@ -121,3 +121,40 @@ class SoftwareRepository:
     def list_calls(self, limit=100):
         with self.engine.connect() as db:
             return [dict(row) for row in db.execute(text("SELECT * FROM software_call_logs ORDER BY created_at DESC, id DESC LIMIT :limit"), {"limit": min(max(int(limit), 1), 500)}).mappings()]
+
+    def create_approval(self, values):
+        row = {"id": str(uuid.uuid4()), "created_at": _now(), "updated_at": _now(), **values}
+        row["arguments"] = json.dumps(row.get("arguments") or {}, ensure_ascii=False)
+        with self.engine.begin() as db:
+            db.execute(text("""INSERT INTO software_approval_requests
+                (id,tool_id,principal_type,principal_id,arguments,status,decision_by,decision_at,error_type,created_at,updated_at)
+                VALUES (:id,:tool_id,:principal_type,:principal_id,:arguments,:status,:decision_by,:decision_at,:error_type,:created_at,:updated_at)"""), row)
+        return self.get_approval(row["id"])
+
+    def get_approval(self, approval_id):
+        with self.engine.connect() as db:
+            row = db.execute(text("SELECT * FROM software_approval_requests WHERE id=:id"), {"id": approval_id}).mappings().first()
+            return dict(row) if row else None
+
+    def list_approvals(self, status=None, limit=100):
+        query = "SELECT * FROM software_approval_requests"
+        params = {"limit": min(max(int(limit), 1), 500)}
+        if status:
+            query += " WHERE status=:status"
+            params["status"] = status
+        query += " ORDER BY created_at DESC, id DESC LIMIT :limit"
+        with self.engine.connect() as db:
+            return [dict(row) for row in db.execute(text(query), params).mappings()]
+
+    def update_approval(self, approval_id, values, expected_status=None):
+        values = {**values, "updated_at": _now(), "id": approval_id}
+        if "arguments" in values:
+            values["arguments"] = json.dumps(values["arguments"] or {}, ensure_ascii=False)
+        fields = ", ".join(f"{key}=:{key}" for key in values if key != "id")
+        where = "id=:id"
+        if expected_status:
+            where += " AND status=:expected_status"
+            values["expected_status"] = expected_status
+        with self.engine.begin() as db:
+            changed = db.execute(text(f"UPDATE software_approval_requests SET {fields} WHERE {where}"), values).rowcount
+        return changed == 1

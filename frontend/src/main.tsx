@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { del, get, post, put, upload } from "./api";
-import type { AccessGrant, ClientConfig, Dashboard, KnowledgeBase, OpenApiPreview, PromptTemplate, SoftwareCall, SoftwareInstance, SoftwareTool } from "./types";
+import type { AccessGrant, ClientConfig, Dashboard, KnowledgeBase, OpenApiPreview, PromptTemplate, SoftwareApproval, SoftwareCall, SoftwareInstance, SoftwareTool } from "./types";
 import { WikiManager } from "./WikiManager";
 import { ProviderManager } from "./ProviderManager";
 import { McpManager } from "./McpManager";
@@ -73,6 +73,7 @@ function SoftwarePage({ onError }: { onError: (message: string) => void }) {
   const [instances, setInstances] = useState<SoftwareInstance[]>([]);
   const [tools, setTools] = useState<SoftwareTool[]>([]);
   const [calls, setCalls] = useState<SoftwareCall[]>([]);
+  const [approvals, setApprovals] = useState<SoftwareApproval[]>([]);
   const [specText, setSpecText] = useState("");
   const [instanceName, setInstanceName] = useState("");
   const [instanceId, setInstanceId] = useState("");
@@ -91,8 +92,9 @@ function SoftwarePage({ onError }: { onError: (message: string) => void }) {
     get<SoftwareInstance[]>("/api/v1/software/instances"),
     get<SoftwareTool[]>("/api/v1/software/tools"),
     get<SoftwareCall[]>("/api/v1/software/calls?limit=50"),
-  ]).then(([instanceRows, toolRows, callRows]) => {
-    setInstances(instanceRows); setTools(toolRows); setCalls(callRows);
+    get<SoftwareApproval[]>("/api/v1/software/approvals?status=pending&limit=50"),
+  ]).then(([instanceRows, toolRows, callRows, approvalRows]) => {
+    setInstances(instanceRows); setTools(toolRows); setCalls(callRows); setApprovals(approvalRows);
     setInstanceId(current => current || instanceRows[0]?.id || "");
     setSelectedTool(current => current || toolRows[0]?.id || "");
   }).catch((error: Error) => onError(error.message));
@@ -126,6 +128,10 @@ function SoftwarePage({ onError }: { onError: (message: string) => void }) {
     setInvokeResult("");
     try { const result = await post<unknown>(`/api/v1/software/tools/${encodeURIComponent(selectedTool)}/invoke`, { arguments: parsed, approved }); setInvokeResult(JSON.stringify(result, null, 2)); await load(); }
     catch (error) { onError(error instanceof Error ? error.message : "工具调用失败"); }
+  };
+  const decideApproval = async (approval: SoftwareApproval, approved: boolean) => {
+    try { await post(`/api/v1/software/approvals/${encodeURIComponent(approval.id)}/decision`, { approved }); await load(); }
+    catch (error) { onError(error instanceof Error ? error.message : "审批处理失败"); }
   };
   const parseSpec = () => {
     const value: unknown = JSON.parse(specText);
@@ -167,6 +173,7 @@ function SoftwarePage({ onError }: { onError: (message: string) => void }) {
       </div>}
     </div>
     <div className="panel"><div className="panel-head"><h2>已注册工具</h2><button className="secondary" onClick={() => void load()}>刷新</button></div><div className="card-list">{tools.map(tool => <article className={`subcard ${tool.id === selectedTool ? "selected-card" : ""}`} key={tool.id} onClick={() => setSelectedTool(tool.id)}><strong>{tool.name}</strong><span>{tool.description || "暂无描述"}</span><small>风险：{tool.risk_level} · {tool.enabled ? "已启用" : "已停用"}</small><button className="secondary" onClick={event => { event.stopPropagation(); void toggle(tool); }}>{tool.enabled ? "停用" : "启用"}</button></article>)}</div>{tools.length === 0 && <p className="muted">暂无工具。</p>}<div className="software-debug"><h3>调用调试</h3><label className="field-label">工具<select value={selectedTool} onChange={event => setSelectedTool(event.target.value)}><option value="">选择工具</option>{tools.map(tool => <option key={tool.id} value={tool.id}>{tool.name}</option>)}</select></label><label className="field-label">参数 JSON<textarea className="code-input" value={invokeArguments} onChange={event => setInvokeArguments(event.target.value)} spellCheck={false} /></label><label className="checkbox-label"><input type="checkbox" checked={approved} onChange={event => setApproved(event.target.checked)} />我已确认本次调用风险并批准执行</label><button className="primary" onClick={() => void invoke()} disabled={!selectedTool}>调用工具</button>{invokeResult && <pre className="software-result">{invokeResult}</pre>}</div></div>
+    <div className="panel"><div className="panel-head"><div><h2>待审批调用</h2><p className="muted">审批会在服务端持久化；批准后立即执行一次并写入调用记录。</p></div><button className="secondary" onClick={() => void load()}>刷新</button></div><div className="approval-list">{approvals.map(approval => <article className="subcard" key={approval.id}><strong>{tools.find(tool => tool.id === approval.tool_id)?.name || approval.tool_id}</strong><small>主体：{approval.principal_id || "—"} · {new Date(approval.created_at).toLocaleString()}</small><pre className="software-result">{JSON.stringify(approval.arguments || {}, null, 2)}</pre><div className="inline-form"><button className="primary" onClick={() => void decideApproval(approval, true)}>批准并执行</button><button className="danger" onClick={() => void decideApproval(approval, false)}>拒绝</button></div></article>)}{approvals.length === 0 && <p className="muted">暂无待审批调用。</p>}</div></div>
     <div className="panel"><div className="panel-head"><div><h2>调用记录</h2><p className="muted">请求与响应摘要已由服务端脱敏。</p></div><button className="secondary" onClick={() => void load()}>刷新</button></div><div className="table-wrap"><table><thead><tr><th>工具</th><th>状态</th><th>耗时</th><th>错误</th><th>时间</th></tr></thead><tbody>{calls.map(call => <tr key={call.id}><td>{tools.find(tool => tool.id === call.tool_id)?.name || call.tool_id}</td><td className={call.status === "succeeded" ? "success" : "error-cell"}>{call.status}</td><td>{call.duration_ms} ms</td><td>{call.error_type || "—"}</td><td>{new Date(call.created_at).toLocaleString()}</td></tr>)}</tbody></table>{calls.length === 0 && <p className="muted">暂无调用记录。</p>}</div></div>
   </section>;
 }

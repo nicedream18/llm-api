@@ -152,6 +152,9 @@ def test_management_routes_dispatch_admin_operations_and_preserve_static_paths(m
     client.delete("/api/v1/software/tools/t-1")
     client.post("/api/v1/software/tools/t-1/invoke", json={"arguments": {"q": "x"}, "approved": True})
     client.get("/api/v1/software/calls?limit=3")
+    client.get("/api/v1/software/approvals?status=pending&limit=3")
+    client.post("/api/v1/software/tools/t-1/approvals", json={"arguments": {"q": "x"}})
+    client.post("/api/v1/software/approvals/approval-1/decision", json={"approved": True})
     spec = {"openapi": "3.0.0", "servers": [{"url": "https://api.example.test"}], "paths": {"/health": {"get": {"operationId": "health"}}}}
     client.post("/api/v1/software/openapi/preview", json={"spec": spec})
     client.post("/api/v1/software/openapi/import", json={"name": "Example", "spec": spec})
@@ -161,7 +164,7 @@ def test_management_routes_dispatch_admin_operations_and_preserve_static_paths(m
     assert services["dashboard"].calls[-1][0] == "delete_by_channel"
     assert services["agent"].calls[-1][0] == "chat"
     assert services["security"].calls[1][1] == ("rule-1", 0, "low")
-    assert services["software"].calls[-4][0] == "invoke"
+    assert any(call[0] == "invoke" for call in services["software"].calls)
     assert services["audit"].calls[0][0] == "list"
     assert {call[0] for call in services["channel"].calls} == {
         "export_channels", "import_channels", "list_channels", "get_channel",
@@ -188,5 +191,5 @@ def test_management_routes_dispatch_admin_operations_and_preserve_static_paths(m
     assert {call[0] for call in services["software"].calls} == {
         "list_instances", "create_instance", "update_instance", "delete_instance",
         "list_tools", "create_tool", "set_tool_enabled", "delete_tool", "invoke",
-        "list_calls", "preview_openapi", "import_openapi",
+        "list_calls", "list_approvals", "create_approval", "decide_approval", "preview_openapi", "import_openapi",
     }
