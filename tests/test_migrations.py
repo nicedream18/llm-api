@@ -81,3 +81,10 @@ def test_validate_reports_checksum_mismatch(monkeypatch):
 
     with pytest.raises(RuntimeError, match="checksum mismatch"):
         migrations.validate()
+
+
+def test_migration_files_include_mcp_session_persistence():
+    from app.infrastructure.database import migrations
+
+    versions = [version for version, _path, _checksum in migrations.migration_files()]
+    assert "018_mcp_sessions" in versions

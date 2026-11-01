@@ -37,6 +37,7 @@ from app.infrastructure.repositories.channel_repo import ChannelRepository
 from app.infrastructure.repositories.kb_repo import KbRepository
 from app.infrastructure.repositories.log_repo import LogRepository
 from app.infrastructure.repositories.mcp_audit_repo import McpAuditRepository
+from app.infrastructure.repositories.mcp_session_repo import McpSessionRepository
 from app.infrastructure.repositories.platform_repo import PlatformRepository
 from app.infrastructure.repositories.provider_repo import ProviderRepository
 from app.infrastructure.repositories.quota_repo import QuotaRepository
@@ -55,6 +56,7 @@ class Container:
         self.channel_repo = ChannelRepository()
         self.log_repo = LogRepository()
         self.mcp_audit_repo = McpAuditRepository()
+        self.mcp_session_repo = McpSessionRepository()
         self.software_repo = SoftwareRepository()
         self.provider_repo = ProviderRepository()
         self.platform_repo = PlatformRepository()

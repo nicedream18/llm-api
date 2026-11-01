@@ -27,6 +27,13 @@ _cancelled_requests: set[tuple[str | None, str | int]] = set()
 _running_requests: dict[tuple[str | None, str | int], asyncio.Task] = {}
 
 
+def _session_repository():
+    try:
+        return getattr(get_container(), "mcp_session_repo", None)
+    except (AttributeError, RuntimeError):
+        return None
+
+
 def _principal(request: Request) -> tuple[str | None, str | None]:
     context = getattr(request.state, "auth_context", None)
     return getattr(context, "principal_type", None), getattr(context, "principal_id", None)
@@ -38,12 +45,25 @@ def _cleanup_sessions(now: float | None = None) -> None:
         if expires <= current:
             _sessions.pop(session_id, None)
             _session_events.pop(session_id, None)
+    repository = _session_repository()
+    if repository is not None:
+        try:
+            repository.cleanup_expired()
+        except Exception:
+            logger.warning("Failed to clean up persistent MCP sessions", exc_info=True)
 
 
 def _validate_session(request: Request) -> bool:
     session_id = request.headers.get("mcp-session-id")
     if not session_id:
         return True
+    repository = _session_repository()
+    if repository is not None:
+        try:
+            return repository.validate(session_id, _principal(request), SESSION_TTL_SECONDS)
+        except Exception:
+            logger.warning("Failed to validate persistent MCP session", exc_info=True)
+            return False
     _cleanup_sessions()
     record = _sessions.get(session_id)
     if record is None or record[1] != _principal(request):
@@ -57,6 +77,15 @@ def _new_session(request: Request) -> str:
     session_id = secrets.token_urlsafe(32)
     _sessions[session_id] = (time.monotonic() + SESSION_TTL_SECONDS, _principal(request))
     _session_events[session_id] = asyncio.Queue(maxsize=64)
+    repository = _session_repository()
+    if repository is not None:
+        try:
+            repository.create(session_id, _principal(request), SESSION_TTL_SECONDS)
+        except Exception:
+            logger.warning("Failed to persist MCP session", exc_info=True)
+            _sessions.pop(session_id, None)
+            _session_events.pop(session_id, None)
+            raise
     return session_id
 
 
@@ -67,11 +96,23 @@ def publish_session_event(session_id: str, method: str, params: dict | None = No
     Events are best effort; the request path never waits for an SSE consumer.
     """
     queue = _session_events.get(session_id)
+    event_id = None
+    payload = {"jsonrpc": "2.0", "method": method, "params": params or {}}
+    repository = _session_repository()
+    if repository is not None:
+        try:
+            event_id = repository.append_event(session_id, payload)
+            if event_id is None:
+                return False
+        except Exception:
+            logger.warning("Failed to persist MCP session event", exc_info=True)
+            return False
     if queue is None:
-        return False
-    payload = json.dumps({"jsonrpc": "2.0", "method": method, "params": params or {}}, ensure_ascii=False, separators=(",", ":"))
+        return event_id is not None
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    frame = f"id: {event_id}\nevent: message\ndata: {encoded}\n\n" if event_id is not None else f"event: message\ndata: {encoded}\n\n"
     try:
-        queue.put_nowait(f"event: message\ndata: {payload}\n\n")
+        queue.put_nowait(frame)
     except asyncio.QueueFull:
         return False
     return True
@@ -94,9 +135,21 @@ async def mcp_no_session(request: Request):
         if "text/event-stream" not in accept:
             return Response(status_code=406)
         queue = _session_events.setdefault(session_id, asyncio.Queue(maxsize=64))
+        try:
+            last_event_id = max(0, int(request.headers.get("last-event-id", "0") or 0))
+        except ValueError:
+            last_event_id = 0
+        repository = _session_repository()
 
         async def event_stream():
             yield f"event: ready\ndata: {json.dumps({'sessionId': session_id}, separators=(',', ':'))}\n\n"
+            if repository is not None:
+                try:
+                    for item in repository.replay(session_id, _principal(request), last_event_id):
+                        payload = json.dumps(item["payload"], ensure_ascii=False, separators=(",", ":"))
+                        yield f"id: {item['event_id']}\nevent: message\ndata: {payload}\n\n"
+                except Exception:
+                    logger.warning("Failed to replay MCP session events", exc_info=True)
             while not await request.is_disconnected():
                 try:
                     yield await asyncio.wait_for(queue.get(), timeout=15)
@@ -115,6 +168,9 @@ async def mcp_no_session(request: Request):
             return Response(status_code=403)
         _sessions.pop(session_id, None)
         _session_events.pop(session_id, None)
+        repository = _session_repository()
+        if repository is not None:
+            repository.delete(session_id)
         return Response(status_code=204)
     return Response(status_code=405, headers={"Allow": "POST"})
 
