@@ -31,3 +31,41 @@ def test_provider_rejects_invalid_oauth_state():
     service = ProviderService(type("Repo", (), {})())
     with pytest.raises(Exception, match="state"):
         service.callback("invalid", "code")
+
+
+def test_configured_provider_uses_http_oauth_and_data_endpoints(monkeypatch):
+    from httpx import Response
+
+    from app.domain.provider_adapters import ConfiguredProviderAdapter
+
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(("post", url, kwargs))
+        return Response(200, json={"access_token": "access", "refresh_token": "refresh", "expires_in": 3600})
+
+    def fake_get(url, **kwargs):
+        calls.append(("get", url, kwargs))
+        if url.endswith("/models"):
+            return Response(200, json={"data": [{"id": "model-a"}, {"id": "model-a"}, "model-b"]})
+        return Response(200, json={"remaining": 42})
+
+    monkeypatch.setattr("app.domain.provider_adapters.httpx.post", fake_post)
+    monkeypatch.setattr("app.domain.provider_adapters.httpx.get", fake_get)
+    adapter = ConfiguredProviderAdapter("gemini")
+    config = {
+        "token_url": "https://provider.example/token",
+        "quota_url": "https://provider.example/quota",
+        "models_url": "https://provider.example/models",
+        "client_id": "client",
+    }
+
+    token = adapter.exchange_code(config, "code", "verifier")
+    refreshed = adapter.refresh(config, "refresh")
+
+    assert token["access_token"] == "access"
+    assert refreshed["refresh_token"] == "refresh"
+    assert adapter.quota(config, "access")["remaining"] == 42
+    assert adapter.models(config, "access") == ["model-a", "model-b"]
+    assert calls[0][2]["data"]["code_verifier"] == "verifier"
+    assert calls[-1][2]["headers"]["Authorization"] == "Bearer access"

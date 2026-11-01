@@ -93,7 +93,12 @@ class ProviderService:
         account = self.repo.get_account(account_id)
         if not account:
             raise ApplicationError("Provider account not found", 404, "not_found")
-        token = adapter_for(account["provider"]).exchange_code(json.loads(account["client_config"]), code, verifier)
+        try:
+            token = adapter_for(account["provider"]).exchange_code(json.loads(account["client_config"]), code, verifier)
+        except ApplicationError:
+            raise
+        except Exception as exc:
+            raise ApplicationError("Provider authorization failed", 502, "provider_error") from exc
         from app.types.provider import ProviderTokenInput
         return self.set_token(account_id, ProviderTokenInput(**token))
 
@@ -106,7 +111,12 @@ class ProviderService:
         token = self.repo.get_token(account_id) if account else None
         if not account or not token:
             raise ApplicationError("Provider account is not connected", 404, "not_found")
-        refreshed = adapter_for(account["provider"]).refresh(json.loads(account["client_config"]), self._decrypt(token.get("refresh_token")) or "")
+        try:
+            refreshed = adapter_for(account["provider"]).refresh(json.loads(account["client_config"]), self._decrypt(token.get("refresh_token")) or "")
+        except ApplicationError:
+            raise
+        except Exception as exc:
+            raise ApplicationError("Provider token refresh failed", 502, "provider_error") from exc
         if refreshed.get("access_token"):
             from app.types.provider import ProviderTokenInput
             self.set_token(account_id, ProviderTokenInput(**{**refreshed, "refresh_token": refreshed.get("refresh_token") or self._decrypt(token.get("refresh_token"))}))
@@ -125,7 +135,12 @@ class ProviderService:
             raise ApplicationError("Provider account is not connected", 404, "not_found")
         adapter = adapter_for(account["provider"])
         access_token = self._decrypt(token.get("access_token")) or ""
-        value = getattr(adapter, operation)(json.loads(account["client_config"]), access_token)
+        try:
+            value = getattr(adapter, operation)(json.loads(account["client_config"]), access_token)
+        except ApplicationError:
+            raise
+        except Exception as exc:
+            raise ApplicationError("Provider endpoint request failed", 502, "provider_error") from exc
         if operation == "models":
             self.repo.update_account(account_id, {"status": "active"})
             return {"models": value}
