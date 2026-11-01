@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { get, post, put } from "./api";
 import type { Provider, ProviderPage } from "./types";
+import { ProviderSyncPanel } from "./ProviderSyncPanel";
 import "./provider.css";
 
 const providers = ["codex", "gemini", "grok", "kimi", "qoder", "workbuddy"];
@@ -22,6 +23,7 @@ export function ProviderManager({ onError }: { onError: (message: string) => voi
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [events, setEvents] = useState<Array<{ id: string; action: string; created_at: string }> | null>(null);
+  const [syncAccount, setSyncAccount] = useState<string | null>(null);
   const request = useRef(0);
   const load = useCallback(async () => {
     const serial = ++request.current; setLoading(true);
@@ -96,11 +98,12 @@ export function ProviderManager({ onError }: { onError: (message: string) => voi
     {message && <p className="success provider-message" role="status">{message}</p>}{loading && <p role="status">正在加载账号…</p>}
     <div className="provider-list">{page.items.map(account => <article className="panel provider-card" key={account.id}><div className="provider-card-head"><div><label className="checkbox-label"><input type="checkbox" aria-label={`选择 ${account.name}`} checked={selected.includes(account.id)} onChange={event => setSelected(current => event.target.checked ? [...current, account.id] : current.filter(id => id !== account.id))} /><span className="provider-badge">{account.provider}</span></label><h3>{account.name}</h3><p>{account.enabled ? "已启用" : "已停用"} · {account.auth_status || account.status} · {account.health_status || "unknown"}</p><small>分组：{account.group_name || "未分组"} · 标签：{account.tags?.join(" / ") || "无"} · 优先级 {account.priority}</small>{account.cooldown_until && <p>冷却至 {new Date(account.cooldown_until).toLocaleString()}</p>}</div>
       <div className="provider-actions">{account.archived_at ? <button disabled={busy} onClick={() => void operate(account, "restore")}>恢复（需重新授权）</button> : <><button onClick={() => edit(account)}>编辑</button><button disabled={busy} onClick={() => void operate(account, "enabled", { enabled: !account.enabled })}>{account.enabled ? "停用" : "启用"}</button><button className="danger" disabled={busy} onClick={() => void operate(account, "archive")}>归档</button></>}<button disabled={busy} onClick={() => void run(async () => setEvents(await get(`/api/v1/providers/${account.id}/events`)))}>操作记录</button></div></div>
-      {!account.archived_at && <div className="provider-actions">{(["authorize", "refresh", "models", "quota", "logout"] as const).map((action, index) => <button key={action} disabled={busy || (action !== "authorize" && account.status !== "active")} onClick={() => void providerAction(account, action)}>{["OAuth 授权", "刷新 Token", "同步模型", "查询配额", "退出账号"][index]}</button>)}</div>}
+      {!account.archived_at && <div className="provider-actions">{(["authorize", "refresh", "models", "quota", "logout"] as const).map((action, index) => <button key={action} disabled={busy || (action !== "authorize" && account.status !== "active")} onClick={() => void providerAction(account, action)}>{["OAuth 授权", "刷新 Token", "同步模型", "查询配额", "退出账号"][index]}</button>)}<button onClick={() => setSyncAccount(account.id)}>配额与同步中心</button></div>}
     </article>)}</div>
     {!loading && !page.items.length && <p className="panel muted">没有符合条件的账号。</p>}
     <div className="provider-actions"><button disabled={offset === 0 || loading} onClick={() => setOffset(Math.max(0, offset - 25))}>上一页</button><span>第 {Math.floor(offset / 25) + 1} 页</span><button disabled={offset + 25 >= page.total || loading} onClick={() => setOffset(offset + 25)}>下一页</button></div>
     {events && <aside className="panel" aria-label="账号操作记录"><div className="panel-head"><h2>操作记录</h2><button onClick={() => setEvents(null)}>关闭记录</button></div>{events.length ? events.map(item => <p key={item.id}>{item.action} · {new Date(item.created_at).toLocaleString()}</p>) : <p>暂无操作记录</p>}</aside>}
+    {syncAccount && <ProviderSyncPanel key={syncAccount} accountId={syncAccount} onError={onError} onClose={() => setSyncAccount(null)} />}
     <form className="panel provider-form" onSubmit={save}><div className="panel-head"><h2>{editing ? "编辑账号" : "创建账号"}</h2><button type="button" onClick={() => { setEditing(null); setForm(emptyForm()); setToken(""); }}>新建／取消编辑</button></div>
       <div className="provider-filter-grid"><label>供应商<select value={form.provider} onChange={event => setForm({ ...form, provider: event.target.value })}>{providers.map(name => <option key={name}>{name}</option>)}</select></label><label>账号名称<input required maxLength={128} value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label><label>优先级<input type="number" min={-1000} max={1000} value={form.priority} onChange={event => setForm({ ...form, priority: Number(event.target.value) })} /></label><label>分组<input maxLength={128} value={form.group} onChange={event => setForm({ ...form, group: event.target.value })} /></label><label>标签（逗号分隔）<input value={form.tags} onChange={event => setForm({ ...form, tags: event.target.value })} /></label></div>
       <details><summary>OAuth 与网关连接配置</summary><p className="muted">支持已配置的标准 OAuth 服务，厂商专属能力以验收矩阵为准。敏感配置使用服务端环境变量引用。</p><div className="provider-filter-grid">{fields.map(([key, label]) => <label key={key}>{label}<input value={typeof form.config[key] === "string" ? form.config[key] as string : ""} onChange={event => setForm({ ...form, config: { ...form.config, [key]: event.target.value } })} /></label>)}</div><label>模型映射 JSON<textarea value={form.mapping} onChange={event => setForm({ ...form, mapping: event.target.value })} /></label></details>

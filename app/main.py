@@ -37,12 +37,16 @@ from app.infrastructure.database.migrations import apply_migrations
 async def lifespan(app):
     apply_migrations()
     await get_container().kb_worker.start()
-    yield
-    await get_container().kb_worker.stop()
+    await get_container().provider_sync_worker.start()
     try:
-        await get_container().gateway.aclose()
-    except Exception:
-        logger.exception("Failed to close gateway client")
+        yield
+    finally:
+        await get_container().provider_sync_worker.stop()
+        await get_container().kb_worker.stop()
+        try:
+            await get_container().gateway.aclose()
+        except Exception:
+            logger.exception("Failed to close gateway client")
 
 logging.basicConfig(
     level=getattr(logging, config.log_level.upper(), logging.INFO),

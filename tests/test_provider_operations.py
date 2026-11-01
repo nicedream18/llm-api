@@ -28,7 +28,7 @@ from app.types.provider import (
 def provider_service():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     with engine.begin() as db:
-        for name in ("014_provider_accounts", "017_provider_resilience", "020_provider_operations", "021_provider_auth_lifecycle"):
+        for name in ("014_provider_accounts", "017_provider_resilience", "020_provider_operations", "021_provider_auth_lifecycle", "022_provider_sync"):
             execute_migration(db, Path(f"docs/migrations/{name}.sql"))
         execute_migration(db, Path("docs/migrations/020_provider_operations.sql"))
     service = ProviderService(ProviderRepository(engine))

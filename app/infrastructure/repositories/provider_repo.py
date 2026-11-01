@@ -13,13 +13,14 @@ from app.infrastructure.repositories.provider_auth_repo import ProviderAuthRepos
 from app.infrastructure.repositories.provider_operations_repo import (
     ProviderOperationsRepository,
 )
+from app.infrastructure.repositories.provider_sync_repo import ProviderSyncRepository
 
 
 def _now():
     return datetime.now(UTC).isoformat()
 
 
-class ProviderRepository(ProviderOperationsRepository, ProviderAuthRepository):
+class ProviderRepository(ProviderOperationsRepository, ProviderAuthRepository, ProviderSyncRepository):
     def __init__(self, engine=None):
         self.engine = engine if engine is not None else default_engine
 

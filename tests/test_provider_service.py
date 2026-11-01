@@ -133,7 +133,7 @@ def test_provider_account_oauth_refresh_and_metadata_lifecycle(monkeypatch):
     assert service._decrypt(rotated["access_token"]) == "rotated-access"
     assert service._decrypt(rotated["refresh_token"]) == "refresh-from-oauth"
     assert service.quota(account["id"])["remaining"] == 12
-    assert service.models(account["id"])["models"] == ["model-a", "rotated-access"]
+    assert service.models(account["id"])["models"] == ["model-a"]
     assert repo.get_account(account["id"])["status"] == "active"
 
     service.sign_out(account["id"])

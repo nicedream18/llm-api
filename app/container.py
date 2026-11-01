@@ -15,6 +15,7 @@ from app.application.services.misc_services import (
 )
 from app.application.services.platform_service import PlatformService
 from app.application.services.provider_service import ProviderService
+from app.application.services.provider_sync_worker import ProviderSyncWorker
 from app.application.services.software_service import SoftwareService
 from app.application.services.wiki_service import WikiService
 from app.config import config
@@ -67,6 +68,7 @@ class Container:
         self.admin_repo = AdminRepository()
         self.admin_service = AdminService(self.admin_repo)
         self.provider_service = ProviderService(self.provider_repo)
+        self.provider_sync_worker = ProviderSyncWorker(self.provider_service, self.provider_repo)
 
         # Stats repository reuses log_repo
         class StatsRepository:

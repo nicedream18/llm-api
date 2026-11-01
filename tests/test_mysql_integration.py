@@ -208,3 +208,25 @@ def test_mysql_provider_refresh_lease_and_epoch(mysql_engine):
         first.store_token(account, values, leased["generation"], "worker-one")
     assert stale.value.code == "authorization_changed"
     assert second.get_token(account) is None
+
+
+def test_mysql_provider_sync_jobs_and_snapshot_fencing(mysql_engine):
+    from app.infrastructure.repositories.provider_repo import ProviderRepository
+
+    migrations.apply_migrations()
+    first, second = ProviderRepository(mysql_engine), ProviderRepository(mysql_engine)
+    account = first.create_account({"provider": "codex", "name": "sync", "priority": 0})["id"]
+    first.save_token(account, {"access_token": "synthetic-cipher", "refresh_token": None, "expires_at": None})
+    first.update_account(account, {"status": "active"})
+    job_id = first.enqueue_sync(account, "quota")["id"]
+    assert second.enqueue_sync(account, "quota")["id"] == job_id
+    job = first.claim_sync("one")
+    assert second.claim_sync("two") is None
+    _, _, generation = first.read_sync_credentials(account)
+    assert first.save_snapshot(account, "quota", generation, {"windows": []}, job=job)
+    assert first.finish_sync(job)
+    assert not second.finish_sync(job)
+    first.delete_account(account)
+    with mysql_engine.connect() as db:
+        assert db.execute(text("SELECT COUNT(*) FROM provider_sync_jobs")).scalar_one() == 0
+        assert db.execute(text("SELECT COUNT(*) FROM provider_snapshots")).scalar_one() == 0

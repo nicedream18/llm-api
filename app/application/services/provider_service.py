@@ -17,6 +17,7 @@ from app.application.services.provider_authorization import ProviderAuthorizatio
 from app.config import config
 from app.domain.entities import ChannelEntity
 from app.domain.provider_adapters import adapter_for
+from app.domain.provider_quota import normalize_quota, quota_status
 
 logger = logging.getLogger(__name__)
 
@@ -245,23 +246,59 @@ class ProviderService:
                 continue
         return result
 
-    def _provider_data(self, account_id, operation):
+    def _provider_data(self, account_id, operation, job=None):
         account = self.repo.get_account(account_id)
         token = self.repo.get_token(account_id) if account else None
         if not account or not token:
             raise ApplicationError("Provider account is not connected", 404, "not_found")
+        if self._expired(token.get("expires_at")):
+            self.refresh(account_id)
+        generation = None
+        if hasattr(self.repo, "read_sync_credentials"):
+            account, token, generation = self.repo.read_sync_credentials(account_id)
+        else:
+            token = self.repo.get_token(account_id)
         adapter = adapter_for(account["provider"])
         access_token = self._decrypt(token.get("access_token")) or ""
+        requested_at = datetime.now(UTC).isoformat()
         try:
             value = getattr(adapter, operation)(self._client_config(account), access_token)
-        except ApplicationError:
+            secrets_to_hide = [access_token, self._decrypt(token.get("refresh_token"))]
+            value = self._redact_provider_value(value, secrets_to_hide)
+            normalized = {"models": value} if operation == "models" else normalize_quota(value)
+        except ApplicationError as exc:
+            if generation is not None:
+                self.repo.save_snapshot(account_id, operation, generation, error=exc.code, job=job, requested_at=requested_at)
             raise
         except Exception as exc:
+            if generation is not None:
+                self.repo.save_snapshot(account_id, operation, generation, error="provider_error", job=job, requested_at=requested_at)
             raise ApplicationError("Provider endpoint request failed", 502, "provider_error") from exc
+        if generation is not None:
+            self.repo.save_snapshot(account_id, operation, generation, normalized, job=job, requested_at=requested_at)
         if operation == "models":
-            self.repo.update_account(account_id, {"status": "active"})
             return {"models": value}
         return value
+
+    @classmethod
+    def _redact_provider_value(cls, value, secrets_to_hide):
+        if isinstance(value, dict):
+            return {key: cls._redact_provider_value(child, secrets_to_hide) for key, child in value.items() if not cls._SECRET_KEY.search(key)}
+        if isinstance(value, list):
+            return [cls._redact_provider_value(child, secrets_to_hide) for child in value if not isinstance(child, str) or not any(secret and secret in child for secret in secrets_to_hide)]
+        if isinstance(value, str):
+            for secret in secrets_to_hide:
+                if secret:
+                    value = value.replace(secret, "[REDACTED]")
+        return value
+
+    def sync_state(self, account_id):
+        self.account_detail(account_id)
+        state = self.repo.synchronization_state(account_id)
+        quota = state["snapshots"].get("quota")
+        if quota and quota["payload"]:
+            quota["payload"]["status"] = "stale" if quota["generation"] != state["generation"] else quota_status({**quota["payload"], "fetched_at": quota["fetched_at"]})
+        return state
 
     @classmethod
     def _validate_client_config(cls, value, key_path="client_config"):

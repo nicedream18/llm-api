@@ -135,9 +135,9 @@ class ConfiguredProviderAdapter(ProviderAdapter):
         if not url:
             raise ApplicationError("Provider models endpoint is not configured", 501, "provider_capability_unsupported")
         payload = self._json_request(url, access_token, config)
-        values = payload.get("data", payload.get("models", [])) if isinstance(payload, dict) else payload
+        values = payload.get("data", payload.get("models")) if isinstance(payload, dict) else payload
         if not isinstance(values, list):
-            return []
+            raise TypeError("Provider model response must contain a model list")
         result = []
         for value in values:
             name = value.get("id") if isinstance(value, dict) else value

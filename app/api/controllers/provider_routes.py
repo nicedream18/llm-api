@@ -15,6 +15,7 @@ from app.types.provider import (
     ProviderOperationInput,
     ProviderTokenInput,
 )
+from app.types.provider_sync import ProviderSyncInput, ProviderSyncSettings
 
 router = APIRouter(prefix="/api/v1/providers", tags=["Providers"])
 
@@ -32,6 +33,24 @@ async def provider_capabilities():
 @router.get("/accounts")
 async def query_accounts(query: Annotated[ProviderAccountQuery, Depends()]):
     return {"code": "0000", "info": "成功", "data": await asyncio.to_thread(get_container().provider_service.query_accounts, query)}
+
+
+@router.get("/{account_id}/sync")
+async def synchronization_state(account_id: str):
+    return {"code": "0000", "info": "成功", "data": await asyncio.to_thread(get_container().provider_service.sync_state, account_id)}
+
+
+@router.post("/{account_id}/sync", status_code=202)
+async def enqueue_sync(account_id: str, dto: ProviderSyncInput):
+    repo = get_container().provider_repo
+    jobs = [await asyncio.to_thread(repo.enqueue_sync, account_id, kind) for kind in dict.fromkeys(dto.kinds)]
+    return {"code": "0000", "info": "成功", "data": {"jobs": jobs}}
+
+
+@router.put("/{account_id}/sync/settings")
+async def configure_sync(account_id: str, dto: ProviderSyncSettings):
+    await asyncio.to_thread(get_container().provider_repo.configure_sync, account_id, dto.model_dump())
+    return {"code": "0000", "info": "成功", "data": dto.model_dump()}
 
 
 @router.post("/bulk")
