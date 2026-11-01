@@ -83,8 +83,8 @@ class Container:
         self.proxy_service = ProxyService(self.gateway, self.security_scanner, self.security_settings,
                                           self.log_repo, self.security_repo, self.quota_repo, self.channel_repo)
         self.access_service = AccessService(AccessRepository())
-        self.mcp_service = McpService(self.kb_service, self.access_service)
         self.wiki_service = WikiService(WikiRepository(), self.proxy_service)
+        self.mcp_service = McpService(self.kb_service, self.access_service, self.wiki_service)
 
 
 @lru_cache(maxsize=1)

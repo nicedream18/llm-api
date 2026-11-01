@@ -22,8 +22,20 @@ class AskArguments(EmptyArguments):
     search_mode: Literal["keyword", "vector", "hybrid"] = "hybrid"
 
 
+class DocumentArguments(EmptyArguments):
+    kb_id: str = Field(min_length=1, max_length=128)
+    doc_id: str = Field(min_length=1, max_length=128)
+
+
+class KnowledgeBaseArguments(EmptyArguments):
+    kb_id: str = Field(min_length=1, max_length=128)
+
+
 TOOL_ARGUMENTS = {
     "ask_knowledge_base": AskArguments,
     "search_knowledge_base": SearchArguments,
     "list_knowledge_bases": EmptyArguments,
+    "get_knowledge_document": DocumentArguments,
+    "list_knowledge_documents": KnowledgeBaseArguments,
+    "reindex_knowledge_document": DocumentArguments,
 }

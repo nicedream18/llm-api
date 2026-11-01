@@ -33,6 +33,9 @@ def setup_mcp(monkeypatch):
     ]
     kb.search_kb.return_value = [SimpleNamespace(score=0.9, content="Found text")]
     kb.ask.return_value = SimpleNamespace(answer="Answer", sources=[{"doc_id": "doc-1"}])
+    kb.get_doc.return_value = SimpleNamespace(id="doc-1", name="Manual.md", status="ready")
+    kb.list_docs.return_value = [SimpleNamespace(id="doc-1", name="Manual.md", status="ready")]
+    kb.reindex_doc.return_value = {"success": True, "taskId": "task-1"}
     service = McpService(kb)
     container = SimpleNamespace(mcp_service=service, channel_repo=Mock())
     for module in ("app.api.controllers.mcp_routes", "app.api.controllers.routes", "app.api.middleware.auth"):
@@ -65,7 +68,7 @@ def test_initialize_and_notification_then_tool_workflow(setup_mcp):
     })
     assert response.status_code == 202 and not response.content
     tools = rpc(client, "tools/list").json()["result"]["tools"]
-    assert len(tools) == 3
+    assert len(tools) == 6
     assert tools[1]["inputSchema"]["properties"]["top_k"]["maximum"] == 100
     listed = rpc(client, "tools/call", {"name": "list_knowledge_bases"}).json()["result"]
     assert json.loads(listed["content"][0]["text"])[0]["id"] == "kb-1"
@@ -80,6 +83,12 @@ def test_initialize_and_notification_then_tool_workflow(setup_mcp):
     }}).json()["result"]
     assert asked["content"][0]["text"] == "Answer"
     assert json.loads(asked["content"][1]["text"])["sources"] == [{"doc_id": "doc-1"}]
+    document = rpc(client, "tools/call", {"name": "get_knowledge_document", "arguments": {"kb_id": "kb-1", "doc_id": "doc-1"}}).json()["result"]
+    assert document["document"]["id"] == "doc-1"
+    documents = rpc(client, "tools/call", {"name": "list_knowledge_documents", "arguments": {"kb_id": "kb-1"}}).json()["result"]
+    assert documents["documents"][0]["name"] == "Manual.md"
+    reindexed = rpc(client, "tools/call", {"name": "reindex_knowledge_document", "arguments": {"kb_id": "kb-1", "doc_id": "doc-1"}}).json()["result"]
+    assert reindexed["result"]["success"] is True
 
 
 @pytest.mark.parametrize("arguments", [None, [], "text", 1, {}, {"kb_id": "k", "query": "q", "top_k": True},
@@ -212,6 +221,6 @@ async def test_official_sdk_interoperability(setup_mcp):
         initialized = await session.initialize()
         assert initialized.protocolVersion == PROTOCOL_VERSION
         tools = await session.list_tools()
-        assert len(tools.tools) == 3
+        assert len(tools.tools) == 6
         result = await session.call_tool("list_knowledge_bases", {})
         assert not result.isError and "kb-1" in result.content[0].text

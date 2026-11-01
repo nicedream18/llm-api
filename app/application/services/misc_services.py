@@ -502,9 +502,10 @@ class ProxyService:
 class McpService:
     """MCP service for tool listing and calling."""
 
-    def __init__(self, kb_service, access_service=None):
+    def __init__(self, kb_service, access_service=None, wiki_service=None):
         self.kb_service = kb_service
         self.access = access_service
+        self.wiki_service = wiki_service
 
     def list_tools(self, auth_context=None):
         from app.types.mcp import TOOL_ARGUMENTS
@@ -512,6 +513,9 @@ class McpService:
             "ask_knowledge_base": "Ask a question to a knowledge base and get an answer.",
             "search_knowledge_base": "Search a knowledge base for relevant chunks.",
             "list_knowledge_bases": "List all available knowledge bases.",
+            "get_knowledge_document": "Read one knowledge base document.",
+            "list_knowledge_documents": "List documents in a knowledge base.",
+            "reindex_knowledge_document": "Rebuild one knowledge base document index.",
         }
         return {"tools": [
             {"name": name, "description": descriptions[name],
@@ -547,6 +551,9 @@ class McpService:
             "ask_knowledge_base": lambda: self._handle_ask(arguments),
             "search_knowledge_base": lambda: self._handle_search(arguments),
             "list_knowledge_bases": lambda: self._handle_list(auth_context),
+            "get_knowledge_document": lambda: self._handle_get_document(arguments),
+            "list_knowledge_documents": lambda: self._handle_list_documents(arguments),
+            "reindex_knowledge_document": lambda: self._handle_reindex_document(arguments),
         }
         try:
             result = handlers[tool_name]()
@@ -594,3 +601,27 @@ class McpService:
             kbs = [kb for kb in kbs if "*" in allowed or kb.id in allowed]
         kb_list = [{"id": kb.id, "name": kb.name, "description": kb.description, "indexStatus": kb.index_status} for kb in kbs]
         return {"content": [{"type": "text", "text": json.dumps(kb_list, ensure_ascii=False)}], "knowledgeBases": kb_list}
+
+    def _handle_get_document(self, args):
+        document = self.kb_service.get_doc(args["kb_id"], args["doc_id"])
+        if not document:
+            return {"content": [{"type": "text", "text": "Document not found"}], "isError": True}
+        document = self._serialize_document(document)
+        return {"content": [{"type": "text", "text": json.dumps(document, ensure_ascii=False, default=str)}], "document": document}
+
+    def _handle_list_documents(self, args):
+        documents = self.kb_service.list_docs(args["kb_id"])
+        rows = [self._serialize_document(document) for document in documents]
+        return {"content": [{"type": "text", "text": json.dumps(rows, ensure_ascii=False, default=str)}], "documents": rows}
+
+    def _handle_reindex_document(self, args):
+        result = self.kb_service.reindex_doc(args["kb_id"], args["doc_id"])
+        return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, default=str)}], "result": result}
+
+    @staticmethod
+    def _serialize_document(document):
+        if hasattr(document, "model_dump"):
+            return document.model_dump()
+        if isinstance(document, dict):
+            return document
+        return vars(document)
