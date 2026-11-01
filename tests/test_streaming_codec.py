@@ -93,6 +93,38 @@ def test_ollama_native_json_stream_is_converted_to_openai():
     assert frames[-1] == "data: [DONE]\n\n"
 
 
+def test_sse_decoder_handles_comments_invalid_retry_and_null_id():
+    decoder = SSEDecoder()
+    assert decoder.feed_line(": heartbeat") is None
+    decoder.feed_line("retry: invalid")
+    decoder.feed_line("id: bad\x00id")
+    decoder.feed_line("data: first")
+    decoder.feed_line("data: second")
+    event = decoder.feed_line("")
+    assert event is not None
+    assert event.data == "first\nsecond"
+    assert event.event_id is None
+
+
+def test_stream_codec_finishes_partial_stream_and_ignores_invalid_json():
+    codec = StreamCodec("openai", "openai", "demo")
+    assert codec.feed_line("data: {not-json") == []
+    result = codec.finish()
+    assert result and "[DONE]" in result[-1]
+
+
+def test_stream_codec_anthropic_tool_delta_and_unknown_event():
+    codec = StreamCodec("anthropic", "openai", "demo")
+    assert codec.feed_line('data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool-1","name":"lookup"}}') == []
+    start = codec.feed_line("")
+    assert start and "tool_calls" in start[0]
+    assert codec.feed_line('data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}') == []
+    delta = codec.feed_line("")
+    assert delta and "arguments" in delta[0]
+    assert codec.feed_line('data: {"type":"unknown"}') == []
+    assert codec.feed_line("") == []
+
+
 @pytest.mark.asyncio
 async def test_gateway_converts_anthropic_stream_before_returning_lines():
     channel = ChannelEntity(type="claude", base_url="https://api.anthropic.com", api_key="secret", models=["public"])

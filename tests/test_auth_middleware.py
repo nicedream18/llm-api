@@ -1,3 +1,4 @@
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -65,3 +66,43 @@ def test_admin_routes_require_authentication(protected_app):
     response = TestClient(protected_app).get("/api/v1/channels", headers={"X-Request-ID": "req-test-1"})
     assert response.status_code == 401
     assert response.headers["X-Request-ID"] == "req-test-1"
+
+
+def test_public_and_static_paths_bypass_authentication():
+    app = Starlette(routes=[Route("/health", endpoint), Route("/static/app.js", endpoint)])
+    app.add_middleware(ApiKeyAuthMiddleware)
+    client = TestClient(app)
+    assert client.get("/health").json() == {"principal": None}
+    assert client.get("/static/app.js").json() == {"principal": None}
+
+
+def test_mcp_token_and_origin_rules(monkeypatch):
+    app = Starlette(routes=[Route("/mcp", endpoint, methods=["GET"]), Route("/mcp/tools", endpoint, methods=["GET"])])
+    app.add_middleware(ApiKeyAuthMiddleware)
+    from app.api.middleware import auth as auth_module
+
+    monkeypatch.setattr(auth_module, "get_container", lambda: SimpleNamespace(channel_repo=object()))
+    monkeypatch.setattr(
+        auth_module,
+        "config",
+        replace(
+            auth_module.config,
+            auth=replace(auth_module.config.auth, mcp_token="secret", mcp_api_key_access=False),
+            cors_allowed_origins=("https://allowed.example",),
+        ),
+    )
+    client = TestClient(app)
+    assert client.get("/mcp", headers={"Origin": "https://blocked.example"}).status_code == 403
+    assert client.get("/mcp", headers={"Authorization": "Bearer secret"}).json() == {"principal": "mcp"}
+    assert client.get("/mcp/tools").status_code == 401
+
+
+def test_wiki_read_requires_api_key_and_write_requires_admin(monkeypatch):
+    app = Starlette(routes=[Route("/api/v1/wiki", endpoint, methods=["GET"]), Route("/api/v1/wiki/p", endpoint, methods=["POST"]), Route("/api/v1/wiki/p/ask", endpoint, methods=["POST"])])
+    app.add_middleware(ApiKeyAuthMiddleware)
+    monkeypatch.setattr("app.api.middleware.auth.get_container", lambda: SimpleNamespace(channel_repo=object()))
+    monkeypatch.setattr("app.api.middleware.auth.ApiKeyAuthorizer", lambda _repo: FakeApiKeyAuthorizer())
+    client = TestClient(app)
+    assert client.get("/api/v1/wiki").status_code == 401
+    assert client.post("/api/v1/wiki/p").status_code == 403
+    assert client.post("/api/v1/wiki/p/ask", headers={"Authorization": "Bearer valid"}).status_code == 200
