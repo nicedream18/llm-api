@@ -82,6 +82,23 @@ class PlatformService:
         self._validate_target(target)
         return {"target": target, "path": str(self.config_dir / f"{target}.json"), "values": values}
 
+    def list_configs(self):
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        return [
+            {"target": path.stem, "path": str(path), "size": path.stat().st_size, "updated_at": path.stat().st_mtime}
+            for path in sorted(self.config_dir.glob("*.json"))
+            if path.is_file()
+        ]
+
+    def delete_config(self, target):
+        self._validate_target(target)
+        path = self.config_dir / f"{target}.json"
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return False
+        return True
+
     def write_config(self, target, values):
         self._validate_target(target)
         self.config_dir.mkdir(parents=True, exist_ok=True)

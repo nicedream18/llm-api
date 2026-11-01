@@ -59,6 +59,16 @@ async def config_preview(dto: AppConfigWriteInput):
     return {"code": "0000", "info": "成功", "data": get_container().platform_service.preview_config(dto.target, dto.values)}
 
 
+@router.get("/config")
+async def config_list():
+    return {"code": "0000", "info": "成功", "data": get_container().platform_service.list_configs()}
+
+
 @router.post("/config/write")
 async def config_write(dto: AppConfigWriteInput):
     return {"code": "0000", "info": "成功", "data": get_container().platform_service.write_config(dto.target, dto.values)}
+
+
+@router.delete("/config/{target}")
+async def config_delete(target: str):
+    return {"code": "0000", "info": "成功", "data": get_container().platform_service.delete_config(target)}
