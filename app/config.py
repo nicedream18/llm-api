@@ -75,6 +75,8 @@ class GatewayConfig:
     request_timeout_seconds: float = field(default_factory=lambda: float(_env("GATEWAY_REQUEST_TIMEOUT_SECONDS", "300") or "300"))
     stream_timeout_seconds: float = field(default_factory=lambda: float(_env("GATEWAY_STREAM_TIMEOUT_SECONDS", "300") or "300"))
     max_response_log_bytes: int = field(default_factory=lambda: _int("MAX_RESPONSE_LOG_BYTES", 65536, 1024))
+    channel_cooldown_seconds: int = field(default_factory=lambda: _int("GATEWAY_CHANNEL_COOLDOWN_SECONDS", 30, 0))
+    retry_after_max_seconds: int = field(default_factory=lambda: _int("GATEWAY_RETRY_AFTER_MAX_SECONDS", 60, 0))
 
     def __post_init__(self):
         if self.request_timeout_seconds <= 0 or self.stream_timeout_seconds <= 0:

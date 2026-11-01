@@ -19,6 +19,19 @@ class Dispatcher:
         return [item for item in self.channels if item.channel.id not in excluded]
 
 
+def test_retry_after_parsing_supports_delta_dates_and_clamping():
+    assert GatewayService._retry_after_seconds("2", maximum=10) == 2
+    assert GatewayService._retry_after_seconds("2", maximum=1) == 1
+    assert GatewayService._retry_after_seconds("not-a-delay", maximum=10) == 0
+
+
+def test_retry_after_http_date_is_relative_to_supplied_clock():
+    import email.utils
+
+    value = email.utils.formatdate(1_005, usegmt=True)
+    assert GatewayService._retry_after_seconds(value, now=1_000, maximum=10) == 5
+
+
 @pytest.mark.asyncio
 async def test_gateway_switches_channel_after_503(monkeypatch):
     dispatcher = Dispatcher()
@@ -83,6 +96,30 @@ async def test_gateway_does_not_retry_400(monkeypatch):
     assert response.status_code == 400
     assert calls == 1
     assert len(attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_cools_down_retryable_channel(monkeypatch):
+    dispatcher = Dispatcher()
+    service = GatewayService(dispatcher, None)
+    calls = []
+
+    async def no_backoff(_attempt_no, _retry_after):
+        return None
+
+    monkeypatch.setattr(service, "_backoff_with_hint", no_backoff)
+
+    async def handler(request):
+        calls.append(request.url.host)
+        return httpx.Response(503, headers={"Retry-After": "1"}, json={"error": "busy"}, request=request)
+
+    await service.aclose()
+    service.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    response, attempts = await service.forward_with_attempts(ProxyRequestEntity("demo", {"model": "demo"}))
+    await service.aclose()
+    assert response.status_code == 503
+    assert len(attempts) == 2
+    assert calls == ["first", "second"]
 
 
 def test_channel_test_targets_the_passed_channel():

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import email.utils
 import json
 import logging
 import random
@@ -59,6 +60,7 @@ class GatewayService:
             timeout=httpx.Timeout(config.gateway.request_timeout_seconds, connect=30.0),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
+        self._cooldown_until: dict[str, float] = {}
 
     async def aclose(self):
         await self.client.aclose()
@@ -67,15 +69,58 @@ class GatewayService:
     def _retryable_status(status: int) -> bool:
         return status in {408, 425, 429, 500, 502, 503, 504}
 
+    @staticmethod
+    def _retry_after_seconds(value: str | None, *, now: float | None = None, maximum: float = 60) -> float:
+        """Parse a Retry-After delta or HTTP date and clamp it to a safe bound."""
+        if not value:
+            return 0.0
+        delay = 0.0
+        try:
+            delay = max(0.0, float(value.strip()))
+        except (AttributeError, TypeError, ValueError):
+            try:
+                target = email.utils.parsedate_to_datetime(value)
+                delay = max(0.0, target.timestamp() - (time.time() if now is None else now))
+            except (TypeError, ValueError, OverflowError):
+                delay = 0.0
+        return min(delay, max(0.0, float(maximum)))
+
+    @staticmethod
+    def _channel_key(channel) -> str:
+        return str(channel.id or channel.name)
+
+    def _is_cooled(self, channel) -> bool:
+        key = self._channel_key(channel)
+        until = self._cooldown_until.get(key, 0.0)
+        if until <= time.monotonic():
+            self._cooldown_until.pop(key, None)
+            return False
+        return True
+
+    def _cooldown(self, channel, extra_seconds: float = 0.0) -> None:
+        duration = max(float(config.gateway.channel_cooldown_seconds), extra_seconds)
+        if duration > 0:
+            self._cooldown_until[self._channel_key(channel)] = time.monotonic() + duration
+
+    def _retry_delay(self, attempt_no: int, retry_after: str | None = None) -> float:
+        base = config.gateway.retry_backoff_ms / 1000 * (2 ** max(0, attempt_no - 1))
+        hint = self._retry_after_seconds(retry_after, maximum=config.gateway.retry_after_max_seconds)
+        return max(base, hint)
+
     async def _backoff(self, attempt_no: int) -> None:
-        if config.gateway.retry_backoff_ms <= 0:
-            return
-        delay = config.gateway.retry_backoff_ms / 1000 * (2 ** max(0, attempt_no - 1))
-        await asyncio.sleep(delay + random.uniform(0, delay * 0.2))
+        delay = self._retry_delay(attempt_no)
+        if delay > 0:
+            await asyncio.sleep(delay + random.uniform(0, delay * 0.2))
+
+    async def _backoff_with_hint(self, attempt_no: int, retry_after: str | None) -> None:
+        delay = self._retry_delay(attempt_no, retry_after)
+        if delay > 0:
+            await asyncio.sleep(delay + random.uniform(0, delay * 0.2))
 
     def _candidates(self, model: str, excluded: set[str], allowed_channels=frozenset()):
         if hasattr(self.dispatcher, "candidates"):
             return [item for item in self.dispatcher.candidates(model, excluded)
+                    if not self._is_cooled(item.channel)
                     if not allowed_channels or item.channel.id in allowed_channels or item.channel.name in allowed_channels]
         result = self.dispatcher.dispatch(model)
         return [result]
@@ -95,14 +140,20 @@ class GatewayService:
             body = adapter_for(channel).prepare_body(channel, request, upstream_model)
             started = time.monotonic()
             item = GatewayAttempt(attempt_no + 1, channel.id, channel.name)
+            retry_after = None
             try:
                 response = await self.client.post(_build_url(channel, request), json=body, headers=_build_headers(channel, request))
                 item.status_code = response.status_code
                 item.duration_ms = int((time.monotonic() - started) * 1000)
                 item.succeeded = response.is_success
+                retry_after = response.headers.get("retry-after")
+                if response.is_success:
+                    self._cooldown_until.pop(self._channel_key(channel), None)
                 if not response.is_success:
                     item.error_type = "upstream_http"
                     item.error_message = f"upstream returned HTTP {response.status_code}"
+                    if self._retryable_status(response.status_code):
+                        self._cooldown(channel, self._retry_after_seconds(response.headers.get("retry-after"), maximum=config.gateway.retry_after_max_seconds))
                 content_type = response.headers.get("content-type")
                 is_text = (content_type or "").lower().startswith(("application/json", "text/"))
                 response_body = response.text if is_text else ""
@@ -135,9 +186,10 @@ class GatewayService:
                     on_attempt(item)
                 if self.channel_repository and hasattr(self.channel_repository, "update_test_result"):
                     self.channel_repository.update_test_result(channel.id, False)
+                self._cooldown(channel)
                 last_response = ProxyResponseEntity(success=False, status_code=502, error_message="upstream connection failed", duration_ms=item.duration_ms, channel_id=channel.id, channel_name=channel.name, upstream_model=upstream_model)
             if attempt_no < config.gateway.retry_times:
-                await self._backoff(attempt_no + 1)
+                await self._backoff_with_hint(attempt_no + 1, retry_after)
         return last_response or ProxyResponseEntity(success=False, status_code=503, error_message="No available upstream channel"), attempts
 
     async def forward(self, request: ProxyRequestEntity, on_attempt=None) -> ProxyResponseEntity:
@@ -186,10 +238,12 @@ class GatewayService:
                         attempt.status_code = status
                         attempt.error_type = "upstream_http"
                         attempt.error_message = f"upstream returned HTTP {status}"
+                        retry_after = response.headers.get("retry-after")
                         if self._retryable_status(status) and attempt_no < config.gateway.retry_times:
+                            self._cooldown(channel, self._retry_after_seconds(retry_after, maximum=config.gateway.retry_after_max_seconds))
                             await response.aread()
                             record_attempt()
-                            await self._backoff(attempt_no + 1)
+                            await self._backoff_with_hint(attempt_no + 1, retry_after)
                             continue
                         record_attempt()
                         raise RuntimeError(f"upstream returned HTTP {status}")
@@ -205,12 +259,14 @@ class GatewayService:
                             yield output_line
                         yield ""
                     attempt.succeeded = True
+                    self._cooldown_until.pop(self._channel_key(channel), None)
                     record_attempt()
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_error = exc
                 attempt.error_type = type(exc).__name__
                 attempt.error_message = "upstream stream connection failed"
                 record_attempt()
+                self._cooldown(channel)
                 if stream_started or attempt_no >= config.gateway.retry_times:
                     raise RuntimeError("upstream stream connection failed") from exc
                 await self._backoff(attempt_no + 1)
