@@ -4,6 +4,7 @@ export type Provider = { id: string; provider: string; name: string; status: str
 export type SoftwareTool = { id: string; name: string; description: string; risk_level: string; enabled: number };
 export type SoftwareInstance = { id: string; name: string; connector_type: string; config?: Record<string, unknown>; enabled: number };
 export type SoftwareCall = { id: string; tool_id: string; principal_id?: string | null; status: string; error_type?: string | null; duration_ms: number; request_summary?: string | null; response_summary?: string | null; created_at: string };
+export type AccessGrant = { id: string; principal_type: string; principal_id: string; resource_type: string; resource_id: string; action: string; created_at: string };
 export type OpenApiToolPreview = { name: string; description: string; risk_level: string; approval_mode: string; input_schema: Record<string, unknown> };
 export type OpenApiPreview = { openapi: string; tool_count: number; tools: OpenApiToolPreview[] };
 export type KnowledgeBase = { id: string; name: string; description?: string; doc_count: number; chunk_count: number; index_status: string };
