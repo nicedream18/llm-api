@@ -25,6 +25,11 @@ from app.types.models import (
     SecurityCustomRuleDTO,
     UploadDocDTO,
 )
+from app.types.software import (
+    SoftwareInstanceInput,
+    SoftwareInvokeInput,
+    SoftwareToolInput,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +266,60 @@ async def delete_api_key(key_id: str):
 # ==================== Dashboard Controller ====================
 
 dashboard_router = APIRouter(prefix="/api/v1")
+
+
+software_router = APIRouter(prefix="/api/v1/software", tags=["Software"])
+
+
+@software_router.get("/instances")
+async def software_instances():
+    return _success(await asyncio.to_thread(get_container().software_service.list_instances))
+
+
+@software_router.post("/instances")
+async def create_software_instance(dto: SoftwareInstanceInput):
+    return _success(await asyncio.to_thread(get_container().software_service.create_instance, dto))
+
+
+@software_router.put("/instances/{instance_id}")
+async def update_software_instance(instance_id: str, dto: SoftwareInstanceInput):
+    return _success(await asyncio.to_thread(get_container().software_service.update_instance, instance_id, dto))
+
+
+@software_router.delete("/instances/{instance_id}")
+async def delete_software_instance(instance_id: str):
+    return _success(await asyncio.to_thread(get_container().software_service.delete_instance, instance_id))
+
+
+@software_router.get("/tools")
+async def software_tools(instance_id: str | None = None):
+    return _success(await asyncio.to_thread(get_container().software_service.list_tools, instance_id))
+
+
+@software_router.post("/tools")
+async def create_software_tool(dto: SoftwareToolInput):
+    return _success(await asyncio.to_thread(get_container().software_service.create_tool, dto))
+
+
+@software_router.put("/tools/{tool_id}/enabled")
+async def set_software_tool_enabled(tool_id: str, enabled: bool = True):
+    return _success(await asyncio.to_thread(get_container().software_service.set_tool_enabled, tool_id, enabled))
+
+
+@software_router.delete("/tools/{tool_id}")
+async def delete_software_tool(tool_id: str):
+    return _success(await asyncio.to_thread(get_container().software_service.delete_tool, tool_id))
+
+
+@software_router.post("/tools/{tool_id}/invoke")
+async def invoke_software_tool(tool_id: str, dto: SoftwareInvokeInput, request: Request):
+    context = getattr(request.state, "auth_context", None)
+    return _success(await asyncio.to_thread(get_container().software_service.invoke, tool_id, dto.arguments, context, dto.approved))
+
+
+@software_router.get("/calls")
+async def software_calls(limit: int = 100):
+    return _success(await asyncio.to_thread(get_container().software_repo.list_calls, limit))
 
 
 @dashboard_router.get("/dashboard")

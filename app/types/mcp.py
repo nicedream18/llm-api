@@ -65,6 +65,12 @@ class CreateSourceArguments(KnowledgeBaseArguments):
     content: str | None = Field(default=None, max_length=16 * 1024 * 1024)
 
 
+class SoftwareToolArguments(EmptyArguments):
+    tool_id: str = Field(min_length=1, max_length=64)
+    arguments: dict = Field(default_factory=dict)
+    approved: bool = False
+
+
 class WikiProjectArguments(EmptyArguments):
     project_id: str = Field(min_length=1, max_length=128)
 
@@ -107,4 +113,5 @@ TOOL_ARGUMENTS = {
     "get_wiki_tags": WikiProjectArguments,
     "get_wiki_graph": WikiProjectArguments,
     "ask_wiki": WikiAskArguments,
+    "invoke_software_tool": SoftwareToolArguments,
 }

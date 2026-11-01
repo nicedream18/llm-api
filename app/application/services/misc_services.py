@@ -528,11 +528,12 @@ class ProxyService:
 class McpService:
     """MCP service for tool listing and calling."""
 
-    def __init__(self, kb_service, access_service=None, wiki_service=None, audit_repository=None):
+    def __init__(self, kb_service, access_service=None, wiki_service=None, audit_repository=None, software_service=None):
         self.kb_service = kb_service
         self.access = access_service
         self.wiki_service = wiki_service
         self.audit = audit_repository
+        self.software_service = software_service
 
     def list_tools(self, auth_context=None):
         from app.types.mcp import TOOL_ARGUMENTS
@@ -559,20 +560,39 @@ class McpService:
             "get_wiki_tags": "List Wiki page tags.",
             "get_wiki_graph": "Return Wiki page relationships.",
             "ask_wiki": "Ask a question against a Wiki project.",
+            "invoke_software_tool": "Invoke an approved software tool.",
         }
-        return {"tools": [
+        tools = [
             {"name": name, "description": descriptions[name],
              "inputSchema": schema.model_json_schema()}
             for name, schema in TOOL_ARGUMENTS.items()
             if self.wiki_service is not None or not name.startswith(("list_wiki", "get_wiki", "ask_wiki"))
+            if self.software_service is not None or name != "invoke_software_tool"
             if self.access is None or self.access.can(auth_context, "mcp_tool", name, "execute")
-        ]}
+        ]
+        if self.software_service is not None:
+            for tool in self.software_service.list_tools():
+                if tool.get("enabled", 1) == 0:
+                    continue
+                tools.append({
+                    "name": f"software.{tool['id']}.{tool['name']}",
+                    "description": tool.get("description") or "Software connector tool",
+                    "inputSchema": tool.get("input_schema") or {"type": "object"},
+                })
+        return {"tools": tools}
 
     @staticmethod
     def validate_arguments(tool_name, arguments):
         from pydantic import ValidationError
 
         from app.types.mcp import TOOL_ARGUMENTS
+        if isinstance(tool_name, str) and tool_name.startswith("software."):
+            if not isinstance(arguments, dict):
+                raise ValueError("Invalid tool arguments")
+            parts = tool_name.split(".", 2)
+            if len(parts) != 3 or not parts[1] or not parts[2]:
+                raise ValueError("Unknown tool")
+            return {"tool_id": parts[1], "arguments": arguments, "approved": False}
         if not isinstance(tool_name, str) or tool_name not in TOOL_ARGUMENTS:
             raise ValueError("Unknown tool")
         try:
@@ -589,6 +609,8 @@ class McpService:
         if self.access is not None:
             if not self.access.can(auth_context, "mcp_tool", tool_name, "execute"):
                 return {"content": [{"type": "text", "text": "Tool access denied"}], "isError": True}
+            if tool_name.startswith("software.") and not self.access.can(auth_context, "software", arguments["tool_id"], "execute"):
+                return {"content": [{"type": "text", "text": "Software tool access denied"}], "isError": True}
             if "kb_id" in arguments:
                 action = self._tool_resource_action(tool_name)
                 if not self.access.can(auth_context, "kb", arguments["kb_id"], action):
@@ -618,9 +640,13 @@ class McpService:
             "get_wiki_tags": lambda: self._handle_wiki_tags(arguments),
             "get_wiki_graph": lambda: self._handle_wiki_graph(arguments),
             "ask_wiki": lambda: self._handle_wiki_ask(arguments, auth_context),
+            "invoke_software_tool": lambda: self._handle_software_tool(arguments, auth_context),
         }
         try:
-            result = handlers[tool_name]()
+            if tool_name.startswith("software."):
+                result = self._handle_software_tool(arguments, auth_context)
+            else:
+                result = handlers[tool_name]()
         except Exception as exc:  # noqa: BLE001 - tool errors are intentionally sanitized
             logger.error("MCP tool execution failed: tool=%s error_type=%s", tool_name, type(exc).__name__)
             result = {"content": [{"type": "text", "text": "Tool execution failed"}], "isError": True}
@@ -714,6 +740,12 @@ class McpService:
     def _handle_delete_source(self, args):
         result = self.kb_service.delete_source(args["kb_id"], args["source_id"])
         return {"content": [{"type": "text", "text": "Source deleted"}], "deleted": bool(result)}
+
+    def _handle_software_tool(self, args, auth_context=None):
+        if self.software_service is None:
+            return {"content": [{"type": "text", "text": "Software service unavailable"}], "isError": True}
+        result = self.software_service.invoke(args["tool_id"], args.get("arguments", {}), auth_context, args.get("approved", False))
+        return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, default=str)}], "result": result}
 
     def _handle_search(self, args):
         from app.types.models import KbSearchRequestDTO

@@ -13,6 +13,7 @@ from app.application.services.misc_services import (
     ProxyService,
     SecurityService,
 )
+from app.application.services.software_service import SoftwareService
 from app.application.services.wiki_service import WikiService
 from app.config import config
 from app.domain.agent_service import AgentChatService
@@ -35,6 +36,7 @@ from app.infrastructure.repositories.log_repo import LogRepository
 from app.infrastructure.repositories.mcp_audit_repo import McpAuditRepository
 from app.infrastructure.repositories.quota_repo import QuotaRepository
 from app.infrastructure.repositories.security_repo import SecurityRepository
+from app.infrastructure.repositories.software_repo import SoftwareRepository
 from app.infrastructure.repositories.wiki_repo import WikiRepository
 
 logger = logging.getLogger(__name__)
@@ -48,6 +50,7 @@ class Container:
         self.channel_repo = ChannelRepository()
         self.log_repo = LogRepository()
         self.mcp_audit_repo = McpAuditRepository()
+        self.software_repo = SoftwareRepository()
         self.security_repo = SecurityRepository()
         self.kb_repo = KbRepository()
         self.agent_repo = AgentRepository()
@@ -86,7 +89,8 @@ class Container:
                                           self.log_repo, self.security_repo, self.quota_repo, self.channel_repo)
         self.access_service = AccessService(AccessRepository())
         self.wiki_service = WikiService(WikiRepository(), self.proxy_service)
-        self.mcp_service = McpService(self.kb_service, self.access_service, self.wiki_service, self.mcp_audit_repo)
+        self.software_service = SoftwareService(self.software_repo)
+        self.mcp_service = McpService(self.kb_service, self.access_service, self.wiki_service, self.mcp_audit_repo, self.software_service)
 
 
 @lru_cache(maxsize=1)

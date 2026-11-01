@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 PUBLIC_PATHS = {"/health", "/api/v1/health", "/api/v1/auth/login", "/docs", "/openapi.json", "/redoc"}
 GATEWAY_PREFIXES = ("/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/embeddings", "/v1/images/", "/v1/audio/", "/v1/messages")
-ADMIN_PREFIXES = ("/api/v1/channels", "/api/v1/api-keys", "/api/v1/logs", "/api/v1/security", "/api/v1/agents")
+ADMIN_PREFIXES = ("/api/v1/channels", "/api/v1/api-keys", "/api/v1/logs", "/api/v1/security", "/api/v1/agents", "/api/v1/software")
 KB_PREFIX = "/api/v1/kb"
 MCP_PREFIX = "/api/mcp"
 WIKI_PREFIX = "/api/v1/wiki"
