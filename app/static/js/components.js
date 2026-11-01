@@ -35,6 +35,7 @@ const menus=[
   {section:'智能',items:[
     {id:'agents',label:'Agent 管理',icon:I.agents},
     {id:'knowledge',label:'知识库',icon:I.knowledge},
+    {id:'wiki',label:'Wiki',icon:I.knowledge},
   ]},
   {section:'运维',items:[
     {id:'logs',label:'请求日志',icon:I.logs},

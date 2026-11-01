@@ -1,14 +1,15 @@
 """Knowledge base domain services: text splitter, embedder, retriever, RAG."""
-import re
-import math
 import json
-import struct
 import logging
+import math
+import struct
 import uuid
-from typing import List, Optional
 
 from app.domain.entities import (
-    KbChunkEntity, SearchResultEntity, RagAnswerEntity, ProxyRequestEntity,
+    KbChunkEntity,
+    ProxyRequestEntity,
+    RagAnswerEntity,
+    SearchResultEntity,
 )
 
 logger = logging.getLogger(__name__)
@@ -471,7 +472,7 @@ class RagService:
         messages.append({"role": "user", "content": prompt})
         body = {"model": chat_model, "messages": messages, "stream": False}
         request = ProxyRequestEntity(model=chat_model, body=body, stream=False, protocol_type="openai")
-        return self.gateway_service.forward(request)
+        return self.gateway_service.forward_sync(request)
 
     def _build_answer(self, response, results):
         answer = ""

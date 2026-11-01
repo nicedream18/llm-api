@@ -9,7 +9,7 @@ function pgChannels(){
     ${chs.map(ch=>`<tr>
       <td style="font-weight:600">${esc(ch.name)}</td>
       <td><span class="badge badge-blue">${esc(ch.type)}</span></td>
-      <td><span class="ch-url" title="${esc(ch.baseUrl||'')}">${esc(ch.baseUrl||'-')}</span></td>
+      <td><span class="ch-url" title="${esc(ch.base_url||ch.baseUrl||'')}">${esc(ch.base_url||ch.baseUrl||'-')}</span></td>
       <td><div class="ch-models">${(ch.models||[]).slice(0,3).map(m=>`<span class="tag">${esc(m)}</span>`).join('')}${(ch.models||[]).length>3?`<span class="tag" title="${esc((ch.models||[]).join(', '))}+${ch.models.length-3}</span>`:''||'-'}</div></td>
       <td><span style="font-variant-numeric:tabular-nums">${ch.priority??0}</span></td>
       <td><span style="font-variant-numeric:tabular-nums">${ch.weight??1}</span></td>
@@ -35,8 +35,8 @@ function showChannelModal(id){
   <div class="input-group"><label class="input-label">渠道类型</label><select class="input" id="ch-type">
   ${['openai','deepseek','anthropic','gemini','qwen','zhipu','moonshot','doubao','ollama','custom'].map(t=>`<option value="${t}" ${ch&&ch.type===t?'selected':''}>${t.charAt(0).toUpperCase()+t.slice(1)}</option>`).join('')}
   </select></div>
-  <div class="input-group"><label class="input-label">Base URL</label><input class="input" id="ch-url" value="${ch?esc(ch.baseUrl||''):''}" placeholder="https://api.openai.com/v1"></div>
-  <div class="input-group"><label class="input-label">API Key</label><input class="input" type="password" id="ch-key" value="${ch?esc(ch.apiKey||''):''}" placeholder="sk-..."><div class="input-hint">供应商密钥，加密存储</div></div>
+  <div class="input-group"><label class="input-label">Base URL</label><input class="input" id="ch-url" value="${ch?esc(ch.base_url||ch.baseUrl||''):''}" placeholder="https://api.openai.com/v1"></div>
+  <div class="input-group"><label class="input-label">API Key</label><input class="input" type="password" id="ch-key" value="${ch?esc(ch.api_key||ch.apiKey||''):''}" placeholder="sk-..."><div class="input-hint">供应商密钥，加密存储</div></div>
   <div class="input-group"><label class="input-label">模型列表</label><input class="input" id="ch-models" value="${ch?(ch.models||[]).join(', '):''}" placeholder="gpt-4o, gpt-4o-mini"><div class="input-hint">逗号分隔多个模型</div></div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
     <div class="input-group"><label class="input-label">优先级</label><input class="input" type="number" id="ch-pri" value="${ch?ch.priority:0}"><div class="input-hint">数字越大越优先</div></div>
@@ -48,11 +48,11 @@ function showChannelModal(id){
 
 async function saveChannel(id){
   const models=val('ch-models').split(',').map(s=>s.trim()).filter(Boolean);
-  const body={name:val('ch-name'),type:val('ch-type'),baseUrl:val('ch-url'),apiKey:val('ch-key'),models,priority:+val('ch-pri'),weight:+val('ch-wt'),status:1};
+  const body={id:id||undefined,name:val('ch-name'),type:val('ch-type'),base_url:val('ch-url'),api_key:val('ch-key'),models,priority:+val('ch-pri'),weight:+val('ch-wt'),status:1};
   if(!body.name){toast('请输入渠道名称','error');return}
-  const r=id?await api('/channels/'+id,{method:'PUT',body:JSON.stringify(body)}):await api('/channels',{method:'POST',body:JSON.stringify(body)});
+  const r=id?await api('/channels',{method:'PUT',body:JSON.stringify(body)}):await api('/channels',{method:'POST',body:JSON.stringify(body)});
   if(r.code==='0000'){toast(id?'渠道更新成功':'渠道添加成功');closeModal();loadChannels();loadDashboard()}else toast(r.info||'操作失败','error');
 }
 async function delChannel(id){const r=await api('/channels/'+id,{method:'DELETE'});if(r.code==='0000'){toast('渠道已删除');loadChannels();loadDashboard()}else toast(r.info||'删除失败','error')}
-async function testChannel(id){toast('正在测试渠道连通性...','info');const r=await api('/channels/'+id+'/test',{method:'POST'});if(r.code==='0000')toast('渠道测试成功，连接正常');else toast(r.info||'测试失败','error')}
-async function toggleChannelStatus(id,status){const r=await api('/channels/'+id,{method:'PUT',body:JSON.stringify({status})});if(r.code==='0000'){toast(status===1?'渠道已启用':'渠道已禁用');loadChannels()}else toast(r.info||'操作失败','error')}
+async function testChannel(id){toast('正在测试渠道连通性...','info');const r=await api('/channels/'+id+'/test',{method:'POST'});if(r.code==='0000'&&r.data?.success)toast('渠道测试成功，连接正常');else toast(r.data?.message||r.info||'测试失败','error')}
+async function toggleChannelStatus(id,status){const r=await api('/channels',{method:'PUT',body:JSON.stringify({id,status})});if(r.code==='0000'){toast(status===1?'渠道已启用':'渠道已禁用');loadChannels()}else toast(r.info||'操作失败','error')}

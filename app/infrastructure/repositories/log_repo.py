@@ -1,17 +1,22 @@
 """Log repository for request_logs."""
 import logging
-from typing import List, Optional
+from datetime import UTC, datetime
+
 from sqlalchemy import text
 
+from app.domain.entities import LogStatsEntity, RequestLogEntity
 from app.infrastructure.database.connection import get_db
-from app.domain.entities import RequestLogEntity, LogStatsEntity
 
 logger = logging.getLogger(__name__)
 
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
 _ALL_COLUMNS = (
     "id, seq, api_key_id, api_key_name, channel_id, channel_name, model, upstream_model, "
-    "mode, protocol_type, stream, is_retry, status_code, prompt_tokens, completion_tokens, "
-    "total_tokens, duration_ms, risk_level, risk_score, risk_summary, security_action, "
+    "mode, protocol_type, is_stream AS stream, is_retry, status_code, prompt_tokens, completion_tokens, "
+    "total_tokens, duration_ms, request_id, endpoint, attempt_count, final_attempt, stream_status, usage_source, client_disconnect, truncated, risk_level, risk_score, risk_summary, security_action, "
     "sanitized, blocked_reason, client_ip, error_message, request_body, response_choices, "
     "trace_id, created_at"
 )
@@ -19,16 +24,37 @@ _ALL_COLUMNS = (
 
 class LogRepository:
 
+    def insert_attempt(self, request_id: str, attempt) -> None:
+        with get_db() as db:
+            db.execute(text("""INSERT INTO gateway_attempts
+                (id, request_id, attempt_no, channel_id, channel_name, status_code,
+                 error_type, error_message, duration_ms, succeeded, created_at)
+                VALUES (:id, :request_id, :attempt_no, :channel_id, :channel_name,
+                        :status_code, :error_type, :error_message, :duration_ms,
+                        :succeeded, :created_at)"""), {
+                "id": __import__("uuid").uuid4().hex,
+                "request_id": request_id,
+                "attempt_no": attempt.attempt_no,
+                "channel_id": attempt.channel_id,
+                "channel_name": attempt.channel_name,
+                "status_code": attempt.status_code,
+                "error_type": attempt.error_type,
+                "error_message": attempt.error_message,
+                "duration_ms": attempt.duration_ms,
+                "succeeded": 1 if attempt.succeeded else 0,
+                "created_at": _now(),
+            })
+
     def insert_log(self, log: RequestLogEntity):
         with get_db() as db:
             db.execute(text(
                 "INSERT INTO request_logs (id, api_key_id, api_key_name, channel_id, channel_name, "
-                "model, upstream_model, mode, protocol_type, stream, is_retry, status_code, "
+                "model, upstream_model, mode, protocol_type, is_stream, is_retry, status_code, request_id, endpoint, attempt_count, final_attempt, stream_status, usage_source, client_disconnect, truncated, "
                 "prompt_tokens, completion_tokens, total_tokens, duration_ms, risk_level, risk_score, "
                 "risk_summary, security_action, sanitized, blocked_reason, client_ip, error_message, "
                 "request_body, response_choices, trace_id, created_at) "
                 "VALUES (:id, :api_key_id, :api_key_name, :channel_id, :channel_name, "
-                ":model, :upstream_model, :mode, :protocol_type, :stream, :is_retry, :status_code, "
+                ":model, :upstream_model, :mode, :protocol_type, :stream, :is_retry, :status_code, :request_id, :endpoint, :attempt_count, :final_attempt, :stream_status, :usage_source, :client_disconnect, :truncated, "
                 ":prompt_tokens, :completion_tokens, :total_tokens, :duration_ms, :risk_level, :risk_score, "
                 ":risk_summary, :security_action, :sanitized, :blocked_reason, :client_ip, :error_message, "
                 ":request_body, :response_choices, :trace_id, :created_at)"
@@ -38,7 +64,7 @@ class LogRepository:
                 "model": log.model, "upstream_model": log.upstream_model,
                 "mode": log.mode, "protocol_type": log.protocol_type,
                 "stream": 1 if log.stream else 0, "is_retry": 1 if log.retry else 0,
-                "status_code": log.status_code, "prompt_tokens": log.prompt_tokens,
+                "status_code": log.status_code, "request_id": getattr(log, "request_id", None), "endpoint": getattr(log, "endpoint", None), "attempt_count": getattr(log, "attempt_count", 1), "final_attempt": getattr(log, "final_attempt", 1), "stream_status": getattr(log, "stream_status", None), "usage_source": getattr(log, "usage_source", None), "client_disconnect": 1 if getattr(log, "client_disconnect", False) else 0, "truncated": 1 if getattr(log, "truncated", False) else 0, "prompt_tokens": log.prompt_tokens,
                 "completion_tokens": log.completion_tokens, "total_tokens": log.total_tokens,
                 "duration_ms": log.duration_ms, "risk_level": log.risk_level,
                 "risk_score": log.risk_score, "risk_summary": log.risk_summary,
@@ -46,16 +72,16 @@ class LogRepository:
                 "blocked_reason": log.blocked_reason, "client_ip": log.client_ip,
                 "error_message": log.error_message, "request_body": log.request_body,
                 "response_choices": log.response_choices, "trace_id": log.trace_id,
-                "created_at": log.created_at,
+                "created_at": log.created_at or _now(),
             })
 
-    def get_log_by_id(self, log_id: str) -> Optional[RequestLogEntity]:
+    def get_log_by_id(self, log_id: str) -> RequestLogEntity | None:
         with get_db() as db:
             row = db.execute(text(f"SELECT {_ALL_COLUMNS} FROM request_logs WHERE id = :id"), {"id": log_id}).mappings().first()
             return self._to_entity(row) if row else None
 
     def query_logs(self, offset, limit, api_key_id=None, channel_id=None, model=None,
-                   risk_level=None, start_time=None, end_time=None) -> List[RequestLogEntity]:
+                   risk_level=None, start_time=None, end_time=None) -> list[RequestLogEntity]:
         sql = f"SELECT {_ALL_COLUMNS} FROM request_logs WHERE 1=1"
         params = {"offset": offset, "limit": limit}
         if api_key_id: sql += " AND api_key_id = :api_key_id"; params["api_key_id"] = api_key_id
@@ -70,7 +96,7 @@ class LogRepository:
             return [self._to_entity(r) for r in rows]
 
     def search_logs(self, offset, limit, keyword=None, api_key_name=None, channel_name=None,
-                    model=None, date_from=None, date_to=None, trace_id=None) -> List[RequestLogEntity]:
+                    model=None, date_from=None, date_to=None, trace_id=None) -> list[RequestLogEntity]:
         sql = f"SELECT {_ALL_COLUMNS} FROM request_logs WHERE 1=1"
         params = {"offset": offset, "limit": limit}
         if keyword: sql += " AND (error_message LIKE :kw OR model LIKE :kw)"; params["kw"] = f"%{keyword}%"
@@ -118,7 +144,7 @@ class LogRepository:
 
     def _to_entity(self, row) -> RequestLogEntity:
         return RequestLogEntity(
-            id=row["id"], seq=row["seq"], api_key_id=row["api_key_id"], api_key_name=row["api_key_name"],
+            id=row["id"], seq=row["seq"], request_id=row.get("request_id"), endpoint=row.get("endpoint"), attempt_count=int(row.get("attempt_count") or 1), final_attempt=int(row.get("final_attempt") or 1), stream_status=row.get("stream_status"), usage_source=row.get("usage_source"), client_disconnect=bool(row.get("client_disconnect")), truncated=bool(row.get("truncated")), api_key_id=row["api_key_id"], api_key_name=row["api_key_name"],
             channel_id=row["channel_id"], channel_name=row["channel_name"], model=row["model"],
             upstream_model=row["upstream_model"], mode=row["mode"], protocol_type=row["protocol_type"],
             stream=bool(row["stream"]), retry=bool(row["is_retry"]), status_code=row["status_code"],

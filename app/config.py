@@ -1,57 +1,134 @@
-"""Application configuration loaded from environment."""
+"""Validated application configuration loaded from environment."""
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass, field
 
 try:
     from dotenv import load_dotenv
     load_dotenv()
-except ImportError:
+except ImportError:  # pragma: no cover
     pass
 
 
-@dataclass
+def _env(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    return default if value is None else value
+
+
+def _int(name: str, default: int, minimum: int = 0) -> int:
+    raw = _env(name, str(default))
+    try:
+        value = int(raw or default)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}")
+    return value
+
+
+def _bool(name: str, default: bool) -> bool:
+    return (_env(name, "true" if default else "false") or "").lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
 class DatabaseConfig:
-    host: str = os.getenv("DB_HOST", "192.168.1.108")
-    port: int = int(os.getenv("DB_PORT", "13306"))
-    name: str = os.getenv("DB_NAME", "waliapi")
-    user: str = os.getenv("DB_USER", "root")
-    password: str = os.getenv("DB_PASSWORD", "123456")
-    pool_size: int = int(os.getenv("DB_POOL_SIZE", "15"))
-    max_overflow: int = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+    unix_socket: str | None = field(default_factory=lambda: _env("DB_UNIX_SOCKET") or None)
+    host: str = field(default_factory=lambda: _env("DB_HOST", "127.0.0.1") or "127.0.0.1")
+    port: int = field(default_factory=lambda: _int("DB_PORT", 3306, 1))
+    name: str = field(default_factory=lambda: _env("DB_NAME", "waliapi") or "waliapi")
+    user: str = field(default_factory=lambda: _env("DB_USER", "root") or "root")
+    password: str = field(default_factory=lambda: _env("DB_PASSWORD", "") or "")
+    pool_size: int = field(default_factory=lambda: _int("DB_POOL_SIZE", 15, 1))
+    max_overflow: int = field(default_factory=lambda: _int("DB_MAX_OVERFLOW", 10, 0))
 
     @property
     def url(self) -> str:
-        return (
-            f"mysql+pymysql://{self.user}:{self.password}"
-            f"@{self.host}:{self.port}/{self.name}"
-            "?charset=utf8mb4"
-        )
+        if not self.password and (_env("APP_ENV", "development") or "development").lower() == "production":
+            raise ValueError("DB_PASSWORD is required in production")
+        from urllib.parse import quote_plus
+        suffix = "&unix_socket=" + quote_plus(self.unix_socket) if self.unix_socket else ""
+        return f"mysql+pymysql://{quote_plus(self.user)}:{quote_plus(self.password)}@{self.host}:{self.port}/{self.name}?charset=utf8mb4{suffix}"
 
 
-@dataclass
+@dataclass(frozen=True)
 class SecuritySettings:
-    enabled: bool = os.getenv("SECURITY_ENABLED", "true").lower() == "true"
-    mode: str = os.getenv("SECURITY_MODE", "audit")
-    scan_unicode: bool = os.getenv("SCAN_UNICODE", "true").lower() == "true"
-    scan_tools: bool = os.getenv("SCAN_TOOLS", "true").lower() == "true"
-    scan_network: bool = os.getenv("SCAN_NETWORK", "true").lower() == "true"
-    scan_response: bool = os.getenv("SCAN_RESPONSE", "false").lower() == "true"
-    redact_secrets: bool = os.getenv("REDACT_SECRETS", "true").lower() == "true"
-    block_on_critical: bool = os.getenv("BLOCK_ON_CRITICAL", "true").lower() == "true"
+    enabled: bool = field(default_factory=lambda: _bool("SECURITY_ENABLED", True))
+    mode: str = field(default_factory=lambda: _env("SECURITY_MODE", "audit") or "audit")
+    scan_unicode: bool = field(default_factory=lambda: _bool("SCAN_UNICODE", True))
+    scan_tools: bool = field(default_factory=lambda: _bool("SCAN_TOOLS", True))
+    scan_network: bool = field(default_factory=lambda: _bool("SCAN_NETWORK", True))
+    scan_response: bool = field(default_factory=lambda: _bool("SCAN_RESPONSE", False))
+    redact_secrets: bool = field(default_factory=lambda: _bool("REDACT_SECRETS", True))
+    block_on_critical: bool = field(default_factory=lambda: _bool("BLOCK_ON_CRITICAL", True))
+    fail_closed: bool = field(default_factory=lambda: _bool("SECURITY_FAIL_CLOSED", True))
+
+    def __post_init__(self):
+        if self.mode not in {"audit", "warn", "redact", "block"}:
+            raise ValueError("SECURITY_MODE must be audit, warn, redact, or block")
 
 
-@dataclass
+@dataclass(frozen=True)
 class GatewayConfig:
-    retry_times: int = int(os.getenv("GATEWAY_RETRY_TIMES", "2"))
+    retry_times: int = field(default_factory=lambda: _int("GATEWAY_RETRY_TIMES", 2, 0))
+    retry_backoff_ms: int = field(default_factory=lambda: _int("GATEWAY_RETRY_BACKOFF_MS", 100, 0))
+    request_timeout_seconds: float = field(default_factory=lambda: float(_env("GATEWAY_REQUEST_TIMEOUT_SECONDS", "300") or "300"))
+    stream_timeout_seconds: float = field(default_factory=lambda: float(_env("GATEWAY_STREAM_TIMEOUT_SECONDS", "300") or "300"))
+    max_response_log_bytes: int = field(default_factory=lambda: _int("MAX_RESPONSE_LOG_BYTES", 65536, 1024))
+
+    def __post_init__(self):
+        if self.request_timeout_seconds <= 0 or self.stream_timeout_seconds <= 0:
+            raise ValueError("Gateway timeouts must be positive")
 
 
-@dataclass
+@dataclass(frozen=True)
+class AuthConfig:
+    admin_username: str = field(default_factory=lambda: _env("ADMIN_USERNAME", "admin") or "admin")
+    admin_password_hash: str = field(default_factory=lambda: _env("ADMIN_PASSWORD_HASH", "") or "")
+    admin_token: str = field(default_factory=lambda: _env("ADMIN_TOKEN", "") or "")
+    session_secret: str = field(default_factory=lambda: _env("ADMIN_SESSION_SECRET", "") or "")
+    session_ttl_seconds: int = field(default_factory=lambda: _int("ADMIN_SESSION_TTL_SECONDS", 86400, 60))
+    session_cookie_secure: bool = field(default_factory=lambda: _bool("ADMIN_SESSION_COOKIE_SECURE", (_env("APP_ENV", "development") or "development").lower() == "production"))
+    models_require_api_key: bool = field(default_factory=lambda: _bool("MODELS_REQUIRE_API_KEY", True))
+    mcp_token: str = field(default_factory=lambda: _env("MCP_TOKEN", "") or "")
+    bootstrap_password: str = field(default_factory=lambda: _env("ADMIN_PASSWORD", "") or "")
+    mcp_api_key_access: bool = field(default_factory=lambda: _bool("MCP_API_KEY_ACCESS", False))
+    quota_reserve_tokens: int = field(default_factory=lambda: _int("API_KEY_QUOTA_RESERVE", 1024, 0))
+
+    def __post_init__(self):
+        environment = (_env("APP_ENV", "development") or "development").lower()
+        if environment == "production":
+            if not self.session_secret or len(self.session_secret) < 32:
+                raise ValueError("ADMIN_SESSION_SECRET must contain at least 32 characters in production")
+            if not self.admin_token:
+                raise ValueError("ADMIN_TOKEN is required in production")
+            if not (self.admin_password_hash or self.bootstrap_password):
+                raise ValueError("ADMIN_PASSWORD_HASH or ADMIN_PASSWORD is required in production")
+
+
+@dataclass(frozen=True)
+class WorkerConfig:
+    count: int = field(default_factory=lambda: _int("KB_WORKER_COUNT", 1, 1))
+    lease_seconds: int = field(default_factory=lambda: _int("KB_TASK_LEASE_SECONDS", 300, 30))
+    max_attempts: int = field(default_factory=lambda: _int("KB_TASK_MAX_ATTEMPTS", 3, 1))
+
+
+@dataclass(frozen=True)
 class AppConfig:
-    server_port: int = int(os.getenv("SERVER_PORT", "9900"))
+    server_port: int = field(default_factory=lambda: _int("SERVER_PORT", 9900, 1))
     db: DatabaseConfig = field(default_factory=DatabaseConfig)
     security: SecuritySettings = field(default_factory=SecuritySettings)
     gateway: GatewayConfig = field(default_factory=GatewayConfig)
-    log_level: str = os.getenv("LOG_LEVEL", "info")
+    auth: AuthConfig = field(default_factory=AuthConfig)
+    workers: WorkerConfig = field(default_factory=WorkerConfig)
+    cors_allowed_origins: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip() for x in (_env("CORS_ALLOWED_ORIGINS", "http://localhost:9900") or "").split(",") if x.strip()))
+    api_key_quota_reserve: int = field(default_factory=lambda: _int("API_KEY_QUOTA_RESERVE", 1024, 0))
+    log_level: str = field(default_factory=lambda: _env("LOG_LEVEL", "info") or "info")
+    app_env: str = field(default_factory=lambda: _env("APP_ENV", "development") or "development")
+
+    def __post_init__(self):
+        if not self.cors_allowed_origins:
+            raise ValueError("CORS_ALLOWED_ORIGINS must contain at least one origin")
 
 
 config = AppConfig()

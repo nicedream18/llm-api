@@ -1,6 +1,6 @@
 """Protocol detection and API key extraction."""
 import json
-from typing import Optional
+
 from app.types.enums import ProtocolFormat
 
 
@@ -20,7 +20,7 @@ class ProtocolDetector:
         return ProtocolFormat.OPENAI.value
 
     @staticmethod
-    def extract_api_key(headers: dict) -> Optional[str]:
+    def extract_api_key(headers: dict) -> str | None:
         if not headers:
             return None
         auth = headers.get("authorization")

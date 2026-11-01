@@ -1,0 +1,1 @@
+-- Recoverable knowledge task fields and worker lease compatibility migration.

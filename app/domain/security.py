@@ -1,13 +1,12 @@
 """Security scanner with 6 sub-scanners: credential, path, unicode, network, tool, tracking."""
-import re
 import hashlib
-import uuid
 import logging
-from datetime import datetime, timezone
-from typing import List
+import re
+import uuid
+from datetime import UTC, datetime
 
 from app.domain.entities import SecurityFindingEntity, SecurityScanResult
-from app.types.enums import RiskLevel, SEVERITY_SCORES
+from app.types.enums import SEVERITY_SCORES, RiskLevel
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +34,15 @@ def hash_evidence(evidence: str) -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
-def _make_finding(rule_id, title, description, severity, category, evidence, json_path, phase) -> SecurityFindingEntity:
+def _make_finding(rule_id, title, description, severity, category, evidence, json_path, phase, action="warn") -> SecurityFindingEntity:
     return SecurityFindingEntity(
         id=str(uuid.uuid4()), phase=phase, category=category, rule_id=rule_id,
         severity=severity, title=title, description=description, location=json_path,
         evidence_masked=mask_evidence(evidence), evidence_hash=hash_evidence(evidence),
-        action="warn", created_at=_now(),
+        action=(action or "warn").lower(), created_at=_now(),
     )
 
 
@@ -108,37 +107,65 @@ TRACKING_RULES = [
 ]
 
 
-def _run_rules(rules, text, json_path, phase, category) -> List[SecurityFindingEntity]:
+def _run_rules(rules, text, json_path, phase, category, builtin_rules=None) -> list[SecurityFindingEntity]:
     findings = []
     if not text:
         return findings
+    text = text[:1_000_000]
+    overrides = {getattr(rule, "rule_id", None): rule for rule in builtin_rules or []}
     for rule_id, title, desc, pattern, severity in rules:
-        for m in re.finditer(pattern, text):
-            findings.append(_make_finding(rule_id, title, desc, severity, category, m.group(), json_path, phase))
+        override = overrides.get(rule_id)
+        if override is not None and not getattr(override, "enabled", 1):
+            continue
+        effective_severity = str(getattr(override, "severity", None) or severity).lower()
+        action = getattr(override, "action", None) or "warn"
+        try:
+            matches = re.finditer(pattern, text)
+            for m in matches:
+                findings.append(_make_finding(rule_id, title, desc, effective_severity, category, m.group(), json_path, phase, action))
+        except (re.error, RecursionError):
+            logger.warning("Skipping invalid or unsafe security pattern", extra={"rule_id": rule_id})
     return findings
 
 
-def _walk_json(obj, path, phase, settings, findings):
+def _run_custom_rules(rules, text, json_path, phase, findings):
+    for rule in rules or []:
+        if not getattr(rule, "enabled", 1) or not rule.pattern:
+            continue
+        try:
+            for match in re.finditer(rule.pattern, text[:1_000_000]):
+                findings.append(_make_finding(
+                    rule.id or "custom", rule.name or "Custom security rule",
+                    rule.description or "Custom security rule matched", rule.severity or "medium",
+                    rule.category or "custom", match.group(), json_path, phase,
+                    getattr(rule, "action", None) or "warn"))
+        except (re.error, RecursionError):
+            logger.warning("Skipping invalid custom security pattern", extra={"rule_id": rule.id})
+
+
+def _walk_json(obj, path, phase, settings, findings, custom_rules=None, builtin_rules=None):
     """Recursively walk JSON and run scanners on string values."""
     if isinstance(obj, str):
-        _run_all_scanners(obj, path, phase, settings, findings)
+        _run_all_scanners(obj, path, phase, settings, findings, custom_rules, builtin_rules)
     elif isinstance(obj, dict):
         for k, v in obj.items():
-            _walk_json(v, f"{path}.{k}", phase, settings, findings)
+            _walk_json(v, f"{path}.{k}", phase, settings, findings, custom_rules, builtin_rules)
     elif isinstance(obj, list):
         for i, v in enumerate(obj):
-            _walk_json(v, f"{path}[{i}]", phase, settings, findings)
+            _walk_json(v, f"{path}[{i}]", phase, settings, findings, custom_rules, builtin_rules)
 
 
-def _run_all_scanners(text, json_path, phase, settings, findings):
-    findings.extend(_run_rules(CREDENTIAL_RULES, text, json_path, phase, "credentials"))
-    findings.extend(_run_rules(PATH_RULES, text, json_path, phase, "path"))
-    findings.extend(_run_rules(NETWORK_RULES, text, json_path, phase, "network"))
+def _run_all_scanners(text, json_path, phase, settings, findings, custom_rules=None, builtin_rules=None):
+    findings.extend(_run_rules(CREDENTIAL_RULES, text, json_path, phase, "credentials", builtin_rules))
+    findings.extend(_run_rules(PATH_RULES, text, json_path, phase, "path", builtin_rules))
+    if getattr(settings, "scan_network", True):
+        findings.extend(_run_rules(NETWORK_RULES, text, json_path, phase, "network", builtin_rules))
     if settings.scan_unicode:
-        findings.extend(_run_rules(UNICODE_RULES, text, json_path, phase, "unicode"))
+        findings.extend(_run_rules(UNICODE_RULES, text, json_path, phase, "unicode", builtin_rules))
     if settings.scan_tools:
-        findings.extend(_run_rules(TOOL_RULES, text, json_path, phase, "tools"))
-    findings.extend(_run_rules(TRACKING_RULES, text, json_path, phase, "tracking"))
+        findings.extend(_run_rules(TOOL_RULES, text, json_path, phase, "tools", builtin_rules))
+    findings.extend(_run_rules(TRACKING_RULES, text, json_path, phase, "tracking", builtin_rules))
+    _run_custom_rules(custom_rules, text, json_path, phase, findings)
 
 
 def _deduplicate(findings):
@@ -171,7 +198,7 @@ def _summarize(findings):
 class SecurityScanner:
     """Main security scanner orchestrating all sub-scanners."""
 
-    def scan(self, body: str, phase: str, settings) -> SecurityScanResult:
+    def scan(self, body: str, phase: str, settings, custom_rules=None, builtin_rules=None) -> SecurityScanResult:
         if not body:
             return SecurityScanResult(risk_level="Clean", summary="Empty body — no findings.")
         if not settings.enabled:
@@ -181,11 +208,12 @@ class SecurityScanner:
         import json
         try:
             parsed = json.loads(body)
-            _walk_json(parsed, "$", phase, settings, findings)
+            _walk_json(parsed, "$", phase, settings, findings, custom_rules, builtin_rules)
         except Exception:
-            _run_all_scanners(body, "$raw", phase, settings, findings)
+            _run_all_scanners(body, "$raw", phase, settings, findings, custom_rules, builtin_rules)
 
-        _run_all_scanners(body, "$raw", phase, settings, findings)
+        if not findings:
+            _run_all_scanners(body, "$raw", phase, settings, findings, custom_rules, builtin_rules)
 
         deduped = _deduplicate(findings)
         risk_score = _calculate_risk_score(deduped)
@@ -194,18 +222,26 @@ class SecurityScanner:
         blocked = False
         blocked_reason = None
         sanitized = False
+        sanitized_body = None
 
         mode = settings.mode or "audit"
-        if mode == "block":
-            if risk_level == "Critical" and settings.block_on_critical:
-                blocked = True
-                blocked_reason = f"Critical security finding detected: {risk_level}"
-        elif mode == "redact":
-            if settings.redact_secrets and risk_level in ("High", "Critical"):
-                sanitized = True
+        explicit_block = any((finding.action or "").lower() == "block" for finding in deduped)
+        explicit_sanitize = any((finding.action or "").lower() in {"sanitize", "redact"} for finding in deduped)
+        if explicit_block or (mode == "block" and risk_level == "Critical" and settings.block_on_critical):
+            blocked = True
+            blocked_reason = f"Critical security finding detected: {risk_level}"
+        elif explicit_sanitize or (mode == "redact" and settings.redact_secrets and risk_level in ("High", "Critical")):
+            sanitized = True
+            sanitized_body = re.sub(r"(?i)(sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|AIza[a-zA-Z0-9_-]{35}|eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)", "[REDACTED]", body)
+            for rule in custom_rules or []:
+                if (getattr(rule, "action", None) or "").lower() in {"sanitize", "redact"}:
+                    try:
+                        sanitized_body = re.sub(rule.pattern, "[REDACTED]", sanitized_body)
+                    except (re.error, TypeError):
+                        logger.warning("Skipping invalid sanitization pattern", extra={"rule_id": getattr(rule, "id", None)})
 
         return SecurityScanResult(
             risk_level=risk_level, risk_score=risk_score,
             summary=_summarize(deduped), findings=deduped,
-            blocked=blocked, blocked_reason=blocked_reason, sanitized=sanitized,
+            blocked=blocked, blocked_reason=blocked_reason, sanitized=sanitized, sanitized_body=sanitized_body,
         )

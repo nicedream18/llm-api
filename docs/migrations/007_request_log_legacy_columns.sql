@@ -1,0 +1,1 @@
+-- Add missing request-log metadata columns found in older installations.

@@ -2,7 +2,7 @@
 import json
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class ResponsesConverter:
@@ -31,7 +31,7 @@ class ResponsesConverter:
         max_tokens = req.get("max_output_tokens", 4096)
         stream = req.get("stream", False)
 
-        openai_body: Dict[str, Any] = {
+        openai_body: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
@@ -80,7 +80,7 @@ class ResponsesConverter:
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
 
-        output: List[Dict[str, Any]] = []
+        output: list[dict[str, Any]] = []
 
         # Add function_call outputs for tool_calls
         tool_calls = message.get("tool_calls")
@@ -133,9 +133,9 @@ class ResponsesConverter:
     # ==================== Private Helpers ====================
 
     @staticmethod
-    def _convert_input_to_messages(input_obj) -> List[Dict[str, Any]]:
+    def _convert_input_to_messages(input_obj) -> list[dict[str, Any]]:
         """Convert Responses API input to OpenAI messages array."""
-        msgs: List[Dict[str, Any]] = []
+        msgs: list[dict[str, Any]] = []
 
         if isinstance(input_obj, list):
             for item in input_obj:
@@ -204,7 +204,7 @@ class ResponsesConverter:
         if not tools:
             return
 
-        openai_tools: List[Dict[str, Any]] = []
+        openai_tools: list[dict[str, Any]] = []
         for tool in tools:
             if not isinstance(tool, dict):
                 continue
@@ -217,7 +217,7 @@ class ResponsesConverter:
                     continue
 
                 # Flat format → nested format
-                func_obj: Dict[str, Any] = {
+                func_obj: dict[str, Any] = {
                     "name": tool.get("name"),
                     "parameters": tool.get("parameters"),
                 }

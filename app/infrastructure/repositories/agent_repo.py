@@ -1,24 +1,23 @@
 """Agent repository."""
-import uuid
-import json
 import logging
-from datetime import datetime, timezone
-from typing import List, Optional
+import uuid
+from datetime import UTC, datetime
+
 from sqlalchemy import text
 
-from app.infrastructure.database.connection import get_db
 from app.domain.entities import AgentConfigEntity
+from app.infrastructure.database.connection import get_db
 
 logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class AgentRepository:
 
-    def get_all_agents(self) -> List[AgentConfigEntity]:
+    def get_all_agents(self) -> list[AgentConfigEntity]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT id, agent_id, agent_name, agent_desc, app_name, config_json, status, created_at, updated_at "
@@ -26,7 +25,7 @@ class AgentRepository:
             )).mappings().all()
             return [self._to_entity(r) for r in rows]
 
-    def get_agent_by_id(self, agent_id: str) -> Optional[AgentConfigEntity]:
+    def get_agent_by_id(self, agent_id: str) -> AgentConfigEntity | None:
         with get_db() as db:
             row = db.execute(text(
                 "SELECT id, agent_id, agent_name, agent_desc, app_name, config_json, status, created_at, updated_at "
@@ -34,7 +33,7 @@ class AgentRepository:
             ), {"id": agent_id}).mappings().first()
             return self._to_entity(row) if row else None
 
-    def get_agent_by_agent_id(self, agent_id: str) -> Optional[AgentConfigEntity]:
+    def get_agent_by_agent_id(self, agent_id: str) -> AgentConfigEntity | None:
         with get_db() as db:
             row = db.execute(text(
                 "SELECT id, agent_id, agent_name, agent_desc, app_name, config_json, status, created_at, updated_at "

@@ -1,24 +1,29 @@
 """Channel and ApiKey repository."""
-import uuid
 import json
 import logging
-from datetime import datetime, timezone
-from typing import List, Optional
+import uuid
+from datetime import UTC, datetime
+
 from sqlalchemy import text
 
+from app.domain.entities import (
+    ApiKeyEntity,
+    ApiKeyStatsEntity,
+    ChannelEntity,
+    ChannelStatsEntity,
+)
 from app.infrastructure.database.connection import get_db
-from app.domain.entities import ChannelEntity, ApiKeyEntity, ChannelStatsEntity, ApiKeyStatsEntity
 
 logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class ChannelRepository:
 
-    def get_all_channels(self) -> List[ChannelEntity]:
+    def get_all_channels(self) -> list[ChannelEntity]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT id, name, type, base_url, api_key, models, status, priority, weight, "
@@ -27,7 +32,7 @@ class ChannelRepository:
             )).mappings().all()
             return [self._to_entity(r) for r in rows]
 
-    def get_channel(self, channel_id: str) -> Optional[ChannelEntity]:
+    def get_channel(self, channel_id: str) -> ChannelEntity | None:
         with get_db() as db:
             row = db.execute(text(
                 "SELECT id, name, type, base_url, api_key, models, status, priority, weight, "
@@ -36,7 +41,7 @@ class ChannelRepository:
             ), {"id": channel_id}).mappings().first()
             return self._to_entity(row) if row else None
 
-    def get_enabled_channels(self) -> List[ChannelEntity]:
+    def get_enabled_channels(self) -> list[ChannelEntity]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT id, name, type, base_url, api_key, models, status, priority, weight, "
@@ -91,7 +96,7 @@ class ChannelRepository:
             ), {"id": channel_id, "t": now, "ok": 1 if ok else 0})
             return result.rowcount > 0
 
-    def get_channel_stats(self) -> List[ChannelStatsEntity]:
+    def get_channel_stats(self) -> list[ChannelStatsEntity]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT c.id AS channel_id, c.name AS channel_name, COUNT(rl.id) AS total_calls, "
@@ -109,7 +114,7 @@ class ChannelRepository:
                 avg_duration_ms=float(r["avg_duration_ms"] or 0)
             ) for r in rows]
 
-    def get_api_key_stats(self) -> List[ApiKeyStatsEntity]:
+    def get_api_key_stats(self) -> list[ApiKeyStatsEntity]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT ak.id AS api_key_id, ak.name AS api_key_name, COUNT(rl.id) AS total_calls, "
@@ -129,7 +134,7 @@ class ChannelRepository:
 
     # ---- ApiKey ----
 
-    def get_all_api_keys(self) -> List[ApiKeyEntity]:
+    def get_all_api_keys(self) -> list[ApiKeyEntity]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT id, name, `key`, status, allowed_models, allowed_channels, "
@@ -138,7 +143,7 @@ class ChannelRepository:
             )).mappings().all()
             return [self._to_apikey_entity(r) for r in rows]
 
-    def get_api_key(self, key_id: str) -> Optional[ApiKeyEntity]:
+    def get_api_key(self, key_id: str) -> ApiKeyEntity | None:
         with get_db() as db:
             row = db.execute(text(
                 "SELECT id, name, `key`, status, allowed_models, allowed_channels, "
@@ -147,7 +152,7 @@ class ChannelRepository:
             ), {"id": key_id}).mappings().first()
             return self._to_apikey_entity(row) if row else None
 
-    def get_api_key_by_key(self, key: str) -> Optional[ApiKeyEntity]:
+    def get_api_key_by_key(self, key: str) -> ApiKeyEntity | None:
         with get_db() as db:
             row = db.execute(text(
                 "SELECT id, name, `key`, status, allowed_models, allowed_channels, "

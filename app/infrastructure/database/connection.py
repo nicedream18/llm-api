@@ -1,8 +1,9 @@
 """Database connection pool using SQLAlchemy."""
 import logging
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import config
 

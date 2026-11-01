@@ -1,27 +1,38 @@
 """Application services orchestrating domain services and repositories."""
-import uuid
-import json
-import base64
 import logging
-from datetime import datetime, timezone
-from typing import List, Optional
+import uuid
+from datetime import UTC, datetime
 
-from app.types.models import (
-    ChannelDTO, ApiKeyDTO, TestChannelResultDTO, DashboardStatsDTO, RequestLogDTO,
-    CreateKbDTO, KbKnowledgeBaseDTO, UploadDocDTO, KbDocumentDTO,
-    KbAskRequestDTO, KbAskResponseDTO, KbSearchRequestDTO, KbSearchResultDTO,
-    KbStatsDTO, KbTagDTO, AgentConfigDTO, AgentChatRequestDTO, AgentChatResponseDTO,
-    SecurityBuiltinRuleDTO, SecurityCustomRuleDTO, SecurityFindingDTO,
-)
 from app.domain.entities import (
-    ChannelEntity, ApiKeyEntity, RequestLogEntity, AgentConfigEntity,
+    ApiKeyEntity,
+    ChannelEntity,
+)
+from app.types.models import (
+    ApiKeyDTO,
+    ChannelDTO,
+    DashboardStatsDTO,
+    RequestLogDTO,
+    TestChannelResultDTO,
 )
 
 logger = logging.getLogger(__name__)
 
 
 def _now():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
+
+
+def _mask_secret(value: str | None) -> str | None:
+    """Return a stable display value without exposing a stored credential."""
+    if not value:
+        return value
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}{'*' * max(4, len(value) - 8)}{value[-4:]}"
+
+
+def _is_masked_secret(value: str | None) -> bool:
+    return bool(value and "*" in value)
 
 
 class ChannelService:
@@ -43,7 +54,8 @@ class ChannelService:
         return self._to_dto(created)
 
     def update_channel(self, dto: ChannelDTO):
-        return self.repo.update_channel(self._to_entity(dto))
+        existing = self.repo.get_channel(dto.id) if dto.id else None
+        return self.repo.update_channel(self._to_entity(dto, existing))
 
     def delete_channel(self, channel_id):
         return self.repo.delete_channel(channel_id)
@@ -70,37 +82,44 @@ class ChannelService:
         if not entity.key:
             entity.key = "sk-waliapi-" + str(uuid.uuid4()).replace("-", "")
         created = self.repo.create_api_key(entity)
-        return self._to_apikey_dto(created)
+        return self._to_apikey_dto(created, expose_secret=True)
 
     def update_api_key(self, dto: ApiKeyDTO):
-        return self.repo.update_api_key(self._to_apikey_entity(dto))
+        existing = self.repo.get_api_key(dto.id) if dto.id else None
+        return self.repo.update_api_key(self._to_apikey_entity(dto, existing))
 
     def delete_api_key(self, key_id):
         return self.repo.delete_api_key(key_id)
 
     def _to_dto(self, e):
         if not e: return None
-        return ChannelDTO(id=e.id, name=e.name, type=e.type, base_url=e.base_url, api_key=e.api_key,
+        return ChannelDTO(id=e.id, name=e.name, type=e.type, base_url=e.base_url, api_key=_mask_secret(e.api_key),
                           models=e.models or [], status=e.status, priority=e.priority, weight=e.weight,
                           config=e.config, model_mapping=e.model_mapping, last_test_at=e.last_test_at,
                           last_test_ok=e.last_test_ok, created_at=e.created_at, updated_at=e.updated_at)
 
-    def _to_entity(self, dto):
+    def _to_entity(self, dto, existing=None):
+        api_key = dto.api_key
+        if existing and (api_key is None or _is_masked_secret(api_key)):
+            api_key = existing.api_key
         return ChannelEntity(id=dto.id, name=dto.name, type=dto.type, base_url=dto.base_url,
-                             api_key=dto.api_key, models=dto.models, status=dto.status,
+                             api_key=api_key, models=dto.models, status=dto.status,
                              priority=dto.priority, weight=dto.weight, config=dto.config,
                              model_mapping=dto.model_mapping, last_test_at=dto.last_test_at,
                              last_test_ok=dto.last_test_ok, created_at=dto.created_at, updated_at=dto.updated_at)
 
-    def _to_apikey_dto(self, e):
+    def _to_apikey_dto(self, e, expose_secret=False):
         if not e: return None
-        return ApiKeyDTO(id=e.id, name=e.name, key=e.key, status=e.status,
+        return ApiKeyDTO(id=e.id, name=e.name, key=e.key if expose_secret else _mask_secret(e.key), status=e.status,
                          allowed_models=e.allowed_models or [], allowed_channels=e.allowed_channels or [],
                          quota_limit=e.quota_limit, quota_used=e.quota_used, expires_at=e.expires_at,
                          created_at=e.created_at, updated_at=e.updated_at)
 
-    def _to_apikey_entity(self, dto):
-        return ApiKeyEntity(id=dto.id, name=dto.name, key=dto.key, status=dto.status,
+    def _to_apikey_entity(self, dto, existing=None):
+        key = dto.key
+        if existing and (key is None or _is_masked_secret(key)):
+            key = existing.key
+        return ApiKeyEntity(id=dto.id, name=dto.name, key=key, status=dto.status,
                             allowed_models=dto.allowed_models, allowed_channels=dto.allowed_channels,
                             quota_limit=dto.quota_limit, quota_used=dto.quota_used, expires_at=dto.expires_at,
                             created_at=dto.created_at, updated_at=dto.updated_at)

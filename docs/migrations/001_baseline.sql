@@ -1,0 +1,2 @@
+-- Baseline migration: legacy-schema compatibility fields are added idempotently by the runner.
+-- Fresh databases must be initialized with docs/waliapi.sql.

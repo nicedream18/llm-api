@@ -28,6 +28,7 @@
       </div>
     </div>
     <nav class="sidebar-nav" id="nav"></nav>
+    <div id="accountControls"></div>
     <div class="sidebar-footer" id="sidebarFooter"></div>
   </aside>
   <div class="sidebar-backdrop" id="backdrop" onclick="toggleSidebar()"></div>
@@ -39,6 +40,7 @@
       <div class="page-container" data-page="agents" style="display:none"></div>
       <div class="page-container" data-page="logs" style="display:none"></div>
       <div class="page-container" data-page="knowledge" style="display:none"></div>
+      <div class="page-container" data-page="wiki" style="display:none"></div>
       <div class="page-container" data-page="security" style="display:none"></div>
       <div class="page-container" data-page="usage" style="display:none"></div>
     </div>
@@ -62,6 +64,8 @@
 <script src="js/pages/agents.js"></script>
 <script src="js/pages/logs.js"></script>
 <script src="js/pages/knowledge.js"></script>
+<script src="js/pages/wiki.js"></script>
+<script src="js/admin-session.js"></script>
 <script src="js/pages/security.js"></script>
 <script src="js/pages/usage.js"></script>
 <script>
@@ -73,12 +77,12 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal()
 initTheme();
 renderNav();
 renderSidebarFooter();
-['dashboard','channels','apikeys','agents','logs','knowledge','security','usage'].forEach(id=>{
+['dashboard','channels','apikeys','agents','logs','knowledge','wiki','security','usage'].forEach(id=>{
   updatePage(id);
 });
-loadDashboard();
+initializeAdminSession();
 // 定时刷新服务状态
-setInterval(renderSidebarFooter,5000);
+setInterval(()=>{if(adminSessionReady)renderSidebarFooter()},5000);
 </script>
 </body>
 </html>

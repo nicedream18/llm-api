@@ -1,0 +1,1 @@
+-- Administrator accounts, sessions and audit tables are created by the runner.

@@ -1,18 +1,18 @@
 """Importer strategy system for knowledge base (aligned with Java importer/strategy package)."""
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
-import logging
+from datetime import UTC
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
+from app.domain.entities import KbChunkEntity, KbDocumentEntity
 from app.domain.knowledge import ChunkConfig, serialize_embedding
-from app.domain.entities import KbDocumentEntity, KbChunkEntity
-from app.types.models import UploadDocDTO
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +38,8 @@ SUPPORTED_EXTS = {
 DEFAULT_MAX_FILE_SIZE = 512 * 1024  # 512KB
 
 
-def file_walk(root_path: str, excluded_dirs: List[str] = None,
-              included_files: List[str] = None, max_file_size: int = 0,
+def file_walk(root_path: str, excluded_dirs: list[str] = None,
+              included_files: list[str] = None, max_file_size: int = 0,
               handler=None) -> int:
     """Walk a directory and call handler(filename, relative_path, content) for each file."""
     root = Path(root_path)
@@ -102,7 +102,7 @@ def _get_extension(filename: str) -> str:
 class ImportParams:
     def __init__(self, repo_url: str = None, branch: str = None, token: str = None,
                  url: str = None, dir_path: str = None,
-                 excluded_dirs: List[str] = None, included_files: List[str] = None,
+                 excluded_dirs: list[str] = None, included_files: list[str] = None,
                  max_file_size: int = None):
         self.repo_url = repo_url
         self.branch = branch
@@ -143,8 +143,8 @@ class ImportContext:
                       source_path: str, content: str) -> int:
         """Import a single file: create doc → chunk → embed → persist."""
         import uuid
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
+        from datetime import datetime
+        now = datetime.now(UTC).isoformat()
 
         doc = KbDocumentEntity(
             id=str(uuid.uuid4()), kb_id=kb_id, name=filename,
@@ -168,7 +168,7 @@ class ImportContext:
         # Update doc stats
         doc.chunk_count = len(chunks)
         doc.total_tokens = sum(c.token_count or 0 for c in chunks)
-        doc.updated_at = datetime.now(timezone.utc).isoformat()
+        doc.updated_at = datetime.now(UTC).isoformat()
         self.repo.update_doc(doc)
 
         return len(chunks)
@@ -176,7 +176,7 @@ class ImportContext:
     def save_source(self, kb_id: str, doc_id: str = None, source_type: str = None):
         self.repo.save_source(kb_id, source_type)
 
-    def _embed_and_save(self, kb_id: str, chunks: List[KbChunkEntity]):
+    def _embed_and_save(self, kb_id: str, chunks: list[KbChunkEntity]):
         if not chunks:
             return
         try:
@@ -303,14 +303,14 @@ class ImporterService:
     def __init__(self, kb_repository, text_splitter, embedder_service):
         self.repo = kb_repository
         self.context = ImportContext(kb_repository, text_splitter, embedder_service)
-        self.strategies: Dict[str, ImportStrategy] = {}
+        self.strategies: dict[str, ImportStrategy] = {}
         self._register_defaults()
 
     def _register_defaults(self):
         for strategy in [GitImportStrategy(), UrlImportStrategy(), LocalDirImportStrategy()]:
             self.strategies[strategy.get_source_type()] = strategy
 
-    def import_source(self, kb_id: str, body: dict) -> Dict[str, Any]:
+    def import_source(self, kb_id: str, body: dict) -> dict[str, Any]:
         source_type = body.get("sourceType") or body.get("source_type")
         if not source_type:
             return {"success": False, "message": "sourceType is required"}

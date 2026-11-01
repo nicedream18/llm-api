@@ -1,22 +1,26 @@
 """Knowledge base repository for KB, documents, chunks, tasks, conversations, sources."""
-import uuid
 import json
 import logging
-from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
+import uuid
+from datetime import UTC, datetime, timedelta
+
 from sqlalchemy import text
 
-from app.infrastructure.database.connection import get_db
+from app.config import config
 from app.domain.entities import (
-    KbKnowledgeBaseEntity, KbDocumentEntity, KbChunkEntity,
-    KbTaskEntity, KbStatsEntity,
+    KbChunkEntity,
+    KbDocumentEntity,
+    KbKnowledgeBaseEntity,
+    KbStatsEntity,
+    KbTaskEntity,
 )
+from app.infrastructure.database.connection import get_db
 
 logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class KbRepository:
@@ -45,7 +49,7 @@ class KbRepository:
                 ":index_status, :created_at, :updated_at)"
             ), self._kb_params(entity))
 
-    def find_kb_by_id(self, kb_id: str) -> Optional[KbKnowledgeBaseEntity]:
+    def find_kb_by_id(self, kb_id: str) -> KbKnowledgeBaseEntity | None:
         with get_db() as db:
             row = db.execute(text(
                 "SELECT id, name, description, tags, chunk_size, chunk_overlap, status, "
@@ -54,7 +58,7 @@ class KbRepository:
             ), {"id": kb_id}).mappings().first()
             return self._to_kb_entity(row) if row else None
 
-    def find_all_kb(self) -> List[KbKnowledgeBaseEntity]:
+    def find_all_kb(self) -> list[KbKnowledgeBaseEntity]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT id, name, description, tags, chunk_size, chunk_overlap, status, "
@@ -70,7 +74,7 @@ class KbRepository:
                 "UPDATE kb_knowledge_bases SET name=:name, description=:description, tags=:tags, "
                 "chunk_size=:chunk_size, chunk_overlap=:chunk_overlap, status=:status, "
                 "embedding_model=:embedding_model, embedding_channel_id=:embedding_channel_id, "
-                "embedding_dim=:embedding_dim, doc_count=:doc_count, chunk_count=:chunk_count,_tokens=:total_tokens, index_status=:index_status, updated_at=:updated_at WHERE id=:id"
+                "embedding_dim=:embedding_dim, doc_count=:doc_count, chunk_count=:chunk_count, total_tokens=:total_tokens, index_status=:index_status, updated_at=:updated_at WHERE id=:id"
             ), self._kb_params(entity))
 
     def delete_kb_by_id(self, kb_id: str):
@@ -108,7 +112,7 @@ class KbRepository:
                 "error_message=:error_message, updated_at=:updated_at WHERE id=:id"
             ), self._doc_params(entity))
 
-    def find_doc_by_id(self, doc_id: str) -> Optional[KbDocumentEntity]:
+    def find_doc_by_id(self, doc_id: str) -> KbDocumentEntity | None:
         with get_db() as db:
             row = db.execute(text(
                 "SELECT id, kb_id, name, source_type, source_path, status, chunk_count, total_tokens, "
@@ -116,7 +120,7 @@ class KbRepository:
             ), {"id": doc_id}).mappings().first()
             return self._to_doc_entity(row) if row else None
 
-    def find_doc_by_kb_id(self, kb_id: str) -> List[KbDocumentEntity]:
+    def find_doc_by_kb_id(self, kb_id: str) -> list[KbDocumentEntity]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT id, kb_id, name, source_type, source_path, status, chunk_count, total_tokens, "
@@ -129,7 +133,7 @@ class KbRepository:
             db.execute(text("DELETE FROM kb_chunks WHERE doc_id = :id"), {"id": doc_id})
             db.execute(text("DELETE FROM kb_documents WHERE id = :id"), {"id": doc_id})
 
-    def update_doc_status(self, doc_id: str, status: str, error_message: Optional[str]):
+    def update_doc_status(self, doc_id: str, status: str, error_message: str | None):
         with get_db() as db:
             db.execute(text(
                 "UPDATE kb_documents SET status=:status, error_message=:error_message, updated_at=NOW() WHERE id=:id"
@@ -150,7 +154,7 @@ class KbRepository:
                 ":chunk_type, :language, :metadata, :created_at)"
             ), self._chunk_params(entity))
 
-    def save_chunk_batch(self, entities: List[KbChunkEntity]):
+    def save_chunk_batch(self, entities: list[KbChunkEntity]):
         if not entities:
             return
         with get_db() as db:
@@ -166,7 +170,7 @@ class KbRepository:
                     ":chunk_type, :language, :metadata, :created_at)"
                 ), self._chunk_params(e))
 
-    def find_chunk_by_kb_id(self, kb_id: str) -> List[KbChunkEntity]:
+    def find_chunk_by_kb_id(self, kb_id: str) -> list[KbChunkEntity]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT id, doc_id, kb_id, content, chunk_index, token_count, embedding, "
@@ -174,7 +178,7 @@ class KbRepository:
             ), {"kb_id": kb_id}).mappings().all()
             return [self._to_chunk_entity(r) for r in rows]
 
-    def find_chunk_by_doc_id(self, doc_id: str) -> List[KbChunkEntity]:
+    def find_chunk_by_doc_id(self, doc_id: str) -> list[KbChunkEntity]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT id, doc_id, kb_id, content, chunk_index, token_count, embedding, "
@@ -187,7 +191,7 @@ class KbRepository:
             db.execute(text("UPDATE kb_chunks SET embedding = :embedding WHERE id = :id"),
                        {"id": chunk_id, "embedding": embedding})
 
-    def fulltext_search(self, kb_id: str, query: str, limit: int) -> List[KbChunkEntity]:
+    def fulltext_search(self, kb_id: str, query: str, limit: int) -> list[KbChunkEntity]:
         import re
         safe_query = re.sub(r'[^a-zA-Z0-9\u4e00-\u9fff\s+*]', '', query).strip()
         with get_db() as db:
@@ -198,7 +202,7 @@ class KbRepository:
             ), {"kb_id": kb_id, "limit": limit}).mappings().all()
             return [self._to_chunk_entity(r) for r in rows]
 
-    def sample_contents(self, kb_id: str, limit: int) -> List[str]:
+    def sample_contents(self, kb_id: str, limit: int) -> list[str]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT content FROM kb_chunks WHERE kb_id = :kb_id ORDER BY RAND() LIMIT :limit"
@@ -207,33 +211,79 @@ class KbRepository:
 
     # ---- Task ----
 
-    def save_task(self, entity: KbTaskEntity):
+    def save_task(self, entity: KbTaskEntity, payload: dict | None = None):
         if not entity.id:
             entity.id = str(uuid.uuid4())
         if not entity.created_at:
             entity.created_at = _now()
         with get_db() as db:
-            db.execute(text(
-                "INSERT INTO kb_tasks (id, kb_id, doc_id, task_type, status, progress, total_items, "
-                "done_items, error_message, created_at) "
-                "VALUES (:id, :kb_id, :doc_id, :task_type, :status, :progress, :total_items, "
-                ":done_items, :error_message, :created_at)"
-            ), self._task_params(entity))
+            db.execute(text("INSERT INTO kb_tasks (id,kb_id,doc_id,task_type,status,progress,total_items,done_items,error_message,created_at,payload) VALUES (:id,:kb_id,:doc_id,:task_type,:status,:progress,:total_items,:done_items,:error_message,:created_at,:payload)"), {**self._task_params(entity), "payload": json.dumps(payload or {})})
 
-    def find_task_by_id(self, task_id: str) -> Optional[KbTaskEntity]:
+    def claim_next_task(self, worker_id: str, lease_seconds: int):
+        lease_until = (datetime.now(UTC) + timedelta(seconds=lease_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+        with get_db() as db:
+            task_id = None
+            for row in db.execute(text("SELECT id, doc_id FROM kb_tasks WHERE status='pending' AND task_type IN ('import','reindex') ORDER BY created_at ASC LIMIT 50 FOR UPDATE SKIP LOCKED")).mappings().all():
+                if row["doc_id"]:
+                    active = db.execute(text("SELECT 1 FROM kb_tasks WHERE status='running' AND doc_id=:doc_id LIMIT 1"), {"doc_id": row["doc_id"]}).first()
+                    if active:
+                        continue
+                candidate_id = row["id"]
+                updated = db.execute(text("UPDATE kb_tasks SET status='running',worker_id=:worker_id,lease_until=:lease_until,started_at=:started_at,attempt_count=attempt_count+1 WHERE id=:id AND status='pending'"), {"worker_id":worker_id,"lease_until":lease_until,"started_at":_now(),"id":candidate_id})
+                if updated.rowcount == 1:
+                    task_id = candidate_id
+                    break
+            if not task_id:
+                return None
+            task = db.execute(text("SELECT id,kb_id,doc_id,task_type,payload FROM kb_tasks WHERE id=:id"), {"id":task_id}).mappings().first()
+            if not task:
+                return None
+            try:
+                payload = json.loads(task["payload"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            return {**dict(task), "payload":payload}
+
+    def renew_task_lease(self, task_id: str, worker_id: str, lease_seconds: int) -> bool:
+        lease_until = (datetime.now(UTC) + timedelta(seconds=lease_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+        with get_db() as db:
+            result = db.execute(text("UPDATE kb_tasks SET lease_until=:lease_until WHERE id=:id AND worker_id=:worker_id AND status='running'"),
+                                {"lease_until": lease_until, "id": task_id, "worker_id": worker_id})
+            return result.rowcount == 1
+
+    def recover_expired_tasks(self):
+        with get_db() as db:
+            db.execute(text("UPDATE kb_tasks SET status='pending',worker_id=NULL,lease_until=NULL WHERE status='running' AND (lease_until IS NULL OR lease_until < :now)"), {"now":datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")})
+
+    def fail_or_retry_task(self, task_id: str, message: str, max_attempts: int):
+        with get_db() as db:
+            row=db.execute(text("SELECT attempt_count, doc_id FROM kb_tasks WHERE id=:id FOR UPDATE"), {"id":task_id}).mappings().first()
+            if not row:
+                return False
+            status="failed" if int(row["attempt_count"] or 0)>=max_attempts else "pending"
+            db.execute(text("UPDATE kb_tasks SET status=:status,error_message=:error_message,worker_id=NULL,lease_until=NULL,completed_at=CASE WHEN :status='failed' THEN :now ELSE completed_at END WHERE id=:id"), {"id":task_id,"status":status,"error_message":message[:2000],"now":_now()})
+            if status == "failed" and row["doc_id"]:
+                db.execute(text("UPDATE kb_documents SET status='error',error_message='Knowledge task failed',updated_at=:now WHERE id=:doc_id"), {"now":_now(), "doc_id":row["doc_id"]})
+            return True
+
+    def cancel_task(self, kb_id: str, task_id: str) -> bool:
+        with get_db() as db:
+            result=db.execute(text("UPDATE kb_tasks SET status='cancelled',completed_at=:now WHERE id=:id AND kb_id=:kb_id AND status='pending'"), {"id":task_id,"kb_id":kb_id,"now":_now()})
+            return result.rowcount==1
+
+    def find_task_by_id(self, task_id: str) -> KbTaskEntity | None:
         with get_db() as db:
             row = db.execute(text(
                 "SELECT id, kb_id, doc_id, task_type, status, progress, total_items, done_items, "
-                "error_message, created_at, completed_at FROM kb_tasks WHERE id = :id"
+                "error_message, created_at, completed_at, payload, worker_id, lease_until, attempt_count, started_at FROM kb_tasks WHERE id = :id"
             ), {"id": task_id}).mappings().first()
             return self._to_task_entity(row) if row else None
 
-    def update_task_status(self, task_id: str, status: str, error_message: Optional[str]):
+    def update_task_status(self, task_id: str, status: str, error_message: str | None):
         with get_db() as db:
-            completed = "NOW()" if status in ("completed", "failed") else "completed_at"
-            if status in ("completed", "failed"):
+            if status in ("completed", "failed", "cancelled"):
                 db.execute(text(
-                    "UPDATE kb_tasks SET status=:status, error_message=:error_message, completed_at=NOW() WHERE id=:id"
+                    "UPDATE kb_tasks SET status=:status, error_message=:error_message, completed_at=UTC_TIMESTAMP(), worker_id=NULL, lease_until=NULL WHERE id=:id"
                 ), {"id": task_id, "status": status, "error_message": error_message})
             else:
                 db.execute(text(
@@ -241,14 +291,15 @@ class KbRepository:
                 ), {"id": task_id, "status": status, "error_message": error_message})
 
     def update_task_progress(self, task_id: str, done_items: int, progress: int):
+        lease_until = (datetime.now(UTC) + timedelta(seconds=config.workers.lease_seconds)).strftime("%Y-%m-%d %H:%M:%S")
         with get_db() as db:
             db.execute(text(
-                "UPDATE kb_tasks SET done_items=:done_items, progress=:progress WHERE id=:id"
-            ), {"id": task_id, "done_items": done_items, "progress": progress})
+                "UPDATE kb_tasks SET done_items=:done_items, progress=:progress, lease_until=:lease_until WHERE id=:id AND status='running'"
+            ), {"id": task_id, "done_items": done_items, "progress": progress, "lease_until": lease_until})
 
     # ---- Conversation ----
 
-    def save_conversation(self, kb_id: str, role: str, content: str, sources: str = None, model: str = None, tokens_used: int = 0):
+    def save_conversation(self, kb_id: str, role: str, content: str, sources: str | None = None, model: str | None = None, tokens_used: int = 0):
         with get_db() as db:
             db.execute(text(
                 "INSERT INTO kb_conversations (id, kb_id, role, content, sources, model, tokens_used, created_at) "
@@ -258,7 +309,7 @@ class KbRepository:
                 "sources": sources, "model": model, "tokens_used": tokens_used, "created_at": _now(),
             })
 
-    def find_conversation_by_kb_id(self, kb_id: str) -> List[dict]:
+    def find_conversation_by_kb_id(self, kb_id: str) -> list[dict]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT id, kb_id, role, content, sources, model, tokens_used, created_at "
@@ -280,7 +331,7 @@ class KbRepository:
 
     # ---- Stats ----
 
-    def get_kb_stats(self, kb_id: str) -> Optional[KbStatsEntity]:
+    def get_kb_stats(self, kb_id: str) -> KbStatsEntity | None:
         with get_db() as db:
             row = db.execute(text(
                 "SELECT (SELECT COUNT(*) FROM kb_documents WHERE kb_id = :kb_id) AS doc_count, "
@@ -300,8 +351,8 @@ class KbRepository:
 
     # ---- Source ----
 
-    def save_source(self, kb_id: str, source_type: str, source_url: str = None, source_path: str = None,
-                    branch: str = None, file_count: int = 0, error: str = None):
+    def save_source(self, kb_id: str, source_type: str, source_url: str | None = None, source_path: str | None = None,
+                    branch: str | None = None, file_count: int = 0, error: str | None = None):
         now = _now()
         with get_db() as db:
             db.execute(text(
@@ -316,7 +367,7 @@ class KbRepository:
                 "created_at": now, "updated_at": now,
             })
 
-    def find_sources_by_kb_id(self, kb_id: str) -> List[dict]:
+    def find_sources_by_kb_id(self, kb_id: str) -> list[dict]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT id, kb_id, source_type, source_url, source_path, branch, status, file_count, "
@@ -362,7 +413,7 @@ class KbRepository:
                     f"INSERT INTO kb_index_meta (kb_id, {col}) VALUES (:kb_id, :value)"
                 ), {"kb_id": kb_id, "value": value})
 
-    def find_index_meta_by_kb_id(self, kb_id: str) -> Dict[str, str]:
+    def find_index_meta_by_kb_id(self, kb_id: str) -> dict[str, str]:
         with get_db() as db:
             row = db.execute(text(
                 "SELECT kb_id, index_type, embedding_dim, chunk_count, index_path, built_at, status "
@@ -444,5 +495,12 @@ class KbRepository:
             id=row["id"], kb_id=row["kb_id"], doc_id=row["doc_id"], task_type=row["task_type"],
             status=row["status"], progress=row["progress"], total_items=row["total_items"],
             done_items=row["done_items"], error_message=row["error_message"],
-            created_at=row["created_at"], completed_at=row["completed_at"],
+            created_at=row["created_at"], completed_at=row["completed_at"], payload=row.get("payload"),
+            worker_id=row.get("worker_id"), lease_until=row.get("lease_until"),
+            attempt_count=int(row.get("attempt_count") or 0), started_at=row.get("started_at"),
         )
+
+    def save_task_payload(self, task_id: str, payload: dict) -> bool:
+        with get_db() as db:
+            result = db.execute(text("UPDATE kb_tasks SET payload=:payload WHERE id=:id"), {"payload": json.dumps(payload), "id": task_id})
+            return result.rowcount == 1

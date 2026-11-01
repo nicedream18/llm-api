@@ -55,6 +55,14 @@ CREATE TABLE IF NOT EXISTS `api_keys` (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS `request_logs` (
   `id` VARCHAR(64) NOT NULL COMMENT '日志ID',
+  `request_id` VARCHAR(128) DEFAULT NULL,
+  `endpoint` VARCHAR(128) DEFAULT NULL,
+  `attempt_count` INT NOT NULL DEFAULT 1,
+  `final_attempt` INT NOT NULL DEFAULT 1,
+  `stream_status` VARCHAR(32) DEFAULT NULL,
+  `usage_source` VARCHAR(32) DEFAULT NULL,
+  `client_disconnect` TINYINT NOT NULL DEFAULT 0,
+  `truncated` TINYINT NOT NULL DEFAULT 0,
   `seq` BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增序列号',
   `api_key_id` VARCHAR(64) DEFAULT NULL COMMENT 'API密钥ID',
   `api_key_name` VARCHAR(128) DEFAULT NULL COMMENT 'API密钥名称',
@@ -63,6 +71,7 @@ CREATE TABLE IF NOT EXISTS `request_logs` (
   `model` VARCHAR(128) NOT NULL COMMENT '请求模型',
   `upstream_model` VARCHAR(128) DEFAULT NULL COMMENT '上游实际模型',
   `mode` VARCHAR(32) DEFAULT NULL COMMENT '调用模式(chat/completion/embedding)',
+  `protocol_type` VARCHAR(32) DEFAULT NULL COMMENT '协议类型',
   `status_code` INT DEFAULT NULL COMMENT 'HTTP状态码',
   `prompt_tokens` BIGINT DEFAULT 0 COMMENT '提示词Token数',
   `completion_tokens` BIGINT DEFAULT 0 COMMENT '完成Token数',
@@ -118,10 +127,14 @@ CREATE TABLE IF NOT EXISTS `security_builtin_rules` (
   `category` VARCHAR(64) DEFAULT NULL COMMENT '安全分类',
   `severity` VARCHAR(16) DEFAULT NULL COMMENT '严重级别',
   `title` VARCHAR(256) DEFAULT NULL COMMENT '规则标题',
+  `name` VARCHAR(256) DEFAULT NULL COMMENT '规则名称',
   `description` TEXT COMMENT '规则描述',
+  `pattern` TEXT COMMENT '匹配模式',
+  `action` VARCHAR(32) DEFAULT NULL COMMENT '处置动作',
   `toggle_key` VARCHAR(128) DEFAULT NULL COMMENT '开关配置键',
   `enabled` TINYINT DEFAULT 1 COMMENT '是否启用: 0=否 1=是',
   `created_at` VARCHAR(32) NOT NULL COMMENT '创建时间',
+  `updated_at` VARCHAR(32) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_rule_id` (`rule_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='内置安全规则';
@@ -133,12 +146,14 @@ CREATE TABLE IF NOT EXISTS `security_custom_rules` (
   `id` VARCHAR(64) NOT NULL COMMENT '规则ID',
   `rule_type` VARCHAR(32) DEFAULT NULL COMMENT '规则类型(regex/keyword/semantic)',
   `category` VARCHAR(64) DEFAULT NULL COMMENT '安全分类',
+  `name` VARCHAR(256) DEFAULT NULL COMMENT '规则名称',
   `pattern` TEXT COMMENT '匹配模式/正则表达式',
   `severity` VARCHAR(16) DEFAULT NULL COMMENT '严重级别',
   `action` VARCHAR(32) DEFAULT NULL COMMENT '处置动作(Allow/Sanitize/Block)',
   `enabled` TINYINT DEFAULT 1 COMMENT '是否启用: 0=否 1=是',
   `description` TEXT COMMENT '规则描述',
   `created_at` VARCHAR(32) NOT NULL COMMENT '创建时间',
+  `updated_at` VARCHAR(32) DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='自定义安全规则';
 
@@ -152,6 +167,14 @@ CREATE TABLE IF NOT EXISTS `kb_knowledge_bases` (
   `tags` TEXT COMMENT '标签(JSON数组)',
   `chunk_size` INT DEFAULT 512 COMMENT '分块大小',
   `chunk_overlap` INT DEFAULT 50 COMMENT '分块重叠',
+  `status` TINYINT DEFAULT 1,
+  `embedding_model` VARCHAR(128) DEFAULT NULL,
+  `embedding_channel_id` VARCHAR(64) DEFAULT NULL,
+  `embedding_dim` INT DEFAULT 0,
+  `doc_count` INT DEFAULT 0,
+  `chunk_count` INT DEFAULT 0,
+  `total_tokens` BIGINT DEFAULT 0,
+  `index_status` VARCHAR(32) DEFAULT 'none',
   `created_at` VARCHAR(32) NOT NULL COMMENT '创建时间',
   `updated_at` VARCHAR(32) NOT NULL COMMENT '更新时间',
   PRIMARY KEY (`id`)
@@ -198,14 +221,9 @@ CREATE TABLE IF NOT EXISTS `kb_chunks` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库分块表';
 
 -- ============================================================
--- 10a. kb_knowledge_bases 扩展列
+-- 10a. kb_knowledge_bases 扩展列（新库初始化时直接创建）
 -- ============================================================
-ALTER TABLE `kb_knowledge_bases`
-  ADD COLUMN IF NOT EXISTS `status` TINYINT DEFAULT 1 COMMENT '状态: 0=禁用 1=启用' AFTER `chunk_overlap`,
-  ADD COLUMN IF NOT EXISTS `embedding_model` VARCHAR(128) DEFAULT NULL COMMENT '嵌入模型名称' AFTER `status`,
-  ADD COLUMN IF NOT EXISTS `embedding_channel_id` VARCHAR(64) DEFAULT NULL COMMENT '嵌入渠道ID' AFTER `embedding_model`,
-  ADD COLUMN IF NOT EXISTS `embedding_dim` INT DEFAULT 0 COMMENT '嵌入向量维度' AFTER `embedding_channel_id`,
-  ADD COLUMN IF NOT EXISTS `index_status` VARCHAR(32) DEFAULT 'none' COMMENT '索引状态(none/pending/indexing/ready/error)' AFTER `embedding_dim`;
+-- These columns are included in CREATE TABLE above.
 
 -- ============================================================
 -- 10b. kb_tasks - 知识库任务表
@@ -222,6 +240,11 @@ CREATE TABLE IF NOT EXISTS `kb_tasks` (
   `error_message` TEXT COMMENT '错误信息',
   `created_at` VARCHAR(32) NOT NULL COMMENT '创建时间',
   `completed_at` VARCHAR(32) DEFAULT NULL COMMENT '完成时间',
+  `payload` MEDIUMTEXT DEFAULT NULL,
+  `worker_id` VARCHAR(128) DEFAULT NULL,
+  `lease_until` VARCHAR(32) DEFAULT NULL,
+  `attempt_count` INT NOT NULL DEFAULT 0,
+  `started_at` VARCHAR(32) DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_kb_id` (`kb_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库任务表';
@@ -291,3 +314,52 @@ CREATE TABLE IF NOT EXISTS `agent_configs` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_agent_id` (`agent_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Agent配置表';
+
+-- 12. Administrator accounts and audit events
+CREATE TABLE IF NOT EXISTS `admin_users` (
+  `id` VARCHAR(64) NOT NULL PRIMARY KEY,
+  `username` VARCHAR(128) NOT NULL UNIQUE,
+  `password_hash` TEXT NOT NULL,
+  `status` TINYINT NOT NULL DEFAULT 1,
+  `created_at` VARCHAR(32) NOT NULL,
+  `updated_at` VARCHAR(32) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `admin_audit_logs` (
+  `id` VARCHAR(64) NOT NULL PRIMARY KEY,
+  `username` VARCHAR(128) DEFAULT NULL,
+  `action` VARCHAR(128) NOT NULL,
+  `request_id` VARCHAR(128) DEFAULT NULL,
+  `client_ip` VARCHAR(64) DEFAULT NULL,
+  `success` TINYINT NOT NULL DEFAULT 1,
+  `created_at` VARCHAR(32) NOT NULL,
+  KEY `idx_admin_audit_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `api_key_quota_ledger` (
+  `id` VARCHAR(64) NOT NULL PRIMARY KEY,
+  `api_key_id` VARCHAR(64) NOT NULL,
+  `request_id` VARCHAR(128) NOT NULL UNIQUE,
+  `reserved_tokens` BIGINT NOT NULL DEFAULT 0,
+  `actual_tokens` BIGINT NOT NULL DEFAULT 0,
+  `released_tokens` BIGINT NOT NULL DEFAULT 0,
+  `status` VARCHAR(32) NOT NULL,
+  `created_at` VARCHAR(32) NOT NULL,
+  `settled_at` VARCHAR(32) DEFAULT NULL,
+  KEY `idx_quota_key` (`api_key_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `gateway_attempts` (
+  `id` VARCHAR(64) NOT NULL PRIMARY KEY,
+  `request_id` VARCHAR(128) NOT NULL,
+  `attempt_no` INT NOT NULL,
+  `channel_id` VARCHAR(64) DEFAULT NULL,
+  `channel_name` VARCHAR(128) DEFAULT NULL,
+  `status_code` INT DEFAULT NULL,
+  `error_type` VARCHAR(64) DEFAULT NULL,
+  `error_message` TEXT,
+  `duration_ms` BIGINT NOT NULL DEFAULT 0,
+  `succeeded` TINYINT NOT NULL DEFAULT 0,
+  `created_at` VARCHAR(32) NOT NULL,
+  KEY `idx_attempt_request` (`request_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

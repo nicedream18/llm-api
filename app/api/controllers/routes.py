@@ -1,18 +1,27 @@
 """All FastAPI route controllers."""
-import json
+import asyncio
 import logging
-from typing import Optional
 
-from fastapi import APIRouter, Request, Response, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from app.api.resource_dependencies import require_kb_access
+from app.application.services.misc_services import RawProxyResponse
+from app.config import config
 from app.container import get_container
-from app.types.response import Response as ApiResponse, AppException
+from app.infrastructure.database.connection import engine
+from app.infrastructure.database.migrations import status as migration_status
 from app.types.models import (
-    ChannelDTO, ApiKeyDTO, CreateKbDTO, KbKnowledgeBaseDTO, UploadDocDTO,
-    KbAskRequestDTO, KbSearchRequestDTO, AgentConfigDTO, AgentChatRequestDTO,
+    AgentChatRequestDTO,
+    AgentConfigDTO,
+    ApiKeyDTO,
+    ChannelDTO,
+    CreateKbDTO,
+    KbAskRequestDTO,
+    KbKnowledgeBaseDTO,
+    KbSearchRequestDTO,
     SecurityCustomRuleDTO,
+    UploadDocDTO,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,11 +46,14 @@ async def chat_completions(request: Request):
     is_stream = ("text/event-stream" in accept) or ('"stream"' in body_str and "true" in body_str)
     if is_stream:
         return StreamingResponse(
-            container.proxy_service.forward_stream(body_str, headers, client_ip=request.client.host if request.client else None),
+            container.proxy_service.forward_stream_async(body_str, headers, client_ip=request.client.host if request.client else None, auth_context=getattr(request.state, "auth_context", None), endpoint=str(request.url.path), request_id=getattr(request.state, "request_id", None)),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
-    status, result = container.proxy_service.forward(body_str, headers, client_ip=request.client.host if request.client else None)
+    status, result = await asyncio.to_thread(container.proxy_service.forward, body_str, headers, client_ip=request.client.host if request.client else None, auth_context=getattr(request.state, "auth_context", None), endpoint=str(request.url.path), request_id=getattr(request.state, "request_id", None))
+    if isinstance(result, RawProxyResponse):
+        response_headers = {"Content-Type": result.media_type} if result.media_type else {}
+        return Response(content=result.content, status_code=status, headers=response_headers)
     return JSONResponse(status_code=status, content=result)
 
 
@@ -56,19 +68,61 @@ async def proxy_generic(request: Request):
     container = get_container()
     body_str = (await request.body()).decode("utf-8")
     headers = {k.lower(): v for k, v in request.headers.items()}
-    status, result = container.proxy_service.forward(body_str, headers, client_ip=request.client.host if request.client else None)
+    status, result = await asyncio.to_thread(container.proxy_service.forward, body_str, headers, client_ip=request.client.host if request.client else None, auth_context=getattr(request.state, "auth_context", None), endpoint=str(request.url.path), request_id=getattr(request.state, "request_id", None))
+    if isinstance(result, RawProxyResponse):
+        response_headers = {"Content-Type": result.media_type} if result.media_type else {}
+        return Response(content=result.content, status_code=status, headers=response_headers)
     return JSONResponse(status_code=status, content=result)
 
 
 @gateway_router.get("/v1/models")
-async def models():
-    return {"object": "list", "data": [{"id": "gpt-4o", "object": "model", "owned_by": "openai"}]}
+async def models(request: Request):
+    context = getattr(request.state, "auth_context", None)
+    channels = get_container().channel_repo.get_enabled_channels()
+    names = set()
+    for channel in channels:
+        if context and context.is_api_key and context.allowed_channels and channel.id not in context.allowed_channels and channel.name not in context.allowed_channels:
+            continue
+        names.update(channel.models or [])
+    if context and context.is_api_key and context.allowed_models:
+        names.intersection_update(context.allowed_models)
+    if not names and not context:
+        names.add("gpt-4o")
+    return {"object": "list", "data": [{"id": name, "object": "model", "owned_by": "waliapi"} for name in sorted(names)]}
 
 
 @gateway_router.get("/health")
 @gateway_router.get("/api/v1/health")
 async def health():
     return {"status": "ok", "service": "WaLiAPI-Python", "version": "1.0.0"}
+
+
+@gateway_router.get("/api/v1/health/details")
+async def health_details():
+    container = get_container()
+    details = {"database": "ok", "migration": "unknown", "http_client": "ok",
+               "worker": "running" if container.kb_worker.running else "stopped"}
+    try:
+        with engine.connect() as db:
+            db.execute(__import__("sqlalchemy").text("SELECT 1"))
+        rows = migration_status()
+        details["migration"] = "ok" if all(item["checksum_valid"] for item in rows) else "invalid"
+    except Exception:
+        details["database"] = "error"
+        details["migration"] = "error"
+    try:
+        details["enabled_channels"] = len(container.channel_repo.get_enabled_channels())
+    except Exception:
+        details["enabled_channels"] = None
+    try:
+        with engine.connect() as db:
+            task_counts = db.execute(__import__("sqlalchemy").text("SELECT status, COUNT(*) AS total FROM kb_tasks GROUP BY status")).mappings().all()
+        details["tasks"] = {row["status"]: int(row["total"]) for row in task_counts}
+    except Exception:
+        details["tasks"] = None
+    details["security_rules"] = "loaded" if config.security.enabled else "disabled"
+    details["http_client"] = "closed" if container.gateway.client.is_closed else "open"
+    return {"status": "ok" if details["database"] == "ok" and details["migration"] == "ok" else "degraded", "checks": details}
 
 
 # ==================== Channel Controller ====================
@@ -103,7 +157,7 @@ async def delete_channel(channel_id: str):
 
 @channel_router.post("/{channel_id}/test")
 async def test_channel(channel_id: str):
-    return _success(get_container().channel_service.test_channel(channel_id))
+    return _success(await asyncio.to_thread(get_container().channel_service.test_channel, channel_id))
 
 
 # ==================== ApiKey Controller ====================
@@ -119,6 +173,17 @@ async def list_api_keys():
 @apikey_router.get("/{key_id}")
 async def get_api_key(key_id: str):
     return _success(get_container().channel_service.get_api_key(key_id))
+
+
+@apikey_router.get("/{key_id}/quota")
+async def get_api_key_quota(key_id: str):
+    key = get_container().channel_service.get_api_key(key_id)
+    if not key:
+        raise HTTPException(status_code=404, detail="API key not found")
+    limit = key.quota_limit or 0
+    used = key.quota_used or 0
+    return _success({"api_key_id": key.id, "quota_limit": limit or None,
+                     "quota_used": used, "quota_remaining": None if not limit else max(0, limit - used)})
 
 
 @apikey_router.post("")
@@ -147,11 +212,11 @@ async def dashboard():
 
 
 @dashboard_router.get("/logs")
-async def logs(api_key_id: Optional[str] = None, channel_id: Optional[str] = None,
-               model: Optional[str] = None, risk_level: Optional[str] = None,
-               start_time: Optional[str] = None, end_time: Optional[str] = None,
-               keyword: Optional[str] = None, page: int = 1, size: int = 20,
-               limit: Optional[int] = None):
+async def logs(api_key_id: str | None = None, channel_id: str | None = None,
+               model: str | None = None, risk_level: str | None = None,
+               start_time: str | None = None, end_time: str | None = None,
+               keyword: str | None = None, page: int = 1, size: int = 20,
+               limit: int | None = None):
     return _success(get_container().dashboard_service.logs(
         api_key_id, channel_id, model, risk_level, start_time, end_time, keyword, page, size, limit))
 
@@ -173,7 +238,7 @@ async def delete_all_logs():
 
 # ==================== KB Controller ====================
 
-kb_router = APIRouter(prefix="/api/v1/kb")
+kb_router = APIRouter(prefix="/api/v1/kb", dependencies=[Depends(require_kb_access)])
 
 
 @kb_router.post("")
@@ -182,8 +247,13 @@ async def create_kb(dto: CreateKbDTO):
 
 
 @kb_router.get("")
-async def list_kbs():
-    return _success(get_container().kb_service.list_kbs())
+async def list_kbs(request: Request):
+    rows = await asyncio.to_thread(get_container().kb_service.list_kbs)
+    context = getattr(request.state, "auth_context", None)
+    if not context.is_admin:
+        allowed = await asyncio.to_thread(get_container().access_service.allowed_resources, context, "kb")
+        rows = [row for row in rows if "*" in allowed or row.id in allowed]
+    return _success(rows)
 
 
 @kb_router.get("/{kb_id}")
@@ -220,14 +290,14 @@ async def delete_doc(kb_id: str, doc_id: str):
 async def ask(kb_id: str, request: KbAskRequestDTO):
     if not request.kb_id:
         request.kb_id = kb_id
-    return _success(get_container().kb_service.ask(kb_id, request))
+    return _success(await asyncio.to_thread(get_container().kb_service.ask, kb_id, request))
 
 
 @kb_router.post("/{kb_id}/deep-research")
 async def deep_research(kb_id: str, request: KbAskRequestDTO):
     if not request.kb_id:
         request.kb_id = kb_id
-    return _success(get_container().kb_service.deep_research(kb_id, request))
+    return _success(await asyncio.to_thread(get_container().kb_service.deep_research, kb_id, request))
 
 
 @kb_router.get("/{kb_id}/conversations")
@@ -239,14 +309,18 @@ async def get_conversations(kb_id: str):
 async def get_task(kb_id: str, task_id: str):
     return _success(get_container().kb_service.get_task(kb_id, task_id))
 
+@kb_router.post("/{kb_id}/tasks/{task_id}/cancel")
+async def cancel_task(kb_id: str, task_id: str):
+    return _success(get_container().kb_service.cancel_task(kb_id, task_id))
+
 
 @kb_router.get("/{kb_id}/tags")
-async def get_tags(kb_id: str, limit: Optional[int] = 10):
+async def get_tags(kb_id: str, limit: int | None = 10):
     return _success(get_container().kb_service.get_tags(kb_id, limit))
 
 
 @kb_router.post("/{kb_id}/tags/refresh")
-async def refresh_tags(kb_id: str, limit: Optional[int] = 10):
+async def refresh_tags(kb_id: str, limit: int | None = 10):
     return _success(get_container().kb_service.refresh_tags(kb_id, limit))
 
 
@@ -256,7 +330,7 @@ async def refresh_tags(kb_id: str, limit: Optional[int] = 10):
 async def kb_search(kb_id: str, request: KbSearchRequestDTO):
     if not request.kb_id:
         request.kb_id = kb_id
-    return _success(get_container().kb_service.search(kb_id, request))
+    return _success(await asyncio.to_thread(get_container().kb_service.search, kb_id, request))
 
 
 @kb_router.get("/{kb_id}/stats")
@@ -348,7 +422,7 @@ async def create_session(agent_id: str = Query(...), user_id: str = Query(...)):
 @agent_router.post("/{agent_id}/chat")
 async def agent_chat(agent_id: str, request: AgentChatRequestDTO):
     request.agent_id = agent_id
-    return _success(get_container().agent_service.chat(request))
+    return _success(await asyncio.to_thread(get_container().agent_service.chat, request))
 
 
 # ==================== Security Controller ====================
@@ -375,12 +449,18 @@ async def list_custom_rules():
 
 @security_router.post("/rules/custom")
 async def create_custom_rule(rule: SecurityCustomRuleDTO):
-    return _success(get_container().security_service.create_custom_rule(rule))
+    try:
+        return _success(get_container().security_service.create_custom_rule(rule))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @security_router.put("/rules/custom/{rule_id}")
 async def update_custom_rule(rule_id: str, rule: SecurityCustomRuleDTO):
-    return _success(get_container().security_service.update_custom_rule(rule_id, rule))
+    try:
+        return _success(get_container().security_service.update_custom_rule(rule_id, rule))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @security_router.delete("/rules/custom/{rule_id}")
@@ -404,18 +484,23 @@ mcp_router = APIRouter(prefix="/api/mcp")
 
 
 @mcp_router.get("/info")
-async def mcp_info():
-    return {"name": "WaLiAPI MCP Server", "version": "1.0.0", "transport": "sse",
-            "tools": ["ask_knowledge_base", "search_knowledge_base", "list_knowledge_bases"]}
+async def mcp_info(request: Request):
+    tools = await asyncio.to_thread(get_container().mcp_service.list_tools,
+                                    getattr(request.state, "auth_context", None))
+    return {"name": "WaLiAPI MCP Server", "version": "1.0.0", "transport": "streamable-http",
+            "endpoint": "/mcp", "protocolVersion": "2025-06-18", "stateless": True,
+            "tools": [tool["name"] for tool in tools["tools"]]}
 
 
 @mcp_router.post("/tools/list")
-async def mcp_list_tools():
-    return get_container().mcp_service.list_tools()
+async def mcp_list_tools(request: Request):
+    return await asyncio.to_thread(get_container().mcp_service.list_tools,
+                                    getattr(request.state, "auth_context", None))
 
 
 @mcp_router.post("/tools/call")
-async def mcp_call_tool(body: dict):
+async def mcp_call_tool(body: dict, request: Request):
     tool_name = body.get("name")
-    arguments = body.get("arguments") or {}
-    return get_container().mcp_service.call_tool(tool_name, arguments)
+    arguments = body.get("arguments", {})
+    return await asyncio.to_thread(get_container().mcp_service.call_tool, tool_name, arguments,
+                                   getattr(request.state, "auth_context", None))

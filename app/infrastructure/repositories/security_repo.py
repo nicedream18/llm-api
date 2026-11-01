@@ -1,23 +1,27 @@
 """Security repository for findings, builtin rules, custom rules."""
-import uuid
 import logging
-from datetime import datetime, timezone
-from typing import List, Optional
+import uuid
+from datetime import UTC, datetime
+
 from sqlalchemy import text
 
+from app.domain.entities import (
+    SecurityBuiltinRuleEntity,
+    SecurityCustomRuleEntity,
+    SecurityFindingEntity,
+)
 from app.infrastructure.database.connection import get_db
-from app.domain.entities import SecurityFindingEntity, SecurityBuiltinRuleEntity, SecurityCustomRuleEntity
 
 logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class SecurityRepository:
 
-    def save_findings(self, findings: List[SecurityFindingEntity]):
+    def save_findings(self, findings: list[SecurityFindingEntity]):
         if not findings:
             return
         params_list = []
@@ -42,7 +46,7 @@ class SecurityRepository:
                     ":title, :description, :location, :evidence_masked, :evidence_hash, :action, :created_at)"
                 ), p)
 
-    def get_findings_by_log_id(self, log_id: str) -> List[SecurityFindingEntity]:
+    def get_findings_by_log_id(self, log_id: str) -> list[SecurityFindingEntity]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT id, log_id, phase, category, rule_id, severity, title, description, "
@@ -51,7 +55,7 @@ class SecurityRepository:
             ), {"log_id": log_id}).mappings().all()
             return [self._to_finding_entity(r) for r in rows]
 
-    def get_all_findings(self, offset: int, limit: int) -> List[SecurityFindingEntity]:
+    def get_all_findings(self, offset: int, limit: int) -> list[SecurityFindingEntity]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT id, log_id, phase, category, rule_id, severity, title, description, "
@@ -65,28 +69,34 @@ class SecurityRepository:
             row = db.execute(text("SELECT COUNT(*) AS cnt FROM security_findings")).mappings().first()
             return int(row["cnt"]) if row else 0
 
-    def get_all_builtin_rules(self) -> List[SecurityBuiltinRuleEntity]:
+    def get_all_builtin_rules(self) -> list[SecurityBuiltinRuleEntity]:
         with get_db() as db:
             rows = db.execute(text(
-                "SELECT id, category, rule_id, name, description, severity, pattern, action, "
+                "SELECT id, category, rule_id, COALESCE(name, title) AS name, description, severity, pattern, action, "
                 "enabled, created_at, updated_at FROM security_builtin_rules "
                 "ORDER BY category ASC, created_at ASC"
             )).mappings().all()
             return [self._to_builtin_entity(r) for r in rows]
 
-    def update_builtin_rule(self, rule_id: str, enabled: Optional[int], severity: Optional[str]) -> bool:
+    def update_builtin_rule(self, rule_id: str, enabled: int | None, severity: str | None) -> bool:
         with get_db() as db:
+            updates = []
+            params = {"id": rule_id}
+            if enabled is not None:
+                updates.append("enabled=:enabled")
+                params["enabled"] = enabled
             if severity:
-                result = db.execute(text(
-                    "UPDATE security_builtin_rules SET enabled=:enabled, severity=:severity, updated_at=NOW() WHERE id=:id"
-                ), {"id": rule_id, "enabled": enabled, "severity": severity})
-            else:
-                result = db.execute(text(
-                    "UPDATE security_builtin_rules SET enabled=:enabled, updated_at=NOW() WHERE id=:id"
-                ), {"id": rule_id, "enabled": enabled})
+                updates.append("severity=:severity")
+                params["severity"] = severity
+            if not updates:
+                return False
+            updates.append("updated_at=UTC_TIMESTAMP()")
+            result = db.execute(text(
+                f"UPDATE security_builtin_rules SET {', '.join(updates)} WHERE id=:id"
+            ), params)
             return result.rowcount > 0
 
-    def get_all_custom_rules(self) -> List[SecurityCustomRuleEntity]:
+    def get_all_custom_rules(self) -> list[SecurityCustomRuleEntity]:
         with get_db() as db:
             rows = db.execute(text(
                 "SELECT id, category, name, description, severity, pattern, action, "

@@ -1,32 +1,32 @@
 """KB, Security, Agent, and Proxy application services."""
-import uuid
-import json
 import base64
 import logging
-import threading
-from datetime import datetime, timezone
-from typing import List, Optional
+import uuid
+from datetime import UTC, datetime
 
-from app.types.models import (
-    CreateKbDTO, KbKnowledgeBaseDTO, UploadDocDTO, KbDocumentDTO,
-    KbAskRequestDTO, KbAskResponseDTO, KbSearchRequestDTO, KbSearchResultDTO,
-    KbStatsDTO, KbTagDTO, AgentConfigDTO, AgentChatRequestDTO, AgentChatResponseDTO,
-    SecurityBuiltinRuleDTO, SecurityCustomRuleDTO, SecurityFindingDTO,
-)
 from app.domain.entities import (
-    KbKnowledgeBaseEntity, KbDocumentEntity, KbChunkEntity, KbTaskEntity,
-    AgentConfigEntity, SecurityBuiltinRuleEntity, SecurityCustomRuleEntity,
-    RequestLogEntity, ProxyRequestEntity,
+    KbDocumentEntity,
+    KbKnowledgeBaseEntity,
+    KbTaskEntity,
 )
-from app.domain.protocol import ProtocolDetector
-from app.domain.security import SecurityScanner
-from app.types.enums import RiskLevel
+from app.types.models import (
+    CreateKbDTO,
+    KbAskRequestDTO,
+    KbAskResponseDTO,
+    KbDocumentDTO,
+    KbKnowledgeBaseDTO,
+    KbSearchRequestDTO,
+    KbSearchResultDTO,
+    KbStatsDTO,
+    KbTagDTO,
+    UploadDocDTO,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def _now():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class KbService:
@@ -84,14 +84,13 @@ class KbService:
             id=str(uuid.uuid4()), kb_id=kb_id, doc_id=entity.id, task_type="import",
             status="pending", progress=0, total_items=0, done_items=0, created_at=now,
         )
-        self.repo.save_task(task)
-        thread = threading.Thread(target=self._run_import_pipeline, args=(kb_id, entity.id, task.id, dto), daemon=True)
-        thread.start()
+        self.repo.save_task(task, {"filename": dto.filename, "content": dto.content, "file_type": dto.file_type, "source_type": dto.source_type})
         return self._to_doc_dto(entity)
 
-    def _run_import_pipeline(self, kb_id, doc_id, task_id, dto):
+    def run_import_pipeline(self, kb_id, doc_id, task_id, dto):
+        self.repo.update_task_status(task_id, "running", None)
+        self.repo.update_doc_status(doc_id, "processing", None)
         try:
-            self.repo.update_task_status(task_id, "processing", None)
             kb = self.repo.find_kb_by_id(kb_id)
             if not kb:
                 raise Exception("KB not found: " + kb_id)
@@ -106,7 +105,6 @@ class KbService:
             chunks = self.splitter.split(content, dto.file_type or "txt", chunk_config, metadata)
             if not chunks:
                 raise Exception("Empty content or no chunks")
-            self.repo.update_doc_status(doc_id, "processing", None)
             embedding_model = kb.embedding_model or "text-embedding-3-small"
             chunk_contents = [c.content for c in chunks]
             from app.domain.knowledge import serialize_embedding
@@ -139,10 +137,9 @@ class KbService:
             self.repo.update_kb(kb)
             self.repo.update_task_status(task_id, "completed", None)
             logger.info(f"Import pipeline done: kbId={kb_id}, docId={doc_id}, chunks={len(chunks)}")
-        except Exception as e:
-            logger.error(f"Import pipeline failed: kbId={kb_id}, docId={doc_id}: {e}")
-            self.repo.update_task_status(task_id, "failed", str(e))
-            self.repo.update_doc_status(doc_id, "error", str(e))
+        except Exception:
+            logger.error("Import pipeline failed", extra={"kb_id": kb_id, "doc_id": doc_id, "task_id": task_id})
+            raise
 
     def list_docs(self, kb_id):
         return [self._to_doc_dto(e) for e in self.repo.find_doc_by_kb_id(kb_id)]
@@ -233,26 +230,21 @@ class KbService:
         doc = self.repo.find_doc_by_id(doc_id)
         if not doc or doc.kb_id != kb_id:
             return {"success": False, "message": "Document not found"}
+        chunks = self.repo.find_chunk_by_doc_id(doc_id)
+        if not chunks:
+            return {"success": False, "message": "No chunks found for document"}
         now = _now()
         task = KbTaskEntity(
             id=str(uuid.uuid4()), kb_id=kb_id, doc_id=doc_id, task_type="reindex",
             status="pending", progress=0, total_items=0, done_items=0, created_at=now,
         )
         self.repo.save_task(task)
-        chunks = self.repo.find_chunk_by_doc_id(doc_id)
-        if not chunks:
-            return {"success": False, "message": "No chunks found for document"}
-        thread = threading.Thread(
-            target=self._run_reindex_pipeline,
-            args=(kb_id, doc_id, task_id, chunks),
-            daemon=True,
-        )
-        thread.start()
         return {"success": True, "taskId": task.id, "message": "Reindex started"}
 
-    def _run_reindex_pipeline(self, kb_id, doc_id, task_id, chunks):
+    def run_reindex_pipeline(self, kb_id, doc_id, task_id, chunks):
         try:
-            self.repo.update_task_status(task_id, "processing", None)
+            self.repo.update_task_status(task_id, "running", None)
+            self.repo.update_doc_status(doc_id, "processing", None)
             kb = self.repo.find_kb_by_id(kb_id)
             embedding_model = kb.embedding_model if kb else "text-embedding-3-small"
             from app.domain.knowledge import serialize_embedding
@@ -262,12 +254,18 @@ class KbService:
                 if i < len(embeddings) and embeddings[i]:
                     chunk.embedding = serialize_embedding(embeddings[i])
                 self.repo.update_task_progress(task_id, i + 1, int((i + 1) * 100.0 / len(chunks)))
-            self.repo.save_chunk_batch(chunks)
+            for chunk in chunks:
+                if chunk.embedding is not None and chunk.id:
+                    self.repo.update_chunk_embedding(chunk.id, chunk.embedding)
+            self.repo.update_doc_status(doc_id, "ready", None)
             self.repo.update_task_status(task_id, "completed", None)
             logger.info(f"Reindex done: kbId={kb_id}, docId={doc_id}, chunks={len(chunks)}")
         except Exception as e:
             logger.error(f"Reindex failed: kbId={kb_id}, docId={doc_id}: {e}")
-            self.repo.update_task_status(task_id, "failed", str(e))
+            raise
+
+    def cancel_task(self, kb_id, task_id):
+        return self.repo.cancel_task(kb_id, task_id)
 
     def get_doc(self, kb_id, doc_id):
         """Get document detail. Route entry for GET /{id}/documents/{docId}."""
@@ -319,7 +317,7 @@ class KbService:
     def get_tags(self, kb_id, limit=10):
         contents = self.repo.sample_contents(kb_id, 200)
         word_freq = {}
-        stopwords = set("the a an is are was were be been being have has had do does did will would could should may might must can this that these those it its for and or but in on at to of from by with as".split())
+        stopwords = set(["the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can", "this", "that", "these", "those", "it", "its", "for", "and", "or", "but", "in", "on", "at", "to", "of", "from", "by", "with", "as"])
         for content in contents:
             self._extract_words(content, word_freq, stopwords)
         sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:limit]

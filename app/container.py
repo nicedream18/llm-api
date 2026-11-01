@@ -2,20 +2,39 @@
 import logging
 from functools import lru_cache
 
-from app.config import config
-from app.infrastructure.repositories.channel_repo import ChannelRepository
-from app.infrastructure.repositories.log_repo import LogRepository
-from app.infrastructure.repositories.security_repo import SecurityRepository
-from app.infrastructure.repositories.kb_repo import KbRepository
-from app.infrastructure.repositories.agent_repo import AgentRepository
-from app.domain.dispatcher import Dispatcher
-from app.domain.gateway import GatewayService
-from app.domain.security import SecurityScanner
-from app.domain.knowledge import TextSplitter, EmbedderService, RetrieverService, RagContextBuilder, RagService
-from app.domain.agent_service import AgentChatService
+from app.application.services.access_service import AccessService
+from app.application.services.admin_service import AdminService
 from app.application.services.channel_dashboard import ChannelService, DashboardService
 from app.application.services.kb_service import KbService
-from app.application.services.misc_services import SecurityService, AgentService, ProxyService, McpService
+from app.application.services.kb_worker import KnowledgeTaskWorker
+from app.application.services.misc_services import (
+    AgentService,
+    McpService,
+    ProxyService,
+    SecurityService,
+)
+from app.application.services.wiki_service import WikiService
+from app.config import config
+from app.domain.agent_service import AgentChatService
+from app.domain.dispatcher import Dispatcher
+from app.domain.gateway import GatewayService
+from app.domain.knowledge import (
+    EmbedderService,
+    RagContextBuilder,
+    RagService,
+    RetrieverService,
+    TextSplitter,
+)
+from app.domain.security import SecurityScanner
+from app.infrastructure.database.admin_repo import AdminRepository
+from app.infrastructure.repositories.access_repo import AccessRepository
+from app.infrastructure.repositories.agent_repo import AgentRepository
+from app.infrastructure.repositories.channel_repo import ChannelRepository
+from app.infrastructure.repositories.kb_repo import KbRepository
+from app.infrastructure.repositories.log_repo import LogRepository
+from app.infrastructure.repositories.quota_repo import QuotaRepository
+from app.infrastructure.repositories.security_repo import SecurityRepository
+from app.infrastructure.repositories.wiki_repo import WikiRepository
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +49,9 @@ class Container:
         self.security_repo = SecurityRepository()
         self.kb_repo = KbRepository()
         self.agent_repo = AgentRepository()
+        self.quota_repo = QuotaRepository()
+        self.admin_repo = AdminRepository()
+        self.admin_service = AdminService(self.admin_repo)
 
         # Stats repository reuses log_repo
         class StatsRepository:
@@ -55,11 +77,14 @@ class Container:
         self.channel_service = ChannelService(self.channel_repo, self.gateway)
         self.dashboard_service = DashboardService(self.log_repo, self.stats_repo)
         self.kb_service = KbService(self.kb_repo, self.rag, self.text_splitter, self.embedder)
+        self.kb_worker = KnowledgeTaskWorker(self.kb_service, self.kb_repo)
         self.security_service = SecurityService(self.security_repo)
         self.agent_service = AgentService(self.agent_repo, self.agent_chat)
         self.proxy_service = ProxyService(self.gateway, self.security_scanner, self.security_settings,
-                                          self.log_repo, self.security_repo)
-        self.mcp_service = McpService(self.kb_service)
+                                          self.log_repo, self.security_repo, self.quota_repo, self.channel_repo)
+        self.access_service = AccessService(AccessRepository())
+        self.mcp_service = McpService(self.kb_service, self.access_service)
+        self.wiki_service = WikiService(WikiRepository(), self.proxy_service)
 
 
 @lru_cache(maxsize=1)

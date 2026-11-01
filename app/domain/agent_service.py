@@ -1,9 +1,9 @@
 """Agent chat service: manages sessions and routes messages through the gateway."""
+import asyncio
 import json
-import uuid
 import logging
+import uuid
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 
 from app.domain.entities import ProxyRequestEntity
 
@@ -69,7 +69,7 @@ class AgentChatService:
 
         body = {"model": model, "messages": messages, "stream": False}
         request = ProxyRequestEntity(model=model, body=body, stream=False, protocol_type="openai")
-        response = self.gateway_service.forward(request)
+        response = self.gateway_service.forward_sync(request)
 
         if not response.success:
             return "\u5bf9\u8bdd\u5931\u8d25: " + (response.error_message or "")
@@ -130,6 +130,12 @@ class AgentChatService:
                     messages.append({"role": "assistant", "content": "".join(full_content)})
                 on_complete()
 
-            self.gateway_service.forward_stream(request, _on_chunk, on_error, _on_complete)
+            async def _consume():
+                async for chunk in self.gateway_service.stream(request):
+                    if chunk == "[DONE]":
+                        continue
+                    _on_chunk(chunk)
+                _on_complete()
+            asyncio.run(_consume())
         except Exception as e:
             on_error(e)

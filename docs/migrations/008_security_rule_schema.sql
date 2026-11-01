@@ -1,0 +1,1 @@
+-- Add fields required by the security-rule repository to legacy installations.

@@ -37,7 +37,7 @@ function switchTab(id){
   }
   const loaders={
     dashboard:loadDashboard,channels:loadChannels,apikeys:loadApiKeys,
-    agents:loadAgents,logs:loadLogs,knowledge:loadKb,
+    agents:loadAgents,logs:loadLogs,knowledge:loadKb,wiki:loadWiki,
     security:loadSecurity,usage:fillUsageModels
   };
   if(loaders[id])loaders[id]();
@@ -49,7 +49,7 @@ function updatePage(id){
   if(!container)return;
   const renderers={
     dashboard:pgDashboard,channels:pgChannels,apikeys:pgApiKeys,
-    agents:pgAgents,logs:pgLogs,knowledge:pgKb,
+    agents:pgAgents,logs:pgLogs,knowledge:pgKb,wiki:pgWiki,
     security:pgSecurity,usage:pgUsage
   };
   const r=renderers[id];

@@ -1,19 +1,45 @@
 """WaLiAPI-Python main application entry point."""
 import logging
-import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import config
-from app.api.middleware.auth import ApiKeyAuthMiddleware
+from app.api.controllers.access_routes import router as access_router
+from app.api.controllers.auth_routes import router as auth_router
+from app.api.controllers.mcp_routes import router as standard_mcp_router
 from app.api.controllers.routes import (
-    gateway_router, channel_router, apikey_router, dashboard_router,
-    kb_router, agent_router, security_router, mcp_router,
+    agent_router,
+    apikey_router,
+    channel_router,
+    dashboard_router,
+    gateway_router,
+    kb_router,
+    mcp_router,
+    security_router,
 )
+from app.api.controllers.wiki_routes import router as wiki_router
+from app.api.error_handlers import application_error_handler
+from app.api.middleware.auth import ApiKeyAuthMiddleware, RequestContextMiddleware
+from app.application.errors import ApplicationError
+from app.config import config
+from app.container import get_container
+from app.infrastructure.database.migrations import apply_migrations
+
+
+@asynccontextmanager
+async def lifespan(app):
+    apply_migrations()
+    await get_container().kb_worker.start()
+    yield
+    await get_container().kb_worker.stop()
+    try:
+        await get_container().gateway.aclose()
+    except Exception:
+        logger.exception("Failed to close gateway client")
 
 logging.basicConfig(
     level=getattr(logging, config.log_level.upper(), logging.INFO),
@@ -21,12 +47,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="WaLiAPI-Python", version="1.0.0")
+app = FastAPI(title="WaLiAPI-Python", version="1.0.0", lifespan=lifespan)
 
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(config.cors_allowed_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,6 +60,7 @@ app.add_middleware(
 )
 
 # API key auth middleware
+app.add_middleware(RequestContextMiddleware)
 app.add_middleware(ApiKeyAuthMiddleware)
 
 # Routers
@@ -45,14 +72,25 @@ app.include_router(kb_router)
 app.include_router(agent_router)
 app.include_router(security_router)
 app.include_router(mcp_router)
+app.include_router(standard_mcp_router)
+app.include_router(auth_router)
+app.include_router(wiki_router)
+app.include_router(access_router)
+app.add_exception_handler(ApplicationError, application_error_handler)
 
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    request_id = getattr(request.state, "request_id", None)
+    logger.error(
+        "Unhandled exception",
+        exc_info=(type(exc), exc, exc.__traceback__),
+        extra={"request_id": request_id},
+    )
     return JSONResponse(
         status_code=500,
-        content={"code": "0001", "info": str(exc), "data": None},
+        content={"code": "0001", "info": "Internal server error", "data": None},
+        headers={"X-Request-ID": request_id} if request_id else None,
     )
 
 

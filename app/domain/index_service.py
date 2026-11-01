@@ -1,10 +1,9 @@
 """HNSW index service for knowledge base vector search."""
+import heapq
+import logging
 import os
 import struct
-import logging
-import heapq
-from typing import List, Optional, Dict, Any
-from collections import OrderedDict
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +24,11 @@ class HnswIndex:
         self.max_m = max_m
         self.ef_construction = ef_construction
         self.ef_search = ef_search
-        self.nodes: List[Dict[str, Any]] = []
+        self.nodes: list[dict[str, Any]] = []
         self.entry_point = -1
         self.initialized = False
 
-    def build(self, ids: List[int], vectors: List[List[float]]):
+    def build(self, ids: list[int], vectors: list[list[float]]):
         if len(ids) != len(vectors):
             raise ValueError("ids and vectors length mismatch")
         if not ids:
@@ -60,7 +59,7 @@ class HnswIndex:
         self.initialized = True
         logger.info(f"HNSW index built: {len(self.nodes)} nodes, dim={self.dim}, maxM={self.max_m}")
 
-    def search(self, query_vector: List[float], top_k: int) -> List[Dict[str, Any]]:
+    def search(self, query_vector: list[float], top_k: int) -> list[dict[str, Any]]:
         if not self.initialized or not self.nodes:
             return []
 
@@ -126,7 +125,7 @@ class HnswIndex:
             return None
 
     @staticmethod
-    def _cosine_distance(a: List[float], b: List[float]) -> float:
+    def _cosine_distance(a: list[float], b: list[float]) -> float:
         if len(a) != len(b):
             raise ValueError(f"Vector dim mismatch: {len(a)} vs {len(b)}")
         dot = sum(x * y for x, y in zip(a, b))
@@ -146,7 +145,7 @@ class IndexService:
         os.makedirs(INDEX_DIR, exist_ok=True)
         logger.info(f"HNSW index directory: {INDEX_DIR}")
 
-    def build_index(self, kb_id: str) -> Dict[str, Any]:
+    def build_index(self, kb_id: str) -> dict[str, Any]:
         logger.info(f"Building index: kbId={kb_id}")
         chunks = self.repo.find_chunk_by_kb_id(kb_id)
         if not chunks:
@@ -192,10 +191,10 @@ class IndexService:
             "indexPath": index_path,
         }
 
-    def get_index_status(self, kb_id: str) -> Dict[str, str]:
+    def get_index_status(self, kb_id: str) -> dict[str, str]:
         return self.repo.find_index_meta_by_kb_id(kb_id)
 
-    def drop_index(self, kb_id: str) -> Dict[str, Any]:
+    def drop_index(self, kb_id: str) -> dict[str, Any]:
         index_path = os.path.join(INDEX_DIR, f"{kb_id}.index")
         file_deleted = False
         if os.path.exists(index_path):
@@ -209,7 +208,7 @@ class IndexService:
         logger.info(f"Index dropped: kbId={kb_id}, fileDeleted={file_deleted}")
         return {"success": True, "fileDeleted": file_deleted}
 
-    def search_with_index(self, kb_id: str, query_vector: List[float], top_k: int):
+    def search_with_index(self, kb_id: str, query_vector: list[float], top_k: int):
         index_path = os.path.join(INDEX_DIR, f"{kb_id}.index")
         index = HnswIndex.load(index_path)
         if not index or not index.initialized:
@@ -239,14 +238,14 @@ class IndexService:
         return results
 
     @staticmethod
-    def _deserialize_vector(data: bytes) -> Optional[List[float]]:
+    def _deserialize_vector(data: bytes) -> list[float] | None:
         if not data:
             return None
         float_count = len(data) // 4
         return list(struct.unpack(f"<{float_count}f", data[:float_count * 4]))
 
     @staticmethod
-    def _parse_metadata(metadata_str: Optional[str]) -> Dict[str, Any]:
+    def _parse_metadata(metadata_str: str | None) -> dict[str, Any]:
         if not metadata_str:
             return {}
         import json

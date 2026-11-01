@@ -1,0 +1,1 @@
+-- Legacy column compatibility corrections (protocol_type and stream column mapping).
