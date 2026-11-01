@@ -125,3 +125,43 @@ def test_mysql_wiki_transactions_cascade_and_backup(mysql_engine):
             ).scalar_one()
             == 0
         )
+
+
+def test_mysql_migration_lock_and_quota_accounting(mysql_engine, monkeypatch):
+    migrations.apply_migrations()
+    with mysql_engine.connect() as holder:
+        assert holder.execute(text("SELECT GET_LOCK('waliapi_schema_migrations', 0)")).scalar_one() == 1
+        with pytest.raises(RuntimeError, match="Could not acquire schema migration lock"):
+            migrations.apply_migrations()
+        holder.execute(text("SELECT RELEASE_LOCK('waliapi_schema_migrations')"))
+
+    from contextlib import contextmanager
+
+    from app.infrastructure.repositories import quota_repo
+    from app.infrastructure.repositories.quota_repo import QuotaRepository
+
+    @contextmanager
+    def mysql_db():
+        with mysql_engine.begin() as db:
+            yield db
+
+    monkeypatch.setattr(quota_repo, "get_db", mysql_db)
+    key_id = "mysql-quota-key"
+    with mysql_engine.begin() as db:
+        db.execute(
+            text("""INSERT INTO api_keys
+                (id, name, `key`, status, allowed_models, allowed_channels, quota_limit, quota_used, created_at, updated_at)
+                VALUES (:id, 'quota', :key, 1, '[]', '[]', 100, 0, UTC_TIMESTAMP(), UTC_TIMESTAMP())"""),
+            {"id": key_id, "key": "mysql-quota-secret"},
+        )
+
+    repo = QuotaRepository()
+    reservation = repo.reserve(key_id, "mysql-request-1", 80)
+    assert reservation
+    assert repo.reserve(key_id, "mysql-request-1", 80) == reservation
+    assert repo.reserve(key_id, "mysql-request-2", 30) is None
+    assert repo.settle(reservation, 50) is True
+    assert repo.settle(reservation, 20) is False
+    with mysql_engine.connect() as db:
+        row = db.execute(text("SELECT quota_used FROM api_keys WHERE id=:id"), {"id": key_id}).scalar_one()
+        assert row == 50

@@ -56,7 +56,19 @@ class ProviderRepository:
 
     def delete_account(self, account_id):
         with self.engine.begin() as db:
-            return db.execute(text("DELETE FROM provider_accounts WHERE id=:id"), {"id": account_id}).rowcount > 0
+            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
+            exists = db.execute(
+                text("SELECT id FROM provider_accounts WHERE id=:id" + lock_suffix),
+                {"id": account_id},
+            ).first()
+            if not exists:
+                return False
+            db.execute(text("DELETE FROM provider_tokens WHERE account_id=:id"), {"id": account_id})
+            return db.execute(
+                text("DELETE FROM provider_accounts WHERE id=:id"),
+                {"id": account_id},
+            ).rowcount > 0
 
     def save_token(self, account_id, values):
         row = {"id": str(uuid.uuid4()), "account_id": account_id, "created_at": _now(), "updated_at": _now(), **values}

@@ -69,3 +69,16 @@ def test_configured_provider_uses_http_oauth_and_data_endpoints(monkeypatch):
     assert adapter.models(config, "access") == ["model-a", "model-b"]
     assert calls[0][2]["data"]["code_verifier"] == "verifier"
     assert calls[-1][2]["headers"]["Authorization"] == "Bearer access"
+
+
+def test_provider_account_delete_removes_encrypted_token(tmp_path):
+    engine = create_engine("sqlite://")
+    with engine.begin() as db:
+        execute_migration(db, Path("docs/migrations/014_provider_accounts.sql"))
+    repo = ProviderRepository(engine)
+    account = repo.create_account({"provider": "codex", "name": "Delete me", "client_config": {}, "model_mapping": {}, "priority": 0})
+    repo.save_token(account["id"], {"access_token": "cipher", "refresh_token": None, "expires_at": None})
+    assert repo.delete_account(account["id"]) is True
+    assert repo.get_account(account["id"]) is None
+    assert repo.get_token(account["id"]) is None
+    assert repo.delete_account(account["id"]) is False

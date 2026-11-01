@@ -24,6 +24,26 @@ def test_software_schema_and_cli_connector_are_persisted(tmp_path, monkeypatch):
     assert {"software_instances", "software_tools", "software_call_logs"} <= set(inspect(engine).get_table_names())
 
 
+def test_deleting_instance_removes_tools_calls_and_approvals_atomically(tmp_path):
+    engine = create_engine("sqlite://")
+    with engine.begin() as db:
+        execute_migration(db, Path("docs/migrations/013_software_tools.sql"))
+        execute_migration(db, Path("docs/migrations/016_software_approvals.sql"))
+    repo = SoftwareRepository(engine)
+    service = SoftwareService(repo)
+    instance = service.create_instance(SoftwareInstanceInput(name="Echo", connector_type="cli", config={}))
+    tool = service.create_tool(SoftwareToolInput(instance_id=instance["id"], name="echo", approval_mode="per_call"))
+    approval = service.create_approval(tool["id"], {})
+    repo.record_call({"tool_id": tool["id"], "status": "succeeded", "request_summary": "{}", "response_summary": "{}"})
+
+    assert repo.delete_instance(instance["id"]) is True
+    assert repo.get_instance(instance["id"]) is None
+    assert repo.get_tool(tool["id"]) is None
+    assert repo.get_approval(approval["id"]) is None
+    assert repo.list_calls() == []
+    assert repo.delete_instance(instance["id"]) is False
+
+
 def test_software_requires_approval_and_rejects_shell_commands():
     class Repo:
         def get_tool(self, _id):

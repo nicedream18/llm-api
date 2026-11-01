@@ -6,7 +6,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 from app.infrastructure.database.connection import engine as default_engine
 
@@ -48,7 +48,24 @@ class SoftwareRepository:
 
     def delete_instance(self, instance_id):
         with self.engine.begin() as db:
-            return db.execute(text("DELETE FROM software_instances WHERE id=:id"), {"id": instance_id}).rowcount > 0
+            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
+            exists = db.execute(
+                text("SELECT id FROM software_instances WHERE id=:id" + lock_suffix),
+                {"id": instance_id},
+            ).first()
+            if not exists:
+                return False
+            # Legacy installations do not necessarily have foreign keys, so
+            # dependent rows are removed explicitly in the same transaction.
+            if inspect(db).has_table("software_approval_requests"):
+                db.execute(text("DELETE FROM software_approval_requests WHERE tool_id IN (SELECT id FROM software_tools WHERE instance_id=:id)"), {"id": instance_id})
+            db.execute(text("DELETE FROM software_call_logs WHERE tool_id IN (SELECT id FROM software_tools WHERE instance_id=:id)"), {"id": instance_id})
+            db.execute(text("DELETE FROM software_tools WHERE instance_id=:id"), {"id": instance_id})
+            return db.execute(
+                text("DELETE FROM software_instances WHERE id=:id"),
+                {"id": instance_id},
+            ).rowcount > 0
 
     def list_tools(self, instance_id=None):
         query = "SELECT * FROM software_tools" + (" WHERE instance_id=:instance_id" if instance_id else "") + " ORDER BY created_at, id"
@@ -111,7 +128,17 @@ class SoftwareRepository:
             return db.execute(text("DELETE FROM software_tools WHERE id=:id"), {"id": tool_id}).rowcount > 0
 
     def record_call(self, values):
-        row = {"id": str(uuid.uuid4()), "created_at": _now(), **values}
+        row = {
+            "id": str(uuid.uuid4()),
+            "principal_type": None,
+            "principal_id": None,
+            "error_type": None,
+            "duration_ms": 0,
+            "request_summary": None,
+            "response_summary": None,
+            "created_at": _now(),
+            **values,
+        }
         with self.engine.begin() as db:
             db.execute(text("""INSERT INTO software_call_logs
                 (id,tool_id,principal_type,principal_id,status,error_type,duration_ms,request_summary,response_summary,created_at)
