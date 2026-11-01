@@ -10,6 +10,11 @@ build/
 *.egg-info/
 *.egg
 
+# Frontend dependencies and local build cache
+frontend/node_modules/
+frontend/.vite/
+frontend/.vitest/
+
 # Virtual environments
 .venv/
 venv/
