@@ -95,7 +95,10 @@ class TextSplitter:
             token_count = self._estimate_tokens(chunk_content)
             meta = None
             if metadata:
-                meta = json.dumps({"filePath": metadata.get("filePath", ""), "start": start, "end": end})
+                meta_values = {"filePath": metadata.get("filePath", ""), "start": start, "end": end}
+                if metadata.get("heading"):
+                    meta_values["heading"] = metadata["heading"]
+                meta = json.dumps(meta_values)
             chunks.append(KbChunkEntity(
                 id=str(uuid.uuid4()), content=chunk_content, chunk_index=index,
                 token_count=token_count, chunk_type="text",
@@ -115,12 +118,21 @@ class TextSplitter:
         for line in lines:
             if line.startswith("#") and current_section:
                 section_text = "\n".join(current_section)
+                section_heading = current_section[0].strip()
+                if not section_heading.startswith("#"):
+                    section_heading = None
+                section_metadata = {**(metadata or {})}
+                if section_heading:
+                    section_metadata["heading"] = section_heading
                 if len(section_text) > config.chunk_size:
-                    chunks.extend(self._split_text(section_text, config, metadata))
+                    chunks.extend(self._split_text(section_text, config, section_metadata))
                 elif section_text.strip():
                     meta = None
                     if metadata:
-                        meta = json.dumps({"filePath": metadata.get("filePath", ""), "heading": line.strip()})
+                        meta_values = {"filePath": metadata.get("filePath", "")}
+                        if section_heading:
+                            meta_values["heading"] = section_heading
+                        meta = json.dumps(meta_values)
                     chunks.append(KbChunkEntity(
                         id=str(uuid.uuid4()), content=section_text, chunk_index=len(chunks),
                         token_count=self._estimate_tokens(section_text), chunk_type="markdown",
@@ -131,12 +143,21 @@ class TextSplitter:
                 current_section.append(line)
         if current_section:
             section_text = "\n".join(current_section)
+            section_heading = current_section[0].strip()
+            if not section_heading.startswith("#"):
+                section_heading = None
+            section_metadata = {**(metadata or {})}
+            if section_heading:
+                section_metadata["heading"] = section_heading
             if len(section_text) > config.chunk_size:
-                chunks.extend(self._split_text(section_text, config, metadata))
+                chunks.extend(self._split_text(section_text, config, section_metadata))
             elif section_text.strip():
                 meta = None
                 if metadata:
-                    meta = json.dumps({"filePath": metadata.get("filePath", "")})
+                    meta_values = {"filePath": metadata.get("filePath", "")}
+                    if section_heading:
+                        meta_values["heading"] = section_heading
+                    meta = json.dumps(meta_values)
                 chunks.append(KbChunkEntity(
                     id=str(uuid.uuid4()), content=section_text, chunk_index=len(chunks),
                     token_count=self._estimate_tokens(section_text), chunk_type="markdown",
