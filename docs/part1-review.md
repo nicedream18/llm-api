@@ -6,7 +6,7 @@
 
 | 模块 | 当前已实现 | 尚未达到完整平台能力的部分 |
 |---|---|---|
-| Wiki | 项目/页面/来源/附件、搜索标签、图谱、问答、备份恢复、资源授权、REST/MCP | React 页面是基础列表/创建；完整编辑器、附件引用体验和真实浏览器移动布局验收待做 |
+| Wiki | 项目/页面编辑、来源/附件、搜索标签、图谱、问答、备份恢复、资源授权、REST/MCP；管理台支持 Markdown 编辑和安全预览 | 真实浏览器移动布局与长文档交互验收待做 |
 | MCP | MCP 2025-06-18 JSON-RPC HTTP、KB/Wiki/Software 工具、权限校验、审计 | 无状态 JSON 响应，不支持 SSE 会话/恢复/取消；工具调试与权限管理 UI 未完成 |
 | Software | CLI/HTTP/MCP connector、OpenAPI 3.0/3.1 JSON 预览与选择导入、参数映射、schema 校验、启停、审批检查、脱敏调用记录、MCP 聚合 | 无自动扫描安装；不支持外部 `$ref`、header/cookie 参数、表单请求体或认证配置 UI；界面缺实例完整编辑、审批队列和调用调试 |
 | Auth Provider | 账户、PKCE OAuth 流程、Token 加密/刷新/退出、配额和模型端点、HTTP adapter | 厂商专属端点未做真实联调；账户尚未接入网关账号池和故障切换；界面不能管理连接生命周期 |
@@ -19,7 +19,7 @@
 
 - 最新完整 Python 测试：322 passed，2 skipped，覆盖率 86.04%；GitHub Actions 全量测试命令执行 85% 门槛。
 - 跳过项为隔离 MySQL 集成测试，因为本机未提供测试 MySQL 服务；SQLite 测试不能替代 MySQL 的锁、事务和迁移验证。
-- React 前端 3 项 Vitest 通过，TypeScript 检查和 Vite 生产构建通过。
+- React 前端 9 项 Vitest 通过，TypeScript 检查和 Vite 生产构建通过；Node 静态 Wiki 渲染测试 3 项通过。
 - 全仓 Ruff、Mypy（81 个源文件）、compileall、diff 检查、Node/Vitest 测试和前端生产构建均已通过。
 - 仓储行为测试在临时 SQLite 文件/数据库上执行，不使用应用配置的数据库。
 - 全局仍有 Starlette/AnyIO 弃用警告；不是本次断言失败。
@@ -29,7 +29,7 @@
 1. 使用隔离 MySQL 实例验证全量 migration upgrade 重复执行、checksum 拒绝、事务/锁和级联删除。
 2. 为 Auth Provider 接入厂商真实 API，并先明确 token 轮换、失败降级与账号生命周期，再加账号路由。
 3. 补齐 Software 自动扫描/安装、实例凭据配置、待审批队列和调用调试 UI。
-4. 补 Wiki 编辑、附件引用、备份/恢复交互和浏览器移动端工作流。
+4. 对 Wiki 管理台执行真实浏览器移动端工作流验收，并继续补长文档编辑性能测试。
 5. 继续补 middleware、migration runner、Gateway、streaming、Importer 和 repository 低覆盖分支；覆盖率全局 85% 并不意味着关键模块覆盖充分。
 
 ## 最近发现并修复

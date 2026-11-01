@@ -1,7 +1,8 @@
 import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { del, get, post, put, upload } from "./api";
-import type { ClientConfig, Dashboard, KnowledgeBase, OpenApiPreview, PromptTemplate, Provider, SoftwareTool, WikiPage, WikiProject } from "./types";
+import type { ClientConfig, Dashboard, KnowledgeBase, OpenApiPreview, PromptTemplate, Provider, SoftwareTool } from "./types";
+import { WikiManager } from "./WikiManager";
 import "./styles.css";
 import "./software.css";
 
@@ -32,7 +33,7 @@ function PageView({ page, onError }: { page: Page; onError: (message: string) =>
   if (page === "software") return <SoftwarePage onError={onError} />;
   if (page === "providers") return <ProviderPage onError={onError} />;
   if (page === "knowledge") return <KnowledgePage onError={onError} />;
-  if (page === "wiki") return <WikiPageView onError={onError} />;
+  if (page === "wiki") return <WikiManager onError={onError} />;
   return <SettingsPage onError={onError} />;
 }
 
@@ -63,20 +64,6 @@ function KnowledgePage({ onError }: { onError: (message: string) => void }) {
   const create = () => { if (!name.trim()) return; post<KnowledgeBase>("/api/v1/kb", { name: name.trim() }).then(() => { setName(""); load(); }).catch((error: Error) => onError(error.message)); };
   const handleUpload = (event: FormEvent<HTMLInputElement>) => { const file = event.currentTarget.files?.[0]; if (!file || !selectedKb) return; upload(`/api/v1/kb/${selectedKb}/documents/upload`, file).then(() => { event.currentTarget.value = ""; load(); }).catch((error: Error) => onError(error.message)); };
   return <section><div className="panel"><div className="panel-head"><h2>知识库</h2><button className="primary" onClick={load}>刷新</button></div><div className="inline-form"><input placeholder="新知识库名称" value={name} onChange={event => setName(event.target.value)} /><button className="primary" onClick={create}>创建</button></div><div className="inline-form"><select value={selectedKb} onChange={event => setSelectedKb(event.target.value)}><option value="">选择上传目标</option>{rows.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select><input type="file" onChange={handleUpload} disabled={!selectedKb} /></div><div className="card-list">{rows.map(row => <article className="subcard" key={row.id}><strong>{row.name}</strong><span>{row.description || "暂无描述"}</span><small>{row.doc_count} 文档 · {row.chunk_count} 分块 · {row.index_status}</small></article>)}</div>{rows.length === 0 && <p className="muted">暂无知识库。</p>}</div></section>;
-}
-
-function WikiPageView({ onError }: { onError: (message: string) => void }) {
-  const [projects, setProjects] = useState<WikiProject[]>([]);
-  const [projectId, setProjectId] = useState("");
-  const [pages, setPages] = useState<WikiPage[]>([]);
-  const [name, setName] = useState("");
-  const [title, setTitle] = useState("");
-  const loadProjects = () => get<WikiProject[]>("/api/v1/wiki/projects").then(items => { setProjects(items); if (!projectId && items[0]) setProjectId(items[0].id); }).catch((error: Error) => onError(error.message));
-  useEffect(() => { loadProjects(); }, []);
-  useEffect(() => { if (!projectId) return; get<{ items: WikiPage[] }>(`/api/v1/wiki/projects/${projectId}/pages`).then(result => setPages(result.items)).catch((error: Error) => onError(error.message)); }, [projectId]);
-  const createProject = () => { if (!name.trim()) return; post<WikiProject>("/api/v1/wiki/projects", { name: name.trim() }).then(() => { setName(""); loadProjects(); }).catch((error: Error) => onError(error.message)); };
-  const createPage = () => { if (!projectId || !title.trim()) return; post<WikiPage>(`/api/v1/wiki/projects/${projectId}/pages`, { path: `${title.trim().toLowerCase().replace(/\s+/g, "-")}.md`, title: title.trim(), content: "" }).then(() => { setTitle(""); return get<{ items: WikiPage[] }>(`/api/v1/wiki/projects/${projectId}/pages`); }).then(result => result && setPages(result.items)).catch((error: Error) => onError(error.message)); };
-  return <section><div className="panel"><div className="panel-head"><h2>Wiki 项目</h2><button className="primary" onClick={loadProjects}>刷新</button></div><div className="inline-form"><input placeholder="新项目名称" value={name} onChange={event => setName(event.target.value)} /><button className="primary" onClick={createProject}>创建项目</button></div><select value={projectId} onChange={event => setProjectId(event.target.value)}><option value="">选择项目</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select><div className="inline-form"><input placeholder="新页面标题" value={title} onChange={event => setTitle(event.target.value)} disabled={!projectId} /><button className="primary" onClick={createPage} disabled={!projectId}>创建页面</button></div><div className="card-list">{pages.map(page => <article className="subcard" key={page.id}><strong>{page.title}</strong><span>{page.path}</span><small>{page.tags?.join(" · ") || "无标签"}</small></article>)}</div>{projectId && pages.length === 0 && <p className="muted">该项目暂无页面。</p>}</div></section>;
 }
 
 function SoftwarePage({ onError }: { onError: (message: string) => void }) {

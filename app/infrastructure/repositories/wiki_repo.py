@@ -365,6 +365,21 @@ class WikiRepository:
                 raise ApplicationError("Wiki attachment not found", 404, "not_found")
             return dict(row)
 
+    def list_attachments(self, project_id, page_id):
+        self.get_page(project_id, page_id)
+        with self.engine.connect() as db:
+            return [
+                {key: value for key, value in dict(row).items() if key != "content"}
+                for row in db.execute(
+                    select(attachments)
+                    .where(
+                        attachments.c.project_id == project_id,
+                        attachments.c.page_id == page_id,
+                    )
+                    .order_by(attachments.c.created_at, attachments.c.id)
+                ).mappings()
+            ]
+
     def delete_attachment(self, project_id, attachment_id):
         with self.engine.begin() as db:
             if (

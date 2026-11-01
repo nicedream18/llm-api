@@ -320,6 +320,10 @@ def test_http_wiki_workflow_and_restore(wiki_client):
     )
     assert upload.status_code == 201
     attachment_id = upload.json()["data"]["id"]
+    attachment_list = wiki_client.get(path + "/pages/" + page_id + "/attachments")
+    assert attachment_list.status_code == 200
+    assert attachment_list.json()["data"][0]["id"] == attachment_id
+    assert "content" not in attachment_list.json()["data"][0]
     download = wiki_client.get(path + "/attachments/" + attachment_id)
     assert download.content == b"safe text"
     assert download.headers["x-content-type-options"] == "nosniff"

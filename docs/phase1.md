@@ -14,7 +14,7 @@ cd frontend && npm test && npm run build
 git diff --check
 ```
 
-当前完整 Python 回归：**322 passed, 2 skipped，覆盖率 86.04%**。两项跳过测试是隔离 MySQL 集成测试；本机没有可用的 MySQL 测试服务。另有一条来自已安装 Starlette/AnyIO 依赖的弃用警告。
+当前完整 Python 回归：**322 passed, 2 skipped，覆盖率 86.05%**。两项跳过测试是隔离 MySQL 集成测试；本机没有可用的 MySQL 测试服务。另有一条来自已安装 Starlette/AnyIO 依赖的弃用警告。
 
 隔离 MySQL 测试通过 `WALIAPI_TEST_MYSQL_SOCKET` 显式启用。测试会创建随机名称的临时库并在结束后清理，不应指向应用或生产数据库。远程模型服务没有参与上述自动化测试；网关和 Provider HTTP 行为由模拟响应覆盖。
 

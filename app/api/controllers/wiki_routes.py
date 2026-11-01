@@ -199,6 +199,11 @@ async def upload_attachment(
     return success(row)
 
 
+@router.get("/projects/{project_id}/pages/{page_id}/attachments")
+def list_attachments(project_id: str, page_id: str):
+    return success(service().repo.list_attachments(project_id, page_id))
+
+
 @router.get("/projects/{project_id}/attachments/{attachment_id}")
 def download_attachment(project_id: str, attachment_id: str):
     row = service().repo.get_attachment(project_id, attachment_id)
