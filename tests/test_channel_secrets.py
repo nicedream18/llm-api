@@ -128,3 +128,15 @@ def test_channel_import_skips_existing_without_replace_flag():
     result = service.import_channels([ChannelDTO(id="channel-1", name="ignored")])
 
     assert result == {"created": [], "updated": [], "skipped": ["channel-1"]}
+
+
+def test_redacted_import_creates_disabled_channel_without_treating_mask_as_secret():
+    repo = FakeRepository()
+    repo.get_channel = lambda channel_id: repo.channel if channel_id == "channel-1" else None
+    service = ChannelService(repo, None)
+
+    result = service.import_channels([ChannelDTO(id="new-channel", name="redacted", api_key="prov********3456")])
+
+    assert result["created"] == [repo.channel.id]
+    assert repo.channel.api_key is None
+    assert repo.channel.status == 0

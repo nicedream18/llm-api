@@ -96,6 +96,8 @@ class ChannelService:
                 self.repo.update_channel(entity)
                 updated.append(entity.id)
             else:
+                if not entity.api_key and not entity.api_keys:
+                    entity.status = 0
                 created_entity = self.repo.create_channel(entity)
                 created.append(created_entity.id)
         return {"created": created, "updated": updated, "skipped": skipped}
@@ -202,6 +204,8 @@ class ChannelService:
 
     def _to_entity(self, dto, existing=None):
         api_key = dto.api_key
+        if not existing and _is_masked_secret(api_key):
+            api_key = None
         if existing and (api_key is None or _is_masked_secret(api_key)):
             api_key = existing.api_key
         api_keys = existing.api_keys if existing and dto.api_keys is None else [self._to_channel_key_entity(dto.id, key) for key in (dto.api_keys or [])]
