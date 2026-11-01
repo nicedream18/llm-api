@@ -38,6 +38,8 @@ Thumbs.db
 # Logs
 *.log
 logs/
+.coverage
+.coverage.*
 
 # Runtime data (HNSW index files, etc.)
 data/
