@@ -72,7 +72,7 @@ def test_execute_migration_normalizes_sqlite_index_guard_for_mysql(tmp_path):
 
     with engine.begin() as connection:
         class FakeConnection:
-            bind = type("Bind", (), {"dialect": MysqlDialect()})()
+            dialect = MysqlDialect()
 
             @staticmethod
             def execute(statement):

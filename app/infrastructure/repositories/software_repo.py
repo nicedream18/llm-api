@@ -48,7 +48,7 @@ class SoftwareRepository:
 
     def delete_instance(self, instance_id):
         with self.engine.begin() as db:
-            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            dialect = getattr(getattr(db, "engine", None), "dialect", None)
             lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
             exists = db.execute(
                 text("SELECT id FROM software_instances WHERE id=:id" + lock_suffix),

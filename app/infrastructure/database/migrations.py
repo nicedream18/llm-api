@@ -74,7 +74,7 @@ def sql_statements(script: str) -> list[str]:
 
 
 def execute_migration(db, path: Path) -> None:
-    dialect = getattr(getattr(db, "bind", None), "dialect", None)
+    dialect = getattr(db, "dialect", None) or getattr(getattr(db, "engine", None), "dialect", None)
     is_mysql = getattr(dialect, "name", None) == "mysql"
     for statement in sql_statements(path.read_text(encoding="utf-8")):
         # SQLite supports ``CREATE INDEX IF NOT EXISTS`` while MySQL 8 does

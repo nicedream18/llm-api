@@ -56,7 +56,7 @@ class ProviderRepository:
 
     def delete_account(self, account_id):
         with self.engine.begin() as db:
-            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            dialect = getattr(getattr(db, "engine", None), "dialect", None)
             lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
             exists = db.execute(
                 text("SELECT id FROM provider_accounts WHERE id=:id" + lock_suffix),

@@ -37,7 +37,7 @@ class QuotaRepository:
     def settle(self, reservation_id: str, actual_tokens: int) -> bool:
         actual_tokens = max(0, int(actual_tokens))
         with get_db() as db:
-            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            dialect = getattr(getattr(db, "engine", None), "dialect", None)
             lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
             row = db.execute(text("SELECT * FROM api_key_quota_ledger WHERE id=:id" + lock_suffix), {"id": reservation_id}).mappings().first()
             if not row or row["status"] != "reserved":
@@ -61,7 +61,7 @@ class QuotaRepository:
 
     def release(self, reservation_id: str) -> bool:
         with get_db() as db:
-            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            dialect = getattr(getattr(db, "engine", None), "dialect", None)
             lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
             row = db.execute(text("SELECT * FROM api_key_quota_ledger WHERE id=:id" + lock_suffix), {"id": reservation_id}).mappings().first()
             if not row or row["status"] != "reserved":

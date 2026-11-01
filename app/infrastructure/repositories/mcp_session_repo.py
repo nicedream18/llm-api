@@ -95,7 +95,7 @@ class McpSessionRepository:
     def append_event(self, session_id: str, payload: dict, max_events: int = 64) -> int | None:
         now = _stamp(_now())
         with self.engine.begin() as db:
-            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            dialect = getattr(getattr(db, "engine", None), "dialect", None)
             lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
             if not db.execute(text("SELECT id FROM mcp_sessions WHERE id=:id" + lock_suffix), {"id": session_id}).first():
                 return None
@@ -160,4 +160,3 @@ class McpSessionRepository:
         """Return replayable events, preserving the pre-persistence API."""
         outcome = self.replay_checked(session_id, owner, after_event_id)
         return outcome.events if outcome.status == "ok" else []
-

@@ -98,7 +98,7 @@ class KbRepository:
 
     def delete_kb_by_id(self, kb_id: str):
         with get_db() as db:
-            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            dialect = getattr(getattr(db, "engine", None), "dialect", None)
             lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
             exists = db.execute(text(
                 "SELECT id FROM kb_knowledge_bases WHERE id=:kb_id" + lock_suffix
@@ -169,7 +169,7 @@ class KbRepository:
             if not row:
                 return False
             kb_id = row["kb_id"]
-            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            dialect = getattr(getattr(db, "engine", None), "dialect", None)
             lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
             db.execute(text("SELECT id FROM kb_knowledge_bases WHERE id=:kb_id" + lock_suffix),
                        {"kb_id": kb_id}).first()
@@ -281,7 +281,7 @@ class KbRepository:
     def claim_next_task(self, worker_id: str, lease_seconds: int):
         lease_until = (datetime.now(UTC) + timedelta(seconds=lease_seconds)).strftime("%Y-%m-%d %H:%M:%S")
         with get_db() as db:
-            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            dialect = getattr(getattr(db, "engine", None), "dialect", None)
             lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
             candidates = db.execute(text("SELECT id,kb_id,doc_id FROM kb_tasks WHERE status='pending' AND task_type IN ('import','reindex') ORDER BY created_at ASC LIMIT 50")).mappings().all()
             task_id = None
@@ -332,7 +332,7 @@ class KbRepository:
 
     def fail_or_retry_task(self, task_id: str, message: str, max_attempts: int):
         with get_db() as db:
-            dialect = getattr(getattr(db, "bind", None), "dialect", None)
+            dialect = getattr(getattr(db, "engine", None), "dialect", None)
             lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
             row=db.execute(text("SELECT attempt_count, doc_id FROM kb_tasks WHERE id=:id" + lock_suffix), {"id":task_id}).mappings().first()
             if not row:
