@@ -27,3 +27,18 @@ def test_mcp_session_repository_persists_owner_ttl_and_replay_window():
     assert second.delete("session-1") is True
     assert second.replay("session-1", owner, 0) == []
     assert inspect(engine).has_table("mcp_session_events")
+
+
+def test_mcp_session_replay_reports_gap_owner_and_missing_session(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'mcp.db'}")
+    with engine.begin() as db:
+        execute_migration(db, Path("docs/migrations/018_mcp_sessions.sql"))
+    repository = McpSessionRepository(engine)
+    owner = ("api_key", "key-1")
+    repository.create("session-2", owner, 3600)
+    for index in range(4):
+        repository.append_event("session-2", {"index": index}, max_events=2)
+    assert repository.replay_checked("session-2", owner, 1).status == "gap"
+    assert repository.replay_checked("session-2", ("api_key", "other"), 0).status == "owner_mismatch"
+    repository.delete("session-2")
+    assert repository.replay_checked("session-2", owner, 0).status == "not_found"
