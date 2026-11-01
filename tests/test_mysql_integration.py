@@ -254,3 +254,18 @@ def test_mysql_route_capacity_and_half_open_probe(mysql_engine):
     probe = repo.acquire("channel")
     assert probe and repo.acquire("channel") is None
     assert repo.finish(probe, success=True)
+
+
+def test_mysql_usage_ledger_deduplication_and_decimal_prices(mysql_engine):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.infrastructure.repositories.usage_repo import UsageRepository
+    from app.types.usage import PriceInput, UsageFact
+
+    migrations.apply_migrations()
+    repo = UsageRepository(mysql_engine)
+    repo.add_price(PriceInput(provider="test", model="demo", currency="USD", input_per_million="0.125", output_per_million="0.375", effective_at="2026-01-01T00:00:00Z"))
+    value = UsageFact(execution_id="mysql", event_key="attempt:1", request_id="trace", kind="attempt", provider="test", model="demo", endpoint="/v1/chat/completions", outcome="succeeded", input_tokens=3, output_tokens=7, total_tokens=10, usage_source="reported", occurred_at="2026-11-02T00:00:00+00:00")
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert sum(pool.map(lambda _: repo.append(value), range(8))) == 1
+    assert repo.execution("mysql")[0]["cost"] == "0.000003"

@@ -4,12 +4,12 @@ from __future__ import annotations
 import asyncio
 import email.utils
 import hashlib
-import json
 import logging
 import random
 import time
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import httpx
 
@@ -17,6 +17,7 @@ from app.config import config
 from app.domain.entities import ProxyRequestEntity, ProxyResponseEntity
 from app.domain.routing import RoutingPlanner, supports_endpoint
 from app.domain.streaming import StreamCodec
+from app.domain.usage import estimate_usage, usage_counts
 from app.infrastructure.adapters.channel_adapters import adapter_for, models_url
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,15 @@ class GatewayAttempt:
     error_message: str | None = None
     duration_ms: int = 0
     succeeded: bool = False
+    upstream_model: str | None = None
+    provider: str | None = None
+    account_id: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    usage_source: str = "unknown"
+    first_token_ms: int | None = None
+    started_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 def _build_url(channel, request: ProxyRequestEntity) -> str:
@@ -45,13 +55,8 @@ def _build_headers(channel, request: ProxyRequestEntity) -> dict:
 def _extract_tokens(response_body: str) -> tuple[int, int, int]:
     if isinstance(response_body, bytes):
         return 0, 0, 0
-    try:
-        usage = json.loads(response_body).get("usage") or {}
-        prompt = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0)
-        completion = int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0)
-        return prompt, completion, int(usage.get("total_tokens", prompt + completion) or prompt + completion)
-    except (ValueError, TypeError, json.JSONDecodeError):
-        return 0, 0, 0
+    usage = usage_counts(response_body) or {}
+    return int(usage.get("input_tokens") or 0), int(usage.get("output_tokens") or 0), int(usage.get("total_tokens") or 0)
 
 
 def _response_headers(response: httpx.Response) -> dict[str, str]:
@@ -105,8 +110,6 @@ class GatewayService:
             return None, None
         active = [key for key in keys if self._key_cooldown_until.get(self._api_key_id(key), 0.0) <= time.monotonic()]
         if self.routing:
-            from datetime import UTC, datetime
-
             now = datetime.now(UTC).isoformat()
             active = [key for key in active if (self.routing.repo.state("key:" + self._api_key_id(key)).get("cooldown_until") or "") <= now]
         if not active:
@@ -239,6 +242,19 @@ class GatewayService:
         except Exception:  # noqa: BLE001 - leases expire when persistence is unavailable
             logger.warning("Failed to release route capacity")
 
+    @staticmethod
+    def _attempt(number, channel, model):
+        settings = channel.config or {}
+        return GatewayAttempt(number, channel.id, channel.name, upstream_model=model,
+                              provider=settings.get("provider", channel.type), account_id=settings.get("provider_account_id"))
+
+    @staticmethod
+    def _attempt_usage(attempt, usage, estimated=None):
+        counts = usage or estimated
+        if counts:
+            attempt.input_tokens, attempt.output_tokens, attempt.total_tokens = (counts.get(key) for key in ("input_tokens", "output_tokens", "total_tokens"))
+            attempt.usage_source = "reported" if usage else "estimated"
+
     async def forward_with_attempts(self, request: ProxyRequestEntity, on_attempt: Callable[[GatewayAttempt], None] | None = None) -> tuple[ProxyResponseEntity, list[GatewayAttempt]]:
         attempts: list[GatewayAttempt] = []
         excluded: set[str] = set()
@@ -255,7 +271,7 @@ class GatewayService:
             attempt_request = request.__class__(**{**request.__dict__, "upstream_api_key": upstream_api_key,
                                                   "upstream_model": upstream_model})
             started = time.monotonic()
-            item = GatewayAttempt(attempt_no + 1, channel.id, channel.name)
+            item = self._attempt(attempt_no + 1, channel, upstream_model)
             retry_after = None
             try:
                 body = adapter_for(channel).prepare_body(channel, attempt_request, upstream_model)
@@ -289,6 +305,7 @@ class GatewayService:
                     response_body = adapter_for(channel).normalize_response(response_body, request.model)
                 raw_body = None if is_text else response.content
                 pt, ct, tt = _extract_tokens(response_body)
+                self._attempt_usage(item, usage_counts(response_body), estimate_usage(request.body, response_body) if response.is_success and is_text else None)
                 last_response = ProxyResponseEntity(
                     status_code=response.status_code, body=response_body, raw_body=raw_body,
                     content_type=content_type, success=response.is_success,
@@ -300,7 +317,7 @@ class GatewayService:
                 )
                 attempts.append(item)
                 if on_attempt:
-                    on_attempt(item)
+                    await asyncio.to_thread(on_attempt, item)
                 if self.channel_repository and hasattr(self.channel_repository, "update_test_result"):
                     self.channel_repository.update_test_result(channel.id, response.is_success)
                 if response.is_success or not self._retryable_status(response.status_code):
@@ -315,7 +332,7 @@ class GatewayService:
                 self._provider_outcome(channel, False)
                 attempts.append(item)
                 if on_attempt:
-                    on_attempt(item)
+                    await asyncio.to_thread(on_attempt, item)
                 if self.channel_repository and hasattr(self.channel_repository, "update_test_result"):
                     self.channel_repository.update_test_result(channel.id, False)
                 if not self._has_key_failover(channel):
@@ -353,16 +370,22 @@ class GatewayService:
                                                   "upstream_model": dispatch_result.upstream_model})
             stream_started = False
             started = time.monotonic()
-            attempt = GatewayAttempt(attempt_no + 1, channel.id, channel.name)
+            attempt = self._attempt(attempt_no + 1, channel, dispatch_result.upstream_model)
             retry_after = None
+            codec = None
+            output_size = 0
+            recorded = False
 
-            def record_attempt(current_attempt=attempt, attempt_started=started) -> None:
+            async def record_attempt(current_codec, current_output_size, current_attempt=attempt, attempt_started=started) -> None:
+                nonlocal recorded
+                if recorded:
+                    return
+                recorded = True
                 current_attempt.duration_ms = int((time.monotonic() - attempt_started) * 1000)
+                usage = usage_counts({"usage": current_codec.usage}) if current_codec and current_codec.usage else None
+                self._attempt_usage(current_attempt, usage, estimate_usage(request.body, current_output_size) if current_output_size else None)
                 if on_attempt:
-                    try:
-                        on_attempt(current_attempt)
-                    except Exception:
-                        logger.warning("Failed to record streaming gateway attempt", exc_info=True)
+                    await asyncio.to_thread(on_attempt, current_attempt)
 
             try:
                 adapter = adapter_for(channel)
@@ -386,6 +409,8 @@ class GatewayService:
                         attempt.error_type = "upstream_http"
                         attempt.error_message = f"upstream returned HTTP {status}"
                         retry_after = response.headers.get("retry-after")
+                        error_body = await response.aread()
+                        self._attempt_usage(attempt, usage_counts(error_body.decode("utf-8", "replace")))
                         if status in {401, 403, 408, 425, 429} or status >= 500:
                             self._provider_outcome(channel, False)
                         if self._retryable_status(status) and attempt_no < budget:
@@ -394,16 +419,20 @@ class GatewayService:
                             self._cooldown_key(key_id, retry_after)
                             if self._has_key_failover(channel):
                                 excluded.discard(channel.id or channel.name)
-                            await response.aread()
-                            record_attempt()
+                            await record_attempt(codec, output_size)
                             await self._backoff_with_hint(attempt_no + 1, retry_after)
                             continue
-                        record_attempt()
+                        await record_attempt(codec, output_size)
                         raise RuntimeError(f"upstream returned HTTP {status}")
                     attempt.status_code = response.status_code
                     async for line in response.aiter_lines():
                         stream_started = True
                         for output in codec.feed_line(line):
+                            output_size += len(output)
+                            if attempt.first_token_ms is None and any(marker in output for marker in ('"content":', 'output_text.delta', '"text_delta"', '"tool_calls"')):
+                                attempt.first_token_ms = int((time.monotonic() - started) * 1000)
+                            if codec.done:
+                                attempt.succeeded = True
                             for output_line in output.rstrip("\r\n").split("\n"):
                                 yield output_line
                             yield ""
@@ -416,12 +445,12 @@ class GatewayService:
                     self._cooldown_until.pop(self._channel_key(channel), None)
                     if key_id:
                         self._key_cooldown_until.pop(key_id, None)
-                    record_attempt()
+                    await record_attempt(codec, output_size)
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_error = exc
                 attempt.error_type = type(exc).__name__
                 attempt.error_message = "upstream stream connection failed"
-                record_attempt()
+                await record_attempt(codec, output_size)
                 if not self._has_key_failover(channel):
                     self._cooldown(channel)
                 self._cooldown_key(key_id)
@@ -433,7 +462,10 @@ class GatewayService:
                 await self._backoff(attempt_no + 1)
                 continue
             finally:
-                await self._release_route(lease, attempt, retry_after)
+                try:
+                    await record_attempt(codec, output_size)
+                finally:
+                    await self._release_route(lease, attempt, retry_after)
             return
         if last_error:
             raise RuntimeError("upstream stream connection failed") from last_error

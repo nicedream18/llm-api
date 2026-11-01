@@ -162,7 +162,8 @@ def test_forward_uses_sanitized_body_settles_quota_and_records_attempts():
 
     assert status == 200 and result["id"] == "answer"
     assert gateway.requests[0].body == {"model": "model", "safe": True}
-    assert quota.calls[0][0:3] == ("reserve", "key-1", "request-9")
+    assert quota.calls[0][0:2] == ("reserve", "key-1")
+    assert len(quota.calls[0][2]) == 32  # unique execution, independently of the client trace ID
     assert quota.calls[-1] == ("settle", "reservation-1", 5)
     assert log.attempts == [("request-9", {"attempt": 1})]
     assert log.logs[0].request_body == '{"model":"model","safe":true}'

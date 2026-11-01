@@ -14,7 +14,7 @@ def test_container_wires_shared_services_to_expected_dependencies(monkeypatch):
         "ChannelService", "DashboardService", "KbService", "KnowledgeTaskWorker",
         "SecurityService", "AgentService", "ProxyService", "AccessRepository", "AccessService",
         "WikiRepository", "WikiService", "SoftwareService", "ProviderService", "PlatformService",
-        "McpService", "ProviderSyncWorker", "RoutingRepository",
+        "McpService", "ProviderSyncWorker", "RoutingRepository", "UsageRepository",
     )
     for name in factory_names:
         monkeypatch.setattr(container_module, name, Factory)
@@ -29,7 +29,7 @@ def test_container_wires_shared_services_to_expected_dependencies(monkeypatch):
     assert container.kb_worker.args == (container.kb_service, container.kb_repo)
     assert container.proxy_service.args == (
         container.gateway, container.security_scanner, container.security_settings,
-        container.log_repo, container.security_repo, container.quota_repo, container.channel_repo,
+        container.log_repo, container.security_repo, container.quota_repo, container.channel_repo, container.usage_repo,
     )
     assert container.wiki_service.args == (container.wiki_service.args[0], container.proxy_service)
     assert container.mcp_service.args[-1] == container.software_service

@@ -70,6 +70,7 @@ def test_quota_reservation_idempotency_settlement_and_release(monkeypatch, tmp_p
     first = repo.reserve("key-a", "request-a", 50)
     assert first is not None
     assert repo.reserve("key-a", "request-a", 50) == first
+    assert repo.reserve("key-disabled", "request-a", 50) is None
     assert repo.reserve("key-a", "request-denied", 60) is None
     assert repo.reserve("key-disabled", "request-disabled", 1) is None
     assert repo.reserve("key-a", "request-negative", -5) is not None
@@ -82,22 +83,23 @@ def test_quota_reservation_idempotency_settlement_and_release(monkeypatch, tmp_p
     assert repo.reserve("key-a", "request-a", 10) is None
     assert repo.settle("missing", 1) is False
 
+    released = repo.reserve("key-a", "request-release", 10)
     oversize = repo.reserve("key-a", "request-oversize", 70)
     assert oversize is not None
     assert repo.settle(oversize, 150) is True
     with engine.connect() as db:
         row = db.execute(text("SELECT quota_used FROM api_keys WHERE id='key-a'")).scalar_one()
         settled = db.execute(text("SELECT actual_tokens, released_tokens FROM api_key_quota_ledger WHERE id=:id"), {"id": oversize}).one()
-        assert row == 90
-        assert tuple(settled) == (70, 0)
+        assert row == 180
+        assert tuple(settled) == (150, 0)
 
-    released = repo.reserve("key-a", "request-release", 10)
+    assert repo.reserve("key-a", "request-after-debt", 1) is None
     assert released is not None
     assert repo.release(released) is True
     assert repo.release(released) is False
     assert repo.release("missing") is False
     with engine.connect() as db:
-        assert db.execute(text("SELECT quota_used FROM api_keys WHERE id='key-a'")).scalar_one() == 90
+        assert db.execute(text("SELECT quota_used FROM api_keys WHERE id='key-a'")).scalar_one() == 170
         status = db.execute(text("SELECT status, released_tokens FROM api_key_quota_ledger WHERE id=:id"), {"id": released}).one()
         assert tuple(status) == ("released", 10)
     engine.dispose()

@@ -18,10 +18,10 @@ class QuotaRepository:
         estimated_tokens = max(0, int(estimated_tokens))
         reservation_id = uuid.uuid4().hex
         with get_db() as db:
-            existing = db.execute(text("SELECT id, status FROM api_key_quota_ledger WHERE request_id=:request_id LIMIT 1"),
+            existing = db.execute(text("SELECT id, status, api_key_id FROM api_key_quota_ledger WHERE request_id=:request_id LIMIT 1"),
                                   {"request_id": request_id}).first()
             if existing:
-                return str(existing[0]) if existing[1] == "reserved" else None
+                return str(existing[0]) if existing[1] == "reserved" and existing[2] == api_key_id else None
             result = db.execute(text("""UPDATE api_keys SET quota_used=quota_used+:tokens, updated_at=:now
                 WHERE id=:id AND status=1 AND (quota_limit=0 OR quota_used+:tokens <= quota_limit)"""),
                 {"id": api_key_id, "tokens": estimated_tokens, "now": _now()})
@@ -44,14 +44,7 @@ class QuotaRepository:
                 return False
             reserved = int(row["reserved_tokens"] or 0)
             delta = actual_tokens - reserved
-            if delta > 0:
-                result = db.execute(text("""UPDATE api_keys SET quota_used=quota_used+:delta, updated_at=:now
-                    WHERE id=:id AND (quota_limit=0 OR quota_used+:delta <= quota_limit)"""),
-                    {"id": row["api_key_id"], "delta": delta, "now": _now()})
-                if affected_rows(result) != 1:
-                    actual_tokens = reserved
-                    delta = 0
-            elif delta < 0:
+            if delta:
                 db.execute(text("UPDATE api_keys SET quota_used=GREATEST(0, quota_used+:delta), updated_at=:now WHERE id=:id"),
                            {"id": row["api_key_id"], "delta": delta, "now": _now()})
             db.execute(text("""UPDATE api_key_quota_ledger SET actual_tokens=:actual,

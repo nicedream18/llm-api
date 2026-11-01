@@ -25,6 +25,7 @@ from app.api.controllers.routes import (
     software_router,
 )
 from app.api.controllers.routing_routes import router as routing_router
+from app.api.controllers.usage_routes import router as usage_router
 from app.api.controllers.wiki_routes import router as wiki_router
 from app.api.error_handlers import application_error_handler
 from app.api.middleware.auth import ApiKeyAuthMiddleware, RequestContextMiddleware
@@ -87,6 +88,7 @@ app.include_router(access_router)
 app.include_router(software_router)
 app.include_router(provider_router)
 app.include_router(routing_router)
+app.include_router(usage_router)
 app.include_router(platform_router)
 app.add_exception_handler(ApplicationError, application_error_handler)
 

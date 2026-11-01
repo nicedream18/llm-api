@@ -45,6 +45,7 @@ from app.infrastructure.repositories.quota_repo import QuotaRepository
 from app.infrastructure.repositories.routing_repo import RoutingRepository
 from app.infrastructure.repositories.security_repo import SecurityRepository
 from app.infrastructure.repositories.software_repo import SoftwareRepository
+from app.infrastructure.repositories.usage_repo import UsageRepository
 from app.infrastructure.repositories.wiki_repo import WikiRepository
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ class Container:
         self.agent_repo = AgentRepository()
         self.quota_repo = QuotaRepository()
         self.routing_repo = RoutingRepository()
+        self.usage_repo = UsageRepository()
         self.admin_repo = AdminRepository()
         self.admin_service = AdminService(self.admin_repo)
         self.provider_service = ProviderService(self.provider_repo)
@@ -101,7 +103,7 @@ class Container:
         self.security_service = SecurityService(self.security_repo)
         self.agent_service = AgentService(self.agent_repo, self.agent_chat)
         self.proxy_service = ProxyService(self.gateway, self.security_scanner, self.security_settings,
-                                          self.log_repo, self.security_repo, self.quota_repo, self.channel_repo)
+                                          self.log_repo, self.security_repo, self.quota_repo, self.channel_repo, self.usage_repo)
         self.access_service = AccessService(AccessRepository())
         self.wiki_service = WikiService(WikiRepository(), self.proxy_service)
         self.software_service = SoftwareService(self.software_repo)

@@ -224,14 +224,14 @@ class StreamCodec:
         if payload is None:
             return []
         event_type = str(payload.get("type") or event.event or "")
+        reported_usage = _usage(payload.get("message", {}) if event_type == "message_start" else payload)
+        if reported_usage:
+            self.usage = _merge_usage(self.usage, reported_usage)
         if self.target_protocol == "anthropic":
             if event_type == "message_stop":
                 self.done = True
             return [encode_sse(event)]
         self.response_id = self.response_id or (payload.get("message") or {}).get("id")
-        usage = _usage(payload.get("message", {}) if event_type == "message_start" else payload)
-        if usage:
-            self.usage = _merge_usage(self.usage, usage)
         if event_type in {"ping", "message_start"}:
             return []
         if event_type == "content_block_start":

@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from app.application.services.usage_service import UsageRecorder
 from app.config import config
 from app.domain.entities import (
     AgentConfigEntity,
@@ -15,6 +16,7 @@ from app.domain.entities import (
     SecurityCustomRuleEntity,
 )
 from app.domain.protocol import ProtocolDetector
+from app.domain.usage import estimate_usage, usage_counts
 from app.types.auth import AuthContext
 from app.types.models import (
     AgentChatRequestDTO,
@@ -171,7 +173,7 @@ class RawProxyResponse:
 class ProxyService:
     """Application service for proxying requests (sync + stream) with security scanning and logging."""
 
-    def __init__(self, gateway_service, security_scanner, security_settings, log_repository, security_repository=None, quota_repository=None, channel_repository=None):
+    def __init__(self, gateway_service, security_scanner, security_settings, log_repository, security_repository=None, quota_repository=None, channel_repository=None, usage_repository=None):
         self.gateway = gateway_service
         self.scanner = security_scanner
         self.settings = security_settings
@@ -179,6 +181,7 @@ class ProxyService:
         self.security_repo = security_repository
         self.quota_repo = quota_repository
         self.channel_repo = channel_repository
+        self.usage_repo = usage_repository
 
     def _estimate_tokens(self, body_json: dict) -> int:
         text = json.dumps(body_json, ensure_ascii=False)
@@ -241,13 +244,15 @@ class ProxyService:
             if scan_result and scan_result.sanitized and getattr(scan_result, "sanitized_body", None):
                 body_text = scan_result.sanitized_body
                 body_json = json.loads(body_text)
+        execution_id = uuid.uuid4().hex
         reservation_id = None
         if context and context.is_api_key and self.quota_repo:
-            reservation_id = self.quota_repo.reserve(context.principal_id, request_id, self._estimate_tokens(body_json))
+            reservation_id = self.quota_repo.reserve(context.principal_id, execution_id, self._estimate_tokens(body_json))
             if not reservation_id:
                 return 429, {"error": {"message": "API key quota exceeded", "type": "quota_error", "code": "quota_exceeded"}}
         upstream_endpoint = "/v1/chat/completions" if protocol in {"responses", "anthropic", "completions"} else endpoint
         proxy_request = ProxyRequestEntity(model=model, body=body_json, stream=bool(body_json.get("stream")), api_key=None, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset(), endpoint=upstream_endpoint, raw_body=raw_body, content_type=content_type, route_group=headers.get("x-route-group", ""), principal_id=context.principal_id if context else None)
+        recorder = UsageRecorder(self.usage_repo, execution_id, request_id, proxy_request, context.principal_id if context else None) if self.usage_repo else None
         attempts = []
         try:
             if hasattr(self.gateway, "forward_with_attempts"):
@@ -257,6 +262,8 @@ class ProxyService:
                             self.log_repo.insert_attempt(request_id, attempt)
                     except Exception:
                         logger.warning("Failed to record gateway attempt", exc_info=True)
+                    if recorder:
+                        recorder.attempt(attempt)
                 proxy_response, attempt_records = asyncio.run(
                     self.gateway.forward_with_attempts(proxy_request, on_attempt=record_attempt)
                 )
@@ -266,8 +273,9 @@ class ProxyService:
                 attempts = [object()]
             if reservation_id:
                 try:
-                    if proxy_response.success:
-                        actual_tokens = proxy_response.total_tokens or self._estimate_tokens(body_json)
+                    consumed = sum(getattr(item, "total_tokens", 0) or 0 for item in attempts)
+                    if proxy_response.success or consumed:
+                        actual_tokens = consumed or proxy_response.total_tokens or self._estimate_tokens(body_json)
                         self.quota_repo.settle(reservation_id, actual_tokens)
                     else:
                         self.quota_repo.release(reservation_id)
@@ -276,9 +284,14 @@ class ProxyService:
         except Exception:
             if reservation_id:
                 try:
-                    self.quota_repo.release(reservation_id)
+                    if recorder and recorder.consumed:
+                        self.quota_repo.settle(reservation_id, recorder.consumed)
+                    else:
+                        self.quota_repo.release(reservation_id)
                 except Exception:
                     logger.exception("Failed to release quota reservation after gateway error")
+            if recorder:
+                recorder.finish("error", 502, int((time.time() - start) * 1000))
             raise
         if self.settings.enabled and self.settings.scan_response and proxy_response.body:
             try:
@@ -296,6 +309,8 @@ class ProxyService:
                     proxy_response.success = False
                     proxy_response.status_code = 502
                     proxy_response.error_message = "Response security scan failed"
+        if recorder:
+            recorder.finish("succeeded" if proxy_response.success else "failed", proxy_response.status_code, int((time.time() - start) * 1000))
         log_id = str(uuid.uuid4()).replace("-", "")
         self._record_log(self._build_log(log_id, context.principal_id if context and context.is_api_key else None, model, protocol, proxy_request.stream, proxy_response.status_code or 502, scan_result, client_ip, body_text, proxy_response.body if proxy_response.success else None, proxy_response.error_message if not proxy_response.success else None, channel_id=proxy_response.channel_id, channel_name=proxy_response.channel_name, upstream_model=proxy_response.upstream_model, prompt_tokens=proxy_response.prompt_tokens, completion_tokens=proxy_response.completion_tokens, total_tokens=proxy_response.total_tokens, duration_ms=int((time.time()-start)*1000), request_id=request_id, endpoint=endpoint, attempt_count=len(attempts), final_attempt=len(attempts), api_key_name=context.principal_name if context and context.is_api_key else None))
         if proxy_response.success:
@@ -363,16 +378,22 @@ class ProxyService:
             if scan_result and scan_result.sanitized and scan_result.sanitized_body:
                 body = scan_result.sanitized_body
                 body_json = json.loads(body)
+        execution_id = uuid.uuid4().hex
         reservation_id = None
         if context and context.is_api_key and self.quota_repo:
-            reservation_id = self.quota_repo.reserve(context.principal_id, request_id, self._estimate_tokens(body_json))
+            reservation_id = self.quota_repo.reserve(context.principal_id, execution_id, self._estimate_tokens(body_json))
             if not reservation_id:
                 yield 'data: {"error":{"message":"API key quota exceeded","type":"quota_error","code":"quota_exceeded"}}\n\n'; return
         chunks=[]; status="completed"; total_tokens=0; done_seen = False; attempt_records = []
         stream = None; event_name = None; data_lines: list[str] = []
+        recorder = None
+        prompt_tokens = completion_tokens = 0
+        output_bytes = 0
+        buffered_bytes = 0
+        log_truncated = False
         started = time.time()
         async def flush_event():
-            nonlocal event_name, data_lines, done_seen, total_tokens
+            nonlocal event_name, data_lines, done_seen, total_tokens, prompt_tokens, completion_tokens, output_bytes, buffered_bytes, log_truncated, status
             if not data_lines and not event_name:
                 return
             payload = "\n".join(data_lines)
@@ -385,16 +406,27 @@ class ProxyService:
                 for line in data_lines or [""]:
                     yield f"data: {line}\n"
                 yield "\n"
-                chunks.append(payload)
+                output_bytes += len(payload)
+                available = max(0, config.gateway.max_response_log_bytes - buffered_bytes)
+                if available:
+                    chunks.append(payload[:available])
+                    buffered_bytes += min(available, len(payload))
+                log_truncated = log_truncated or len(payload) > available
                 try:
-                    usage = json.loads(payload).get("usage") or {}
-                    total_tokens = max(total_tokens, int(usage.get("total_tokens", 0) or 0))
+                    value = json.loads(payload)
+                    if isinstance(value, dict) and (value.get("error") or value.get("type") in {"error", "response.failed"}):
+                        status = "error"
+                    usage = usage_counts(value) or {}
+                    total_tokens = max(total_tokens, int(usage.get("total_tokens") or 0))
+                    prompt_tokens = max(prompt_tokens, int(usage.get("input_tokens") or 0))
+                    completion_tokens = max(completion_tokens, int(usage.get("output_tokens") or 0))
                 except (ValueError, TypeError, json.JSONDecodeError):
                     pass
             event_name = None; data_lines = []
         try:
             upstream_endpoint = "/v1/chat/completions" if protocol in {"responses", "anthropic", "completions"} else endpoint
             request = ProxyRequestEntity(model=model, body=body_json, stream=True, protocol_type=protocol, headers=headers, allowed_channels=context.allowed_channels if context else frozenset(), endpoint=upstream_endpoint, route_group=headers.get("x-route-group", ""), principal_id=context.principal_id if context else None)
+            recorder = UsageRecorder(self.usage_repo, execution_id, request_id, request, context.principal_id if context else None) if self.usage_repo else None
             def record_attempt(attempt):
                 attempt_records.append(attempt)
                 try:
@@ -402,6 +434,8 @@ class ProxyService:
                         self.log_repo.insert_attempt(request_id, attempt)
                 except Exception:
                     logger.warning("Failed to record streaming gateway attempt", exc_info=True)
+                if recorder:
+                    recorder.attempt(attempt)
 
             try:
                 stream = self.gateway.stream(request, on_attempt=record_attempt)
@@ -442,14 +476,18 @@ class ProxyService:
                     logger.debug("Failed to close upstream stream", exc_info=True)
             if reservation_id:
                 try:
-                    if status == "completed":
-                        self.quota_repo.settle(reservation_id, total_tokens or self._estimate_tokens(body_json))
+                    consumed = sum(getattr(item, "total_tokens", 0) or 0 for item in attempt_records)
+                    if status == "completed" or consumed or output_bytes:
+                        self.quota_repo.settle(reservation_id, consumed or total_tokens or estimate_usage(body_json, output_bytes)["total_tokens"])
                     else:
                         self.quota_repo.release(reservation_id)
                 except Exception:
                     logger.exception("Failed to finalize streaming quota reservation")
+            if recorder:
+                await asyncio.to_thread(recorder.finish, status, 200 if status == "completed" else 499 if status == "client_disconnect" else 502, int((time.time() - started) * 1000))
             log_id=str(uuid.uuid4()).replace("-","")
-            self._record_log(self._build_log(log_id, context.principal_id if context and context.is_api_key else None, model, protocol, True, 200 if status=="completed" else 502, scan_result, client_ip, body, "\n".join(chunks), None, request_id=request_id, endpoint=endpoint, stream_status=status, usage_source="upstream" if total_tokens else "estimated", duration_ms=int((time.time()-started)*1000), api_key_name=context.principal_name if context and context.is_api_key else None, client_disconnect=status == "client_disconnect", attempt_count=len(attempt_records), final_attempt=len(attempt_records)))
+            final_attempt = attempt_records[-1] if attempt_records else None
+            self._record_log(self._build_log(log_id, context.principal_id if context and context.is_api_key else None, model, protocol, True, 200 if status=="completed" else 502, scan_result, client_ip, body, "\n".join(chunks), None, request_id=request_id, endpoint=endpoint, stream_status=status, usage_source="upstream" if total_tokens else "estimated", duration_ms=int((time.time()-started)*1000), api_key_name=context.principal_name if context and context.is_api_key else None, client_disconnect=status == "client_disconnect", attempt_count=len(attempt_records), final_attempt=len(attempt_records), prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, truncated=log_truncated, channel_id=getattr(final_attempt, "channel_id", None), upstream_model=getattr(final_attempt, "upstream_model", None)))
 
     def forward_stream(self, body: str, headers: dict, client_ip: str | None = None, auth_context: AuthContext | None = None, endpoint: str = "/v1/chat/completions", request_id: str | None = None):
         """Legacy synchronous adapter for callers outside an ASGI request."""
