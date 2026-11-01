@@ -68,8 +68,9 @@ def test_initialize_and_notification_then_tool_workflow(setup_mcp):
     })
     assert response.status_code == 202 and not response.content
     tools = rpc(client, "tools/list").json()["result"]["tools"]
-    assert len(tools) == 6
-    assert tools[1]["inputSchema"]["properties"]["top_k"]["maximum"] == 100
+    assert len(tools) == 16
+    tools_by_name = {tool["name"]: tool for tool in tools}
+    assert tools_by_name["search_knowledge_base"]["inputSchema"]["properties"]["top_k"]["maximum"] == 100
     listed = rpc(client, "tools/call", {"name": "list_knowledge_bases"}).json()["result"]
     assert json.loads(listed["content"][0]["text"])[0]["id"] == "kb-1"
     searched = rpc(client, "tools/call", {"name": "search_knowledge_base", "arguments": {
@@ -221,7 +222,7 @@ async def test_official_sdk_interoperability(setup_mcp):
         initialized = await session.initialize()
         assert initialized.protocolVersion == PROTOCOL_VERSION
         tools = await session.list_tools()
-        assert len(tools.tools) == 6
+        assert len(tools.tools) == 16
         result = await session.call_tool("list_knowledge_bases", {})
         assert not result.isError and "kb-1" in result.content[0].text
 
@@ -240,3 +241,30 @@ def test_wiki_tools_are_listed_and_execute_read_operations():
     assert service.call_tool("list_wiki_projects", {})["projects"][0]["id"] == "wiki-1"
     assert service.call_tool("list_wiki_pages", {"project_id": "wiki-1", "query": "Intro"})["pages"][0]["id"] == "page-1"
     assert service.call_tool("get_wiki_tags", {"project_id": "wiki-1"})["tags"][0]["tag"] == "python"
+
+
+def test_knowledge_management_tools_call_service_methods():
+    kb = Mock()
+    kb.create_kb.return_value = SimpleNamespace(id="kb-2", name="New")
+    kb.update_kb.return_value = True
+    kb.delete_kb.return_value = True
+    kb.upload_doc.return_value = SimpleNamespace(id="doc-2", name="a.txt")
+    kb.delete_doc.return_value = True
+    kb.build_index.return_value = {"status": "ready"}
+    kb.drop_index.return_value = {"status": "none"}
+    kb.list_sources.return_value = [{"id": "src-1"}]
+    kb.create_source.return_value = {"id": "src-2"}
+    kb.delete_source.return_value = True
+    service = McpService(kb)
+
+    assert service.call_tool("create_knowledge_base", {"name": "New"})["knowledgeBase"]["id"] == "kb-2"
+    assert service.call_tool("update_knowledge_base", {"kb_id": "kb-2", "name": "Edited"})["updated"]
+    assert service.call_tool("delete_knowledge_base", {"kb_id": "kb-2"})["deleted"]
+    uploaded = service.call_tool("upload_knowledge_document", {"kb_id": "kb-2", "filename": "a.txt", "content": "hello"})
+    assert uploaded["document"]["id"] == "doc-2"
+    assert service.call_tool("delete_knowledge_document", {"kb_id": "kb-2", "doc_id": "doc-2"})["deleted"]
+    assert service.call_tool("build_knowledge_index", {"kb_id": "kb-2"})["result"]["status"] == "ready"
+    assert service.call_tool("drop_knowledge_index", {"kb_id": "kb-2"})["result"]["status"] == "none"
+    assert service.call_tool("list_knowledge_sources", {"kb_id": "kb-2"})["sources"] == [{"id": "src-1"}]
+    assert service.call_tool("create_knowledge_source", {"kb_id": "kb-2", "content": "hello"})["source"]["id"] == "src-2"
+    assert service.call_tool("delete_knowledge_source", {"kb_id": "kb-2", "source_id": "src-2"})["deleted"]

@@ -101,7 +101,8 @@ async def mcp_post(request: Request):
             "principal_id": getattr(getattr(request.state, "auth_context", None), "principal_id", None),
         })
         result = await asyncio.to_thread(service.call_tool, params["name"], arguments,
-                                         getattr(request.state, "auth_context", None))
+                                         getattr(request.state, "auth_context", None),
+                                         getattr(request.state, "request_id", None))
     else:
         return _error(rpc_id, -32601, "Method not found")
     return JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "result": result})

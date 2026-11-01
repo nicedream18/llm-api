@@ -528,20 +528,31 @@ class ProxyService:
 class McpService:
     """MCP service for tool listing and calling."""
 
-    def __init__(self, kb_service, access_service=None, wiki_service=None):
+    def __init__(self, kb_service, access_service=None, wiki_service=None, audit_repository=None):
         self.kb_service = kb_service
         self.access = access_service
         self.wiki_service = wiki_service
+        self.audit = audit_repository
 
     def list_tools(self, auth_context=None):
         from app.types.mcp import TOOL_ARGUMENTS
         descriptions = {
+            "create_knowledge_base": "Create a knowledge base.",
+            "update_knowledge_base": "Update a knowledge base.",
+            "delete_knowledge_base": "Delete a knowledge base.",
             "ask_knowledge_base": "Ask a question to a knowledge base and get an answer.",
             "search_knowledge_base": "Search a knowledge base for relevant chunks.",
             "list_knowledge_bases": "List all available knowledge bases.",
+            "upload_knowledge_document": "Upload a document to a knowledge base.",
             "get_knowledge_document": "Read one knowledge base document.",
             "list_knowledge_documents": "List documents in a knowledge base.",
+            "delete_knowledge_document": "Delete a knowledge base document.",
             "reindex_knowledge_document": "Rebuild one knowledge base document index.",
+            "build_knowledge_index": "Build a knowledge base index.",
+            "drop_knowledge_index": "Delete a knowledge base index.",
+            "list_knowledge_sources": "List knowledge base import sources.",
+            "create_knowledge_source": "Create a knowledge base import source.",
+            "delete_knowledge_source": "Delete a knowledge base import source.",
             "list_wiki_projects": "List Wiki projects available to the caller.",
             "list_wiki_pages": "Search pages in a Wiki project.",
             "get_wiki_page": "Read one Wiki page.",
@@ -569,7 +580,7 @@ class McpService:
         except ValidationError as exc:
             raise ValueError("Invalid tool arguments") from exc
 
-    def call_tool(self, tool_name, arguments, auth_context=None):
+    def call_tool(self, tool_name, arguments, auth_context=None, request_id=None):
         started = time.monotonic()
         try:
             arguments = self.validate_arguments(tool_name, arguments)
@@ -578,17 +589,29 @@ class McpService:
         if self.access is not None:
             if not self.access.can(auth_context, "mcp_tool", tool_name, "execute"):
                 return {"content": [{"type": "text", "text": "Tool access denied"}], "isError": True}
-            if "kb_id" in arguments and not self.access.can(auth_context, "kb", arguments["kb_id"]):
-                return {"content": [{"type": "text", "text": "Knowledge base access denied"}], "isError": True}
+            if "kb_id" in arguments:
+                action = self._tool_resource_action(tool_name)
+                if not self.access.can(auth_context, "kb", arguments["kb_id"], action):
+                    return {"content": [{"type": "text", "text": "Knowledge base access denied"}], "isError": True}
             if "project_id" in arguments and not self.access.can(auth_context, "wiki", arguments["project_id"]):
                 return {"content": [{"type": "text", "text": "Wiki access denied"}], "isError": True}
         handlers = {
             "ask_knowledge_base": lambda: self._handle_ask(arguments),
             "search_knowledge_base": lambda: self._handle_search(arguments),
             "list_knowledge_bases": lambda: self._handle_list(auth_context),
+            "create_knowledge_base": lambda: self._handle_create_kb(arguments),
+            "update_knowledge_base": lambda: self._handle_update_kb(arguments),
+            "delete_knowledge_base": lambda: self._handle_delete_kb(arguments),
+            "upload_knowledge_document": lambda: self._handle_upload_document(arguments),
             "get_knowledge_document": lambda: self._handle_get_document(arguments),
             "list_knowledge_documents": lambda: self._handle_list_documents(arguments),
+            "delete_knowledge_document": lambda: self._handle_delete_document(arguments),
             "reindex_knowledge_document": lambda: self._handle_reindex_document(arguments),
+            "build_knowledge_index": lambda: self._handle_build_index(arguments),
+            "drop_knowledge_index": lambda: self._handle_drop_index(arguments),
+            "list_knowledge_sources": lambda: self._handle_list_sources(arguments),
+            "create_knowledge_source": lambda: self._handle_create_source(arguments),
+            "delete_knowledge_source": lambda: self._handle_delete_source(arguments),
             "list_wiki_projects": lambda: self._handle_wiki_projects(auth_context),
             "list_wiki_pages": lambda: self._handle_wiki_pages(arguments),
             "get_wiki_page": lambda: self._handle_wiki_page(arguments),
@@ -602,11 +625,34 @@ class McpService:
             logger.error("MCP tool execution failed: tool=%s error_type=%s", tool_name, type(exc).__name__)
             result = {"content": [{"type": "text", "text": "Tool execution failed"}], "isError": True}
         duration_ms = int((time.monotonic() - started) * 1000)
+        if self.audit is not None:
+            try:
+                self.audit.record(
+                    request_id=request_id,
+                    principal_type=getattr(auth_context, "principal_type", None),
+                    principal_id=getattr(auth_context, "principal_id", None),
+                    tool_name=tool_name,
+                    success=not bool(result.get("isError")),
+                    error_type="tool_error" if result.get("isError") else None,
+                    duration_ms=duration_ms,
+                )
+            except Exception:
+                logger.warning("Failed to persist MCP audit record", exc_info=True)
         logger.info("MCP tool executed: tool=%s is_error=%s duration_ms=%s", tool_name, bool(result.get("isError")), duration_ms, extra={
             "tool": tool_name, "is_error": bool(result.get("isError")),
             "duration_ms": duration_ms,
         })
         return result
+
+    @staticmethod
+    def _tool_resource_action(tool_name):
+        if tool_name.startswith(("create_", "update_", "upload_")):
+            return "write"
+        if tool_name.startswith(("delete_", "drop_")):
+            return "write"
+        if tool_name.startswith(("reindex_", "build_")):
+            return "write"
+        return "read"
 
     def _handle_ask(self, args):
         from app.types.models import KbAskRequestDTO
@@ -621,6 +667,53 @@ class McpService:
         return {"content": [{"type": "text", "text": answer.answer or "No answer generated"},
                             {"type": "text", "text": json.dumps({"sources": answer.sources}, ensure_ascii=False)}],
                 "sources": answer.sources}
+
+    def _handle_create_kb(self, args):
+        from app.types.models import CreateKbDTO
+        result = self.kb_service.create_kb(CreateKbDTO(**args))
+        return {"content": [{"type": "text", "text": json.dumps(self._serialize_document(result), ensure_ascii=False, default=str)}], "knowledgeBase": self._serialize_document(result)}
+
+    def _handle_update_kb(self, args):
+        from app.types.models import KbKnowledgeBaseDTO
+        kb_id = args["kb_id"]
+        result = self.kb_service.update_kb(kb_id, KbKnowledgeBaseDTO(id=kb_id, **{key: value for key, value in args.items() if key != "kb_id"}))
+        return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, default=str)}], "updated": bool(result)}
+
+    def _handle_delete_kb(self, args):
+        result = self.kb_service.delete_kb(args["kb_id"])
+        return {"content": [{"type": "text", "text": "Knowledge base deleted"}], "deleted": bool(result)}
+
+    def _handle_upload_document(self, args):
+        from app.types.models import UploadDocDTO
+        kb_id = args["kb_id"]
+        payload = {key: value for key, value in args.items() if key != "kb_id"}
+        result = self.kb_service.upload_doc(kb_id, UploadDocDTO(**payload))
+        return {"content": [{"type": "text", "text": json.dumps(self._serialize_document(result), ensure_ascii=False, default=str)}], "document": self._serialize_document(result)}
+
+    def _handle_delete_document(self, args):
+        result = self.kb_service.delete_doc(args["kb_id"], args["doc_id"])
+        return {"content": [{"type": "text", "text": "Document deleted"}], "deleted": bool(result)}
+
+    def _handle_build_index(self, args):
+        result = self.kb_service.build_index(args["kb_id"])
+        return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, default=str)}], "result": result}
+
+    def _handle_drop_index(self, args):
+        result = self.kb_service.drop_index(args["kb_id"])
+        return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, default=str)}], "result": result}
+
+    def _handle_list_sources(self, args):
+        result = self.kb_service.list_sources(args["kb_id"])
+        return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, default=str)}], "sources": result}
+
+    def _handle_create_source(self, args):
+        kb_id = args["kb_id"]
+        result = self.kb_service.create_source(kb_id, {key: value for key, value in args.items() if key != "kb_id"})
+        return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, default=str)}], "source": result}
+
+    def _handle_delete_source(self, args):
+        result = self.kb_service.delete_source(args["kb_id"], args["source_id"])
+        return {"content": [{"type": "text", "text": "Source deleted"}], "deleted": bool(result)}
 
     def _handle_search(self, args):
         from app.types.models import KbSearchRequestDTO

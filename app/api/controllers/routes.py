@@ -559,4 +559,10 @@ async def mcp_call_tool(body: dict, request: Request):
     tool_name = body.get("name")
     arguments = body.get("arguments", {})
     return await asyncio.to_thread(get_container().mcp_service.call_tool, tool_name, arguments,
-                                   getattr(request.state, "auth_context", None))
+                                   getattr(request.state, "auth_context", None),
+                                   getattr(request.state, "request_id", None))
+
+
+@dashboard_router.get("/mcp/audit")
+async def mcp_audit(limit: int = 100, offset: int = 0):
+    return _success(get_container().mcp_audit_repo.list(limit, offset))
