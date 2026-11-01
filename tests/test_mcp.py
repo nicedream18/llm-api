@@ -240,6 +240,35 @@ def test_token_header_and_api_key_opt_in(setup_mcp, monkeypatch):
     api_authorizer.authenticate.assert_called_once_with("data-key")
 
 
+def test_persistent_mcp_replay_gap_and_cross_worker_delete(setup_mcp, monkeypatch, tmp_path):
+    from pathlib import Path
+    from sqlalchemy import create_engine
+
+    from app.infrastructure.database.migrations import execute_migration
+    from app.infrastructure.repositories.mcp_session_repo import McpSessionRepository
+    import app.api.controllers.mcp_routes as mcp_module
+
+    client, _, _ = setup_mcp
+    engine = create_engine(f"sqlite:///{tmp_path / 'mcp.db'}")
+    with engine.begin() as db:
+        execute_migration(db, Path("docs/migrations/018_mcp_sessions.sql"))
+    repository = McpSessionRepository(engine)
+    monkeypatch.setattr(mcp_module, "_session_repository", lambda: repository)
+    session_id = rpc(client, "initialize", INITIALIZE, rpc_id="init").headers["mcp-session-id"]
+    payload = {"jsonrpc": "2.0", "method": "notifications/message"}
+    for _ in range(4):
+        assert repository.append_event(session_id, payload, max_events=2)
+    gap = client.get("/mcp", headers={**HEADERS, "Mcp-Session-Id": session_id,
+                                      "Accept": "text/event-stream", "Last-Event-ID": "1"})
+    assert gap.status_code == 409 and gap.headers["Mcp-Error"] == "event_gap"
+
+    mcp_module._sessions.pop(session_id, None)
+    mcp_module._session_events.pop(session_id, None)
+    closed = client.delete("/mcp", headers={**HEADERS, "Mcp-Session-Id": session_id})
+    assert closed.status_code == 204
+    assert repository.replay_checked(session_id, ("mcp", None)).status == "not_found"
+
+
 async def test_official_sdk_interoperability(setup_mcp):
     # Optional client integration check; the application itself needs no MCP SDK.
     pytest.importorskip("mcp")
