@@ -102,7 +102,7 @@ def test_model_snapshot_generation_and_freshness():
     assert service._discovered_models("a") is None
     snapshot["generation"] = 2
     snapshot["fetched_at"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-    assert service._discovered_models("a") is None
+    assert service._discovered_models("a") == ["discovered"]
 
 
 @pytest.mark.asyncio

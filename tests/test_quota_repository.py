@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 
+from app.application.services.quota_recovery import RecoverableQuota
 from app.infrastructure.repositories.quota_repo import QuotaRepository
 
 
@@ -76,6 +77,10 @@ def test_quota_reservation_idempotency_settlement_and_release(monkeypatch, tmp_p
     assert repo.reserve("key-a", "request-negative", -5) is not None
     assert repo.settle(first, 20) is True
     assert repo.settle(first, 20) is False
+    assert repo.outcome_matches(first, "settle", 20)
+    assert not repo.outcome_matches(first, "settle", 19)
+    assert not repo.outcome_matches(first, "release", 0)
+    assert not repo.outcome_matches("missing", "settle", 1)
     with engine.connect() as db:
         assert db.execute(text("SELECT quota_used FROM api_keys WHERE id='key-a'")).scalar_one() == 20
         ledger = db.execute(text("SELECT actual_tokens, released_tokens, status FROM api_key_quota_ledger WHERE id=:id"), {"id": first}).one()
@@ -96,10 +101,34 @@ def test_quota_reservation_idempotency_settlement_and_release(monkeypatch, tmp_p
     assert repo.reserve("key-a", "request-after-debt", 1) is None
     assert released is not None
     assert repo.release(released) is True
+    assert repo.outcome_matches(released, "release", 0)
+    assert not repo.outcome_matches(released, "settle", 0)
     assert repo.release(released) is False
     assert repo.release("missing") is False
     with engine.connect() as db:
         assert db.execute(text("SELECT quota_used FROM api_keys WHERE id='key-a'")).scalar_one() == 170
         status = db.execute(text("SELECT status, released_tokens FROM api_key_quota_ledger WHERE id=:id"), {"id": released}).one()
         assert tuple(status) == ("released", 10)
+
+    # Exercise the durable spool with the real transactional repository. A lost
+    # DB connection after the upstream response is retried by a new wrapper.
+    with engine.begin() as db:
+        db.execute(text("INSERT INTO api_keys VALUES ('key-recovery', 1, 100, 0, NULL)"))
+    spool = tmp_path / "recovery"
+    durable = RecoverableQuota(repo, spool)
+    reservation = durable.reserve("key-recovery", "request-recovery", 50)
+    assert reservation is not None
+    original = repo.settle
+    def unavailable(*args):
+        raise OSError("database offline")
+    monkeypatch.setattr(repo, "settle", unavailable)
+    assert durable.settle(reservation, 7) is False
+    with engine.connect() as db:
+        assert db.execute(text("SELECT status FROM api_key_quota_ledger WHERE id=:id"), {"id": reservation}).scalar_one() == "reserved"
+    monkeypatch.setattr(repo, "settle", original)
+    recovered = RecoverableQuota(QuotaRepository(), spool)
+    assert recovered.recover()["recovered"] == 1
+    assert recovered.recover()["recovered"] == 0
+    with engine.connect() as db:
+        assert db.execute(text("SELECT quota_used FROM api_keys WHERE id='key-recovery'")).scalar_one() == 7
     engine.dispose()

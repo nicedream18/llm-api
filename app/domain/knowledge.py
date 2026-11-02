@@ -6,12 +6,14 @@ import re
 import struct
 import uuid
 
+from app.application.errors import ApplicationError
 from app.domain.entities import (
     KbChunkEntity,
     ProxyRequestEntity,
     RagAnswerEntity,
     SearchResultEntity,
 )
+from app.domain.model_policy import scoped_chat_response, scoped_model_call
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +192,9 @@ class EmbedderService:
     def embed_batch(self, texts, model):
         if not texts:
             return []
+        scoped = scoped_model_call({"model": model, "input": texts}, "/v1/embeddings")
+        if scoped is not None:
+            return [item["embedding"] for item in sorted(scoped.get("data", []), key=lambda item: item.get("index", 0))]
         dispatch_result = self.dispatcher.dispatch(model)
         channel = dispatch_result.channel
         upstream_model = dispatch_result.upstream_model
@@ -533,6 +538,8 @@ class RagService:
         query_embedding = None
         try:
             query_embedding = self.embedder_service.embed(query, embedding_model)
+        except ApplicationError:
+            raise
         except Exception as e:  # noqa: BLE001 - retrieval falls back to keyword search
             logger.warning(f"Embedding failed, falling back to keyword search: {e}")
             return self.retriever_service.keyword_search(kb_id, query, top_k)
@@ -565,6 +572,9 @@ class RagService:
                 messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")})
         messages.append({"role": "user", "content": prompt})
         body = {"model": chat_model, "messages": messages, "stream": False}
+        scoped = scoped_chat_response(body)
+        if scoped is not None:
+            return scoped
         request = ProxyRequestEntity(model=chat_model, body=body, stream=False, protocol_type="openai")
         return self.gateway_service.forward_sync(request)
 
@@ -620,6 +630,8 @@ class RagService:
             if response.success and response.body:
                 follow_up = self._extract_answer(response)
                 return follow_up.strip() if follow_up else None
+        except ApplicationError:
+            raise
         except Exception as e:  # noqa: BLE001 - follow-up is optional
             logger.warning(f"Generate follow-up failed: {e}")
         return None

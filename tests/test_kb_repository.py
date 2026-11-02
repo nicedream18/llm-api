@@ -12,6 +12,7 @@ from app.domain.entities import (
     KbKnowledgeBaseEntity,
     KbTaskEntity,
 )
+from app.domain.task_lease import TaskLease
 from app.infrastructure.repositories.kb_repo import KbRepository
 
 
@@ -197,9 +198,9 @@ def test_kb_task_claim_lease_retry_and_terminal_updates(monkeypatch, tmp_path):
     assert repo.claim_next_task("worker-2", 60) is None
     task = repo.find_task_by_id("task-import")
     assert task.status == "running" and task.worker_id == "worker-1" and task.attempt_count == 1
-    assert repo.renew_task_lease("task-import", "worker-1", 60) is True
-    assert repo.renew_task_lease("task-import", "worker-2", 60) is False
-    repo.update_task_progress("task-import", 1, 50)
+    assert repo.renew_task_lease("task-import", TaskLease("worker-1", 1), 60) is True
+    assert repo.renew_task_lease("task-import", TaskLease("worker-2", 1), 60) is False
+    repo.update_task_progress("task-import", 1, 50, TaskLease("worker-1", 1))
     repo.recover_expired_tasks()
     assert repo.find_task_by_id("task-import").status == "running"
     with engine.begin() as db:
@@ -208,24 +209,26 @@ def test_kb_task_claim_lease_retry_and_terminal_updates(monkeypatch, tmp_path):
     assert repo.find_task_by_id("task-import").status == "pending"
     assert repo.find_task_by_id("task-import").worker_id is None
 
-    assert repo.fail_or_retry_task("task-import", "temporary", 2) is True
+    assert repo.claim_next_task("worker-1", 60)
+    assert repo.fail_or_retry_task("task-import", "temporary", 3, TaskLease("worker-1", 2)) is True
     assert repo.find_task_by_id("task-import").status == "pending"
     with engine.begin() as db:
         db.execute(text("UPDATE kb_tasks SET attempt_count=2 WHERE id='task-import'"))
-    assert repo.fail_or_retry_task("task-import", "permanent", 2) is True
+    assert repo.claim_next_task("worker-1", 60)
+    assert repo.fail_or_retry_task("task-import", "permanent", 2, TaskLease("worker-1", 3)) is True
     failed = repo.find_task_by_id("task-import")
     assert failed.status == "failed" and failed.completed_at
     assert repo.find_doc_by_id("doc-task").status == "error"
-    assert repo.fail_or_retry_task("missing", "error", 2) is False
+    assert repo.fail_or_retry_task("missing", "error", 2, TaskLease("worker-1", 1)) is False
     assert repo.cancel_task("kb-task", "task-import") is False
-    repo.update_task_status("task-import", "completed", None)
-    assert repo.find_task_by_id("task-import").status == "completed"
+    assert repo.update_task_status("task-import", "completed", None) is False
+    assert repo.find_task_by_id("task-import").status == "failed"
 
     repo.save_task(KbTaskEntity(id="task-cancel", kb_id="kb-task", task_type="reindex"))
     assert repo.cancel_task("other-kb", "task-cancel") is False
     assert repo.cancel_task("kb-task", "task-cancel") is True
     repo.update_task_status("task-cancel", "running", None)
-    assert repo.find_task_by_id("task-cancel").status == "running"
+    assert repo.find_task_by_id("task-cancel").status == "cancelled"
     assert repo.save_task_payload("task-cancel", {"updated": True}) is True
     assert repo.save_task_payload("missing", {}) is False
 

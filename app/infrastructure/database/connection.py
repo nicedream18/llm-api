@@ -40,3 +40,9 @@ def get_db() -> Iterator[Session]:
 def affected_rows(result: Any) -> int:
     """Return a portable DML row count across SQLAlchemy result implementations."""
     return int(getattr(result, "rowcount", 0) or 0)
+
+
+def row_lock_suffix(db: Any) -> str:
+    """Resolve the actual dialect for both ORM sessions and Core connections."""
+    bind = db.get_bind() if isinstance(db, Session) else getattr(db, "engine", None)
+    return " FOR UPDATE" if getattr(getattr(bind, "dialect", None), "name", None) == "mysql" else ""

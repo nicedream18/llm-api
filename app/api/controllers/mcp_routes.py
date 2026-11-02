@@ -12,6 +12,7 @@ from typing import cast
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from app.config import config
 from app.container import get_container
@@ -23,8 +24,14 @@ MAX_REQUEST_BYTES = 1024 * 1024
 SESSION_TTL_SECONDS = 3600
 _sessions: dict[str, tuple[float, tuple[str | None, str | None]]] = {}
 _session_events: dict[str, asyncio.Queue[str]] = {}
-_cancelled_requests: set[tuple[str | None, str | int]] = set()
-_running_requests: dict[tuple[str | None, str | int], asyncio.Task] = {}
+RequestKey = tuple[str | None, str | None, str | None, str | int]
+_running_requests: dict[RequestKey, asyncio.Task] = {}
+_request_cancellations: dict[RequestKey, asyncio.Event] = {}
+MAX_ACTIVE_REQUESTS = 128
+
+
+def _request_key(request: Request, rpc_id: str | int) -> RequestKey:
+    return (*_principal(request), request.headers.get("mcp-session-id"), rpc_id)
 
 
 def _session_repository():
@@ -272,14 +279,12 @@ async def mcp_post(request: Request):
     if "id" not in message:
         if method == "notifications/cancelled":
             cancelled_id = params.get("requestId")
-            session_id = request.headers.get("mcp-session-id")
             if isinstance(cancelled_id, (str, int)) and not isinstance(cancelled_id, bool):
-                key = (session_id, cancelled_id)
-                task = _running_requests.get(key)
-                if task is not None:
-                    task.cancel()
-                else:
-                    _cancelled_requests.add(key)
+                signal = _request_cancellations.get(_request_key(request, cancelled_id))
+                if signal is not None:
+                    signal.set()
+            # Cancellation applies only to an active call. Do not accumulate
+            # unbounded tombstones that could cancel a future reuse of an ID.
         return Response(status_code=202)
     if method == "initialize":
         if request.headers.get("mcp-session-id"):
@@ -305,7 +310,8 @@ async def mcp_post(request: Request):
     elif method == "tools/call":
         service = get_container().mcp_service
         try:
-            arguments = service.validate_arguments(params.get("name"), params.get("arguments", {}))
+            service.validate_arguments(params.get("name"), params.get("arguments", {}))
+            arguments = params.get("arguments", {})
         except ValueError as exc:
             return _error(rpc_id, -32602, str(exc))
         logger.info("MCP tool requested: request_id=%s tool=%s principal_id=%s",
@@ -315,21 +321,34 @@ async def mcp_post(request: Request):
             "tool": params["name"],
             "principal_id": getattr(getattr(request.state, "auth_context", None), "principal_id", None),
         })
-        session_id = request.headers.get("mcp-session-id")
-        task = asyncio.create_task(asyncio.to_thread(service.call_tool, params["name"], arguments,
+        request_key = _request_key(request, cast(str | int, rpc_id))
+        if request_key in _running_requests:
+            return _error(rpc_id, -32600, "Request ID is already active")
+        if len(_running_requests) >= MAX_ACTIVE_REQUESTS:
+            return _error(rpc_id, -32000, "Tool execution capacity exceeded", 503)
+        signal = asyncio.Event()
+        task = asyncio.create_task(run_in_threadpool(service.call_tool, params["name"], arguments,
                                                      getattr(request.state, "auth_context", None),
                                                      getattr(request.state, "request_id", None)))
-        request_key = (session_id, cast(str | int, rpc_id))
         _running_requests[request_key] = task
+        _request_cancellations[request_key] = signal
+        def completed(done):
+            if _running_requests.get(request_key) is done:
+                _running_requests.pop(request_key, None)
+                _request_cancellations.pop(request_key, None)
+            if not done.cancelled() and done.exception() is not None:
+                logger.error("MCP background execution failed after request completion")
+        task.add_done_callback(completed)
+        cancellation = asyncio.create_task(signal.wait())
         try:
-            result = await task
-        except asyncio.CancelledError:
-            return _error(rpc_id, -32800, "Request cancelled")
+            await asyncio.wait({task, cancellation}, return_when=asyncio.FIRST_COMPLETED)
+            if signal.is_set() and not task.done():
+                return _error(rpc_id, -32800, "Request cancelled; execution may still be running")
+            result = await asyncio.shield(task)
         finally:
-            _running_requests.pop(request_key, None)
-        if (session_id, cast(str | int, rpc_id)) in _cancelled_requests:
-            _cancelled_requests.discard((session_id, cast(str | int, rpc_id)))
-            return _error(rpc_id, -32800, "Request cancelled")
+            # Keep the execution registered if the HTTP waiter disconnects.
+            # Its synchronous connector still finishes and audits its outcome.
+            cancellation.cancel()
     else:
         return _error(rpc_id, -32601, "Method not found")
     response = JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "result": result})

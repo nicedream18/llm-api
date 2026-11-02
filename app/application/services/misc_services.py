@@ -7,6 +7,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from starlette.concurrency import run_in_threadpool
+
 from app.application.services.usage_service import UsageRecorder
 from app.config import config
 from app.domain.entities import (
@@ -211,6 +213,10 @@ class ProxyService:
             body_json = json.loads(body_text)
         except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
             return 400, {"error": {"message": "Invalid JSON body", "type": "invalid_request_error", "code": "invalid_json"}}
+        if not isinstance(body_json, dict):
+            return 400, {"error": {"message": "JSON body must be an object", "type": "invalid_request_error", "code": "invalid_body"}}
+        if "model" in body_json and (not isinstance(body_json["model"], str) or not body_json["model"].strip()):
+            return 400, {"error": {"message": "Model must be a non-empty string", "type": "invalid_request_error", "code": "invalid_model"}}
         if protocol == "responses":
             from app.domain.responses_converter import ResponsesConverter
             converted = ResponsesConverter.responses_to_openai(body_text)
@@ -296,7 +302,11 @@ class ProxyService:
         if self.settings.enabled and self.settings.scan_response and proxy_response.body:
             try:
                 response_scan = self._scan(proxy_response.body, "response")
-                if response_scan.blocked and self.settings.fail_closed:
+                if response_scan.sanitized and response_scan.sanitized_body is not None:
+                    proxy_response.body = response_scan.sanitized_body
+                    if proxy_response.raw_body is not None:
+                        proxy_response.raw_body = proxy_response.body.encode("utf-8")
+                if response_scan.blocked:
                     proxy_response.success = False
                     proxy_response.status_code = 502
                     proxy_response.error_message = "Response blocked by security policy"
@@ -343,6 +353,12 @@ class ProxyService:
             body_json = json.loads(body)
         except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
             yield 'data: {"error":{"message":"Invalid JSON body","type":"invalid_request_error"}}\n\n'; return
+        if not isinstance(body_json, dict) or not isinstance(body_json.get("model"), str):
+            yield 'data: {"error":{"message":"Expected an object with a string model","type":"invalid_request_error"}}\n\n'; return
+        # Response policies require a bounded semantic stream scanner, including
+        # cross-event matches. Until available, reject before any upstream call.
+        if self.settings.enabled and self.settings.scan_response:
+            yield 'data: {"error":{"message":"Response scanning is not supported for streaming","type":"invalid_request_error","code":"stream_response_policy_unsupported"}}\n\n'; return
         if protocol == "responses":
             from app.domain.responses_converter import ResponsesConverter
             try:
@@ -363,12 +379,14 @@ class ProxyService:
         context = auth_context
         if context and context.is_api_key and context.allowed_models and model not in context.allowed_models:
             yield 'data: {"error":{"message":"Model is not allowed for this API key","type":"permission_error","code":"model_forbidden"}}\n\n'; return
-        if context and context.is_api_key and context.allowed_channels and hasattr(self.gateway, "_candidates") and not self.gateway._candidates(model, set(), context.allowed_channels):
-            yield 'data: {"error":{"message":"Channel is not allowed for this API key","type":"permission_error","code":"channel_forbidden"}}\n\n'; return
+        if context and context.is_api_key and context.allowed_channels and hasattr(self.gateway, "_candidates"):
+            candidates = await run_in_threadpool(self.gateway._candidates, model, set(), context.allowed_channels)
+            if not candidates:
+                yield 'data: {"error":{"message":"Channel is not allowed for this API key","type":"permission_error","code":"channel_forbidden"}}\n\n'; return
         scan_result = None
         if self.settings.enabled:
             try:
-                scan_result = self._scan(body, "request")
+                scan_result = await run_in_threadpool(self._scan, body, "request")
             except Exception:
                 if self.settings.fail_closed:
                     yield 'data: {"error":{"message":"Security scan unavailable","type":"security_error","code":"security_scan_failed"}}\n\n'; return
@@ -381,7 +399,7 @@ class ProxyService:
         execution_id = uuid.uuid4().hex
         reservation_id = None
         if context and context.is_api_key and self.quota_repo:
-            reservation_id = self.quota_repo.reserve(context.principal_id, execution_id, self._estimate_tokens(body_json))
+            reservation_id = await run_in_threadpool(self.quota_repo.reserve, context.principal_id, execution_id, self._estimate_tokens(body_json))
             if not reservation_id:
                 yield 'data: {"error":{"message":"API key quota exceeded","type":"quota_error","code":"quota_exceeded"}}\n\n'; return
         chunks=[]; status="completed"; total_tokens=0; done_seen = False; attempt_records = []
@@ -401,11 +419,6 @@ class ProxyService:
                 done_seen = True
                 yield "data: [DONE]\n\n"
             else:
-                if event_name:
-                    yield f"event: {event_name}\n"
-                for line in data_lines or [""]:
-                    yield f"data: {line}\n"
-                yield "\n"
                 output_bytes += len(payload)
                 available = max(0, config.gateway.max_response_log_bytes - buffered_bytes)
                 if available:
@@ -416,12 +429,21 @@ class ProxyService:
                     value = json.loads(payload)
                     if isinstance(value, dict) and (value.get("error") or value.get("type") in {"error", "response.failed"}):
                         status = "error"
+                    if isinstance(value, dict) and value.get("type") in {"message_stop", "response.completed"}:
+                        done_seen = True
+                    if status == "error":
+                        done_seen = True
                     usage = usage_counts(value) or {}
                     total_tokens = max(total_tokens, int(usage.get("total_tokens") or 0))
                     prompt_tokens = max(prompt_tokens, int(usage.get("input_tokens") or 0))
                     completion_tokens = max(completion_tokens, int(usage.get("output_tokens") or 0))
                 except (ValueError, TypeError, json.JSONDecodeError):
                     pass
+                if event_name:
+                    yield f"event: {event_name}\n"
+                for line in data_lines or [""]:
+                    yield f"data: {line}\n"
+                yield "\n"
             event_name = None; data_lines = []
         try:
             upstream_endpoint = "/v1/chat/completions" if protocol in {"responses", "anthropic", "completions"} else endpoint
@@ -460,7 +482,8 @@ class ProxyService:
                 async for output in flush_event():
                     yield output
             if not done_seen:
-                yield "data: [DONE]\n\n"
+                status = "error"
+                yield 'data: {"error":{"message":"Upstream stream ended without a terminal event","code":"upstream_truncated"}}\n\n'
         except (asyncio.CancelledError, GeneratorExit):
             status="client_disconnect"
             raise
@@ -478,16 +501,17 @@ class ProxyService:
                 try:
                     consumed = sum(getattr(item, "total_tokens", 0) or 0 for item in attempt_records)
                     if status == "completed" or consumed or output_bytes:
-                        self.quota_repo.settle(reservation_id, consumed or total_tokens or estimate_usage(body_json, output_bytes)["total_tokens"])
+                        await run_in_threadpool(self.quota_repo.settle, reservation_id, consumed or total_tokens or estimate_usage(body_json, output_bytes)["total_tokens"])
                     else:
-                        self.quota_repo.release(reservation_id)
+                        await run_in_threadpool(self.quota_repo.release, reservation_id)
                 except Exception:
                     logger.exception("Failed to finalize streaming quota reservation")
+            status_code = 200 if status == "completed" else 499 if status == "client_disconnect" else 502
             if recorder:
-                await asyncio.to_thread(recorder.finish, status, 200 if status == "completed" else 499 if status == "client_disconnect" else 502, int((time.time() - started) * 1000))
+                await run_in_threadpool(recorder.finish, status, status_code, int((time.time() - started) * 1000))
             log_id=str(uuid.uuid4()).replace("-","")
             final_attempt = attempt_records[-1] if attempt_records else None
-            self._record_log(self._build_log(log_id, context.principal_id if context and context.is_api_key else None, model, protocol, True, 200 if status=="completed" else 502, scan_result, client_ip, body, "\n".join(chunks), None, request_id=request_id, endpoint=endpoint, stream_status=status, usage_source="upstream" if total_tokens else "estimated", duration_ms=int((time.time()-started)*1000), api_key_name=context.principal_name if context and context.is_api_key else None, client_disconnect=status == "client_disconnect", attempt_count=len(attempt_records), final_attempt=len(attempt_records), prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, truncated=log_truncated, channel_id=getattr(final_attempt, "channel_id", None), upstream_model=getattr(final_attempt, "upstream_model", None)))
+            await run_in_threadpool(self._record_log, self._build_log(log_id, context.principal_id if context and context.is_api_key else None, model, protocol, True, status_code, scan_result, client_ip, body, "\n".join(chunks), None, request_id=request_id, endpoint=endpoint, stream_status=status, usage_source="upstream" if total_tokens else "estimated", duration_ms=int((time.time()-started)*1000), api_key_name=context.principal_name if context and context.is_api_key else None, client_disconnect=status == "client_disconnect", attempt_count=len(attempt_records), final_attempt=len(attempt_records), prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, truncated=log_truncated, channel_id=getattr(final_attempt, "channel_id", None), upstream_model=getattr(final_attempt, "upstream_model", None)))
 
     def forward_stream(self, body: str, headers: dict, client_ip: str | None = None, auth_context: AuthContext | None = None, endpoint: str = "/v1/chat/completions", request_id: str | None = None):
         """Legacy synchronous adapter for callers outside an ASGI request."""
@@ -612,6 +636,12 @@ class McpService:
             for tool in self.software_service.list_tools():
                 if tool.get("enabled", 1) == 0:
                     continue
+                name = f"software.{tool['id']}.{tool['name']}"
+                if self.access is not None and (
+                    not self.access.can(auth_context, "mcp_tool", name, "execute")
+                    or not self.access.can(auth_context, "software", tool["id"], "execute")
+                ):
+                    continue
                 tools.append({
                     "name": f"software.{tool['id']}.{tool['name']}",
                     "description": tool.get("description") or "Software connector tool",
@@ -647,7 +677,7 @@ class McpService:
         if self.access is not None:
             if not self.access.can(auth_context, "mcp_tool", tool_name, "execute"):
                 return {"content": [{"type": "text", "text": "Tool access denied"}], "isError": True}
-            if tool_name.startswith("software.") and not self.access.can(auth_context, "software", arguments["tool_id"], "execute"):
+            if (tool_name.startswith("software.") or tool_name == "invoke_software_tool") and not self.access.can(auth_context, "software", arguments["tool_id"], "execute"):
                 return {"content": [{"type": "text", "text": "Software tool access denied"}], "isError": True}
             if "kb_id" in arguments:
                 action = self._tool_resource_action(tool_name)
@@ -656,8 +686,8 @@ class McpService:
             if "project_id" in arguments and not self.access.can(auth_context, "wiki", arguments["project_id"]):
                 return {"content": [{"type": "text", "text": "Wiki access denied"}], "isError": True}
         handlers = {
-            "ask_knowledge_base": lambda: self._handle_ask(arguments),
-            "search_knowledge_base": lambda: self._handle_search(arguments),
+            "ask_knowledge_base": lambda: self._handle_ask(arguments, auth_context),
+            "search_knowledge_base": lambda: self._handle_search(arguments, auth_context),
             "list_knowledge_bases": lambda: self._handle_list(auth_context),
             "create_knowledge_base": lambda: self._handle_create_kb(arguments),
             "update_knowledge_base": lambda: self._handle_update_kb(arguments),
@@ -718,7 +748,7 @@ class McpService:
             return "write"
         return "read"
 
-    def _handle_ask(self, args):
+    def _handle_ask(self, args, auth_context=None):
         from app.types.models import KbAskRequestDTO
         kb_id = args.get("kb_id")
         question = args.get("question")
@@ -727,7 +757,7 @@ class McpService:
         if not kb_id or not question:
             return {"content": [{"type": "text", "text": "Error: kb_id and question are required"}], "isError": True}
         request = KbAskRequestDTO(kb_id=kb_id, question=question, top_k=top_k, search_mode=search_mode)
-        answer = self.kb_service.ask(kb_id, request)
+        answer = self.kb_service.ask(kb_id, request, auth_context=auth_context)
         return {"content": [{"type": "text", "text": answer.answer or "No answer generated"},
                             {"type": "text", "text": json.dumps({"sources": answer.sources}, ensure_ascii=False)}],
                 "sources": answer.sources}
@@ -785,7 +815,7 @@ class McpService:
         result = self.software_service.invoke(args["tool_id"], args.get("arguments", {}), auth_context, args.get("approved", False))
         return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, default=str)}], "result": result}
 
-    def _handle_search(self, args):
+    def _handle_search(self, args, auth_context=None):
         from app.types.models import KbSearchRequestDTO
         kb_id = args.get("kb_id")
         query = args.get("query")
@@ -794,7 +824,7 @@ class McpService:
         if not kb_id or not query:
             return {"content": [{"type": "text", "text": "Error: kb_id and query are required"}], "isError": True}
         request = KbSearchRequestDTO(query=query, top_k=top_k, search_mode=search_mode)
-        results = self.kb_service.search_kb(kb_id, request)
+        results = self.kb_service.search_kb(kb_id, request, auth_context=auth_context)
         content_items = [{"type": "text", "text": f"[Score: {r.score:.2f}] {r.content}"} for r in results]
         return {"content": content_items, "resultCount": len(results)}
 

@@ -54,7 +54,7 @@ async def lifespan(app):
         if telemetry:
             stack.callback(telemetry.shutdown)
         stack.push_async_callback(close_resource, container.gateway.aclose)
-        for worker in (container.kb_worker, container.provider_sync_worker, container.operations_worker):
+        for worker in (container.quota_recovery_worker, container.kb_worker, container.provider_sync_worker, container.operations_worker):
             stack.push_async_callback(close_resource, worker.stop)
             await worker.start()
         yield

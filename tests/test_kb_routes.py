@@ -12,7 +12,9 @@ class RecordingKbService:
         self.calls = []
 
     def __getattr__(self, name):
-        def call(*args):
+        def call(*args, **kwargs):
+            if name in {"ask", "deep_research", "search"}:
+                assert kwargs["auth_context"].principal_id == "admin-1"
             self.calls.append((name, args))
             if name == "list_kbs":
                 return []

@@ -64,11 +64,17 @@ gateway_router = APIRouter()
 async def chat_completions(request: Request):
     container = get_container()
     body = await request.body()
-    body_str = body.decode("utf-8")
+    body_str = body.decode("utf-8", "replace")
     headers = {k.lower(): v for k, v in request.headers.items()}
     accept = request.headers.get("accept", "")
     is_stream = _stream_requested(body_str, accept)
     if is_stream:
+        parsed = json.loads(body)
+        if not isinstance(parsed.get("model"), str) or not parsed["model"].strip():
+            return JSONResponse(status_code=400, content={"error": {"message": "Model must be a non-empty string", "code": "invalid_model"}})
+        settings = getattr(container.proxy_service, "settings", None)
+        if settings and settings.enabled is True and settings.scan_response is True:
+            return JSONResponse(status_code=422, content={"error": {"message": "Response scanning is not supported for streaming", "code": "stream_response_policy_unsupported"}})
         return StreamingResponse(
             container.proxy_service.forward_stream_async(body_str, headers, client_ip=request.client.host if request.client else None, auth_context=getattr(request.state, "auth_context", None), endpoint=str(request.url.path), request_id=getattr(request.state, "request_id", None)),
             media_type="text/event-stream",
@@ -95,9 +101,15 @@ async def proxy_generic(request: Request):
     raw_body = await request.body()
     content_type = request.headers.get("content-type", "")
     headers = {k.lower(): v for k, v in request.headers.items()}
-    body = raw_body if content_type.lower().startswith("multipart/") else raw_body.decode("utf-8")
+    body = raw_body if content_type.lower().startswith("multipart/") else raw_body.decode("utf-8", "replace")
     is_stream = _stream_requested(raw_body, request.headers.get("accept", ""), content_type)
     if is_stream:
+        parsed = json.loads(body)
+        if not isinstance(parsed.get("model"), str) or not parsed["model"].strip():
+            return JSONResponse(status_code=400, content={"error": {"message": "Model must be a non-empty string", "code": "invalid_model"}})
+        settings = getattr(container.proxy_service, "settings", None)
+        if settings and settings.enabled is True and settings.scan_response is True:
+            return JSONResponse(status_code=422, content={"error": {"message": "Response scanning is not supported for streaming", "code": "stream_response_policy_unsupported"}})
         return StreamingResponse(
             container.proxy_service.forward_stream_async(body, headers, client_ip=request.client.host if request.client else None, auth_context=getattr(request.state, "auth_context", None), endpoint=str(request.url.path), request_id=getattr(request.state, "request_id", None)),
             media_type="text/event-stream",
@@ -555,17 +567,17 @@ async def delete_doc(kb_id: str, doc_id: str):
 
 
 @kb_router.post("/{kb_id}/ask")
-async def ask(kb_id: str, request: KbAskRequestDTO):
+async def ask(kb_id: str, request: KbAskRequestDTO, http_request: Request):
     if not request.kb_id:
         request.kb_id = kb_id
-    return _success(await asyncio.to_thread(get_container().kb_service.ask, kb_id, request))
+    return _success(await asyncio.to_thread(get_container().kb_service.ask, kb_id, request, auth_context=getattr(http_request.state, "auth_context", None)))
 
 
 @kb_router.post("/{kb_id}/deep-research")
-async def deep_research(kb_id: str, request: KbAskRequestDTO):
+async def deep_research(kb_id: str, request: KbAskRequestDTO, http_request: Request):
     if not request.kb_id:
         request.kb_id = kb_id
-    return _success(await asyncio.to_thread(get_container().kb_service.deep_research, kb_id, request))
+    return _success(await asyncio.to_thread(get_container().kb_service.deep_research, kb_id, request, auth_context=getattr(http_request.state, "auth_context", None)))
 
 
 @kb_router.get("/{kb_id}/conversations")
@@ -595,10 +607,10 @@ async def refresh_tags(kb_id: str, limit: int | None = 10):
 # --- KB additional endpoints (aligned with Java KbController) ---
 
 @kb_router.post("/{kb_id}/search")
-async def kb_search(kb_id: str, request: KbSearchRequestDTO):
+async def kb_search(kb_id: str, request: KbSearchRequestDTO, http_request: Request):
     if not request.kb_id:
         request.kb_id = kb_id
-    return _success(await asyncio.to_thread(get_container().kb_service.search, kb_id, request))
+    return _success(await asyncio.to_thread(get_container().kb_service.search, kb_id, request, auth_context=getattr(http_request.state, "auth_context", None)))
 
 
 @kb_router.get("/{kb_id}/stats")

@@ -11,6 +11,7 @@ from app.domain.entities import (
     RagAnswerEntity,
     SearchResultEntity,
 )
+from app.domain.task_lease import TaskLease
 from app.types.models import KbAskRequestDTO, KbSearchRequestDTO, UploadDocDTO
 
 
@@ -51,13 +52,24 @@ class FakeRepository:
     def find_doc_by_kb_id(self, _kb_id):
         return [self.document]
 
+    def publish_document(self, task_id, lease, kb_id, doc_id, chunks):
+        lease.check()
+        self.chunks = chunks
+        self.document.status = "ready"
+        self.document.chunk_count = len(chunks)
+        self.document.total_tokens = sum(c.token_count for c in chunks)
+        self.kb.index_status = "stale"
+        self.kb.doc_count, self.kb.chunk_count, self.kb.total_tokens = 1, len(chunks), self.document.total_tokens
+        self.update_task_status(task_id, "completed", None)
+
     def save_chunk_batch(self, chunks):
         self.chunks.extend(chunks)
 
     def find_chunk_by_kb_id(self, _kb_id):
         return self.chunks
 
-    def update_task_progress(self, task_id, done, progress):
+    def update_task_progress(self, task_id, done, progress, lease):
+        lease.check()
         task = self.tasks[task_id]
         task.done_items = done
         task.progress = progress
@@ -149,7 +161,7 @@ def test_import_pipeline_decodes_base64_embeds_and_invalidates_index():
     task = KbTaskEntity(id="task-1", kb_id="kb-1", doc_id="doc-1")
     repo.tasks[task.id] = task
 
-    service.run_import_pipeline("kb-1", "doc-1", "task-1", dto)
+    service.run_import_pipeline("kb-1", "doc-1", "task-1", dto, lease=TaskLease("w", 1))
 
     assert splitter.content == "hello world"
     assert splitter.config.chunk_size == 128 and splitter.config.chunk_overlap == 10
@@ -168,10 +180,11 @@ def test_import_pipeline_marks_task_running_before_missing_kb_fails():
     repo.find_kb_by_id = lambda _kb_id: None
 
     with pytest.raises(ValueError, match="KB not found"):
-        service.run_import_pipeline("kb-1", "doc-1", "task-1", UploadDocDTO(filename="a.txt", content="x"))
+        service.run_import_pipeline("kb-1", "doc-1", "task-1", UploadDocDTO(filename="a.txt", content="x"), lease=TaskLease("w", 1))
 
-    assert task.status == "running"
-    assert repo.document.status == "processing"
+    assert task.status == "pending"
+    assert repo.document.status == "pending"
+    assert repo.chunks == []
 
 
 def test_ask_uses_supplied_search_config_and_persists_both_turns():

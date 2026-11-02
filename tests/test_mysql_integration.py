@@ -288,3 +288,45 @@ def test_mysql_operational_alert_deduplication_and_analytics(mysql_engine):
     assert len(set(ids)) == 1
     assert repo.acknowledge(ids[0], "admin")
     assert not AnalyticsRepository(mysql_engine).report(AnalyticsQuery())["items"]
+
+
+def test_mysql_knowledge_publication_fences_expired_workers(mysql_engine, monkeypatch):
+    from contextlib import contextmanager
+
+    from sqlalchemy.orm import Session
+
+    from app.domain.entities import (
+        KbChunkEntity,
+        KbDocumentEntity,
+        KbKnowledgeBaseEntity,
+        KbTaskEntity,
+    )
+    from app.domain.task_lease import LostTaskLease, TaskLease
+    from app.infrastructure.repositories.kb_repo import KbRepository
+
+    migrations.apply_migrations()
+    @contextmanager
+    def mysql_db():
+        with Session(mysql_engine) as db, db.begin():
+            yield db
+    monkeypatch.setattr("app.infrastructure.repositories.kb_repo.get_db", mysql_db)
+    repo = KbRepository()
+    repo.save_kb(KbKnowledgeBaseEntity(id="fence-kb", name="Fencing"))
+    repo.save_doc(KbDocumentEntity(id="fence-doc", kb_id="fence-kb", name="test.txt", status="pending"))
+    repo.save_task(KbTaskEntity(id="fence-task", kb_id="fence-kb", doc_id="fence-doc", task_type="import"))
+    assert repo.claim_next_task("old", 60)
+    with mysql_engine.begin() as db:
+        db.execute(text("UPDATE kb_tasks SET lease_until='2000-01-01' WHERE id='fence-task'"))
+    repo.recover_expired_tasks()
+    claimed = repo.claim_next_task("new", 60)
+    values = [KbChunkEntity(id="fence-chunk", kb_id="fence-kb", doc_id="fence-doc", content="new", token_count=3)]
+    old = TaskLease("old", 1)
+    with pytest.raises(LostTaskLease):
+        repo.publish_document("fence-task", old, "fence-kb", "fence-doc", values)
+    assert not repo.fail_or_retry_task("fence-task", "old failure", 1, old)
+    current = TaskLease("new", claimed["attempt_count"])
+    repo.publish_document("fence-task", current, "fence-kb", "fence-doc", values)
+    with pytest.raises(LostTaskLease):
+        repo.publish_document("fence-task", current, "fence-kb", "fence-doc", values)
+    assert repo.find_kb_by_id("fence-kb").chunk_count == 1
+    assert repo.find_task_by_id("fence-task").status == "completed"

@@ -71,8 +71,8 @@ def test_openai_stream_is_converted_to_responses_events():
         "",
     ]:
         frames.extend(codec.feed_line(line))
-    assert [next(line[7:] for line in frame.splitlines() if line.startswith("event: ")) for frame in frames[:2]] == ["response.created", "response.output_text.delta"]
-    assert _payload(frames[1])["delta"] == "hi"
+    assert _payload(frames[0])["type"] == "response.created"
+    assert next(_payload(frame)["delta"] for frame in frames if _payload(frame)["type"] == "response.output_text.delta") == "hi"
     assert next(line[7:] for line in frames[-1].splitlines() if line.startswith("event: ")) == "response.completed"
 
 
@@ -110,7 +110,8 @@ def test_stream_codec_finishes_partial_stream_and_ignores_invalid_json():
     codec = StreamCodec("openai", "openai", "demo")
     assert codec.feed_line("data: {not-json") == []
     result = codec.finish()
-    assert result and "[DONE]" in result[-1]
+    assert result and _payload(result[-1])["error"]["code"] == "invalid_upstream_event"
+    assert codec.failed and not any("[DONE]" in frame for frame in result)
 
 
 def test_stream_codec_anthropic_tool_delta_and_unknown_event():

@@ -7,8 +7,13 @@ from app.types.enums import ProtocolFormat
 class ProtocolDetector:
     @staticmethod
     def detect_endpoint(headers: dict, body: str, endpoint: str = "") -> str:
-        if str(endpoint).rstrip("/") == "/v1/completions":
-            return "completions"
+        endpoint = str(endpoint).rstrip("/")
+        protocols = {"/v1/completions": "completions", "/v1/responses": "responses",
+                     "/v1/messages": "anthropic", "/v1/embeddings": "openai",
+                     "/v1/audio/transcriptions": "openai", "/v1/audio/speech": "openai",
+                     "/v1/images/generations": "openai"}
+        if endpoint in protocols:
+            return protocols[endpoint]
         return ProtocolDetector.detect(headers, body)
 
     @staticmethod

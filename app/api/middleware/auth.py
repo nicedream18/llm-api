@@ -6,6 +6,7 @@ import hmac
 import logging
 import uuid
 
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from starlette.routing import Match
@@ -119,7 +120,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
                 return await call_next(request)
             if config.auth.mcp_api_key_access:
                 try:
-                    request.state.auth_context = api_authorizer.authenticate(mcp_token)
+                    request.state.auth_context = await run_in_threadpool(api_authorizer.authenticate, mcp_token)
                     return await call_next(request)
                 except AuthError as exc:
                     return _error(exc, request_id)
@@ -135,7 +136,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             if not read_only:
                 return _error(AuthError("Wiki writes require administrator authentication", 403, "permission_error"), request_id)
             try:
-                request.state.auth_context = api_authorizer.authenticate(bearer_token or request.headers.get("x-api-key"))
+                request.state.auth_context = await run_in_threadpool(api_authorizer.authenticate, bearer_token or request.headers.get("x-api-key"))
                 return await call_next(request)
             except AuthError as exc:
                 return _error(exc, request_id)
@@ -147,7 +148,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             if not _kb_api_key_read_allowed(request.method, path, KB_PREFIX):
                 return _error(AuthError("Read-only API key cannot modify knowledge bases", 403, "permission_error"), request_id)
             try:
-                request.state.auth_context = api_authorizer.authenticate(bearer_token or request.headers.get("x-api-key"))
+                request.state.auth_context = await run_in_threadpool(api_authorizer.authenticate, bearer_token or request.headers.get("x-api-key"))
                 return await call_next(request)
             except AuthError as exc:
                 return _error(exc, request_id)
@@ -162,7 +163,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if any(path == p or path.startswith(p) for p in GATEWAY_PREFIXES) or path == "/v1/models":
             try:
-                request.state.auth_context = api_authorizer.authenticate(bearer_token or request.headers.get("x-api-key"))
+                request.state.auth_context = await run_in_threadpool(api_authorizer.authenticate, bearer_token or request.headers.get("x-api-key"))
                 return await call_next(request)
             except AuthError as exc:
                 return _error(exc, request_id)

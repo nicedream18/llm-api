@@ -131,6 +131,7 @@ class WorkerConfig:
 
 @dataclass(frozen=True)
 class AppConfig:
+    quota_recovery_dir: str = field(default_factory=lambda: _env("QUOTA_RECOVERY_DIR", "data/quota-recovery") or "data/quota-recovery")
     server_port: int = field(default_factory=lambda: _int("SERVER_PORT", 9900, 1))
     db: DatabaseConfig = field(default_factory=DatabaseConfig)
     security: SecuritySettings = field(default_factory=SecuritySettings)

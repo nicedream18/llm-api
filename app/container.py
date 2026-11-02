@@ -1,6 +1,7 @@
 """Dependency injection container — wires up all services."""
 import logging
 from functools import lru_cache
+from pathlib import Path
 
 from app.application.services.access_service import AccessService
 from app.application.services.admin_service import AdminService
@@ -20,6 +21,10 @@ from app.application.services.operations_service import (
 from app.application.services.platform_service import PlatformService
 from app.application.services.provider_service import ProviderService
 from app.application.services.provider_sync_worker import ProviderSyncWorker
+from app.application.services.quota_recovery import (
+    QuotaRecoveryWorker,
+    RecoverableQuota,
+)
 from app.application.services.software_service import SoftwareService
 from app.application.services.wiki_service import WikiService
 from app.config import config
@@ -72,7 +77,8 @@ class Container:
         self.security_repo = SecurityRepository()
         self.kb_repo = KbRepository()
         self.agent_repo = AgentRepository()
-        self.quota_repo = QuotaRepository()
+        self.quota_repo = RecoverableQuota(QuotaRepository(), Path(config.quota_recovery_dir))
+        self.quota_recovery_worker = QuotaRecoveryWorker(self.quota_repo)
         self.routing_repo = RoutingRepository()
         self.usage_repo = UsageRepository()
         self.analytics_repo = AnalyticsRepository()
@@ -114,6 +120,7 @@ class Container:
         self.agent_service = AgentService(self.agent_repo, self.agent_chat)
         self.proxy_service = ProxyService(self.gateway, self.security_scanner, self.security_settings,
                                           self.log_repo, self.security_repo, self.quota_repo, self.channel_repo, self.usage_repo)
+        self.kb_service.proxy = self.proxy_service
         self.access_service = AccessService(AccessRepository())
         self.wiki_service = WikiService(WikiRepository(), self.proxy_service)
         self.software_service = SoftwareService(self.software_repo)

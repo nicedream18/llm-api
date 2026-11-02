@@ -134,6 +134,24 @@ class AnthropicAdapter(ChannelAdapter):
             if role == "system":
                 system.append(content)
                 continue
+            if role == "tool":
+                anthropic_messages.append({"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": message.get("tool_call_id", ""), "content": content,
+                }]})
+                continue
+            calls = message.get("tool_calls") or []
+            if calls:
+                blocks = [{"type": "text", "text": content}] if content else []
+                for call in calls:
+                    function = call.get("function") or {}
+                    arguments = function.get("arguments", "{}")
+                    if isinstance(arguments, str):
+                        arguments = json.loads(arguments)
+                    if not isinstance(arguments, dict):
+                        raise TypeError("Tool arguments must be a JSON object")
+                    blocks.append({"type": "tool_use", "id": call["id"],
+                                   "name": function["name"], "input": arguments})
+                content = blocks
             anthropic_messages.append({"role": "assistant" if role == "assistant" else "user", "content": content})
 
         body: dict[str, Any] = {
@@ -143,9 +161,21 @@ class AnthropicAdapter(ChannelAdapter):
         }
         if system:
             body["system"] = "\n\n".join(str(item) for item in system)
-        for key in ("temperature", "top_p", "stop_sequences", "stream", "tools", "tool_choice"):
+        for key in ("temperature", "top_p", "stop_sequences", "stream"):
             if key in source:
                 body[key] = source[key]
+        if "stop" in source:
+            body["stop_sequences"] = [source["stop"]] if isinstance(source["stop"], str) else source["stop"]
+        if source.get("tools"):
+            body["tools"] = [{"name": t["function"]["name"],
+                "description": t["function"].get("description", ""),
+                "input_schema": t["function"].get("parameters") or {"type": "object", "properties": {}}}
+                for t in source["tools"] if t.get("type") == "function"]
+        choice = source.get("tool_choice")
+        if isinstance(choice, dict):
+            body["tool_choice"] = {"type": "tool", "name": choice["function"]["name"]}
+        elif choice in {"auto", "required", "none"}:
+            body["tool_choice"] = {"type": {"required": "any"}.get(choice, choice)}
         return body
 
     def normalize_response(self, body: str, model: str) -> str:
@@ -154,17 +184,27 @@ class AnthropicAdapter(ChannelAdapter):
             response = json.loads(body)
         except (TypeError, ValueError):
             return body
+        if not isinstance(response, dict):
+            return body
         content = response.get("content") or []
         text_parts = [item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"]
+        tool_calls = [{"id": item["id"], "type": "function", "function": {
+            "name": item["name"], "arguments": json.dumps(item.get("input", {}), ensure_ascii=False)
+        }} for item in content if isinstance(item, dict) and item.get("type") == "tool_use"]
+        message: dict[str, Any] = {"role": "assistant", "content": "".join(text_parts) or None}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
         usage = response.get("usage") or {}
+        finish = str(response.get("stop_reason") or "stop")
+        finish_map = {"end_turn": "stop", "stop_sequence": "stop", "max_tokens": "length", "tool_use": "tool_calls"}
         result = {
             "id": response.get("id"),
             "object": "chat.completion",
             "model": response.get("model", model),
             "choices": [{
                 "index": 0,
-                "message": {"role": "assistant", "content": "".join(text_parts)},
-                "finish_reason": response.get("stop_reason") or "stop",
+                "message": message,
+                "finish_reason": finish_map.get(finish, finish),
             }],
             "usage": {
                 "prompt_tokens": int(usage.get("input_tokens", 0) or 0),

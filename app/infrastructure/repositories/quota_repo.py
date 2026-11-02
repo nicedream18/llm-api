@@ -6,7 +6,11 @@ from datetime import UTC, datetime
 
 from sqlalchemy import text
 
-from app.infrastructure.database.connection import affected_rows, get_db
+from app.infrastructure.database.connection import (
+    affected_rows,
+    get_db,
+    row_lock_suffix,
+)
 
 
 def _now() -> str:
@@ -14,6 +18,13 @@ def _now() -> str:
 
 
 class QuotaRepository:
+    def outcome_matches(self, reservation_id: str, action: str, tokens: int) -> bool:
+        with get_db() as db:
+            row = db.execute(text("SELECT status,actual_tokens FROM api_key_quota_ledger WHERE id=:id"),
+                             {"id": reservation_id}).mappings().first()
+            return bool(row and ((action == "release" and row["status"] == "released")
+                        or (action == "settle" and row["status"] == "settled" and row["actual_tokens"] == tokens)))
+
     def reserve(self, api_key_id: str, request_id: str, estimated_tokens: int) -> str | None:
         estimated_tokens = max(0, int(estimated_tokens))
         reservation_id = uuid.uuid4().hex
@@ -37,8 +48,7 @@ class QuotaRepository:
     def settle(self, reservation_id: str, actual_tokens: int) -> bool:
         actual_tokens = max(0, int(actual_tokens))
         with get_db() as db:
-            dialect = getattr(getattr(db, "engine", None), "dialect", None)
-            lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
+            lock_suffix = row_lock_suffix(db)
             row = db.execute(text("SELECT * FROM api_key_quota_ledger WHERE id=:id" + lock_suffix), {"id": reservation_id}).mappings().first()
             if not row or row["status"] != "reserved":
                 return False
@@ -54,8 +64,7 @@ class QuotaRepository:
 
     def release(self, reservation_id: str) -> bool:
         with get_db() as db:
-            dialect = getattr(getattr(db, "engine", None), "dialect", None)
-            lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
+            lock_suffix = row_lock_suffix(db)
             row = db.execute(text("SELECT * FROM api_key_quota_ledger WHERE id=:id" + lock_suffix), {"id": reservation_id}).mappings().first()
             if not row or row["status"] != "reserved":
                 return False

@@ -256,8 +256,9 @@ class ProviderService:
         snapshot = state["snapshots"].get("models")
         if not snapshot or not snapshot.get("payload") or snapshot["generation"] != state["generation"]:
             return None
-        if self._expired((datetime.fromisoformat(snapshot["fetched_at"]) + timedelta(minutes=15)).isoformat(), skew=0):
-            return None
+        # A known model set remains a routing restriction while refresh is
+        # delayed. Freshness is reported by synchronization diagnostics; it must
+        # never silently turn a restricted account into a wildcard channel.
         return snapshot["payload"].get("models", [])
 
     def _routing_quota(self, account_id):

@@ -54,11 +54,17 @@ def extract_pdf_text(content: bytes) -> str:
 
 
 class KbService:
-    def __init__(self, kb_repository, rag_service, text_splitter, embedder_service):
+    def __init__(self, kb_repository, rag_service, text_splitter, embedder_service, proxy_service=None):
         self.repo = kb_repository
         self.rag = rag_service
         self.splitter = text_splitter
         self.embedder = embedder_service
+        self.proxy = proxy_service
+
+    def _model_operation(self, operation, *args, auth_context=None):
+        from app.domain.model_policy import model_operation
+        with model_operation(self.proxy, auth_context):
+            return operation(*args)
 
     def create_kb(self, dto: CreateKbDTO):
         now = _now()
@@ -130,9 +136,8 @@ class KbService:
         self.repo.save_task(task, {"filename": filename, "content": dto.content, "file_type": file_type, "source_type": dto.source_type})
         return self._to_doc_dto(entity)
 
-    def run_import_pipeline(self, kb_id, doc_id, task_id, dto):
-        self.repo.update_task_status(task_id, "running", None)
-        self.repo.update_doc_status(doc_id, "processing", None)
+    def run_import_pipeline(self, kb_id, doc_id, task_id, dto, *, lease):
+        lease.check()
         try:
             kb = self.repo.find_kb_by_id(kb_id)
             if not kb:
@@ -173,26 +178,8 @@ class KbService:
                 if i < len(embeddings) and embeddings[i]:
                     chunk.embedding = serialize_embedding(embeddings[i])
                 total_tokens += chunk.token_count or 0
-                self.repo.update_task_progress(task_id, i + 1, int((i + 1) * 100.0 / len(chunks)))
-            self.repo.save_chunk_batch(chunks)
-            doc = self.repo.find_doc_by_id(doc_id)
-            if doc:
-                doc.chunk_count = len(chunks)
-                doc.total_tokens = total_tokens
-                doc.status = "ready"
-                doc.updated_at = _now()
-                self.repo.update_doc(doc)
-            docs = self.repo.find_doc_by_kb_id(kb_id)
-            all_chunks = self.repo.find_chunk_by_kb_id(kb_id)
-            kb.doc_count = sum(1 for d in docs if d.status == "ready")
-            kb.chunk_count = len(all_chunks)
-            kb.total_tokens = sum(d.total_tokens for d in docs if d.status == "ready")
-            # New chunks invalidate any previously built HNSW index. A
-            # separate build request is required before vector search uses it.
-            kb.index_status = "stale"
-            kb.updated_at = _now()
-            self.repo.update_kb(kb)
-            self.repo.update_task_status(task_id, "completed", None)
+                self.repo.update_task_progress(task_id, i + 1, int((i + 1) * 100.0 / len(chunks)), lease)
+            self.repo.publish_document(task_id, lease, kb_id, doc_id, chunks)
             logger.info(f"Import pipeline done: kbId={kb_id}, docId={doc_id}, chunks={len(chunks)}")
         except Exception:
             logger.error("Import pipeline failed", extra={"kb_id": kb_id, "doc_id": doc_id, "task_id": task_id})
@@ -208,7 +195,7 @@ class KbService:
         result = self.repo.delete_doc_by_id(doc_id)
         return result is not False
 
-    def ask(self, kb_id, request: KbAskRequestDTO):
+    def ask(self, kb_id, request: KbAskRequestDTO, auth_context=None):
         kb = self.repo.find_kb_by_id(kb_id)
         if not kb:
             return KbAskResponseDTO(answer="\u77e5\u8bc6\u5e93\u4e0d\u5b58\u5728")
@@ -216,18 +203,18 @@ class KbService:
         chat_model = request.model or "gpt-4.1"
         top_k = request.top_k or 5
         history = request.history
-        answer = self.rag.ask_with_config(
+        answer = self._model_operation(self.rag.ask_with_config,
             kb_id, request.question, embedding_model, chat_model, top_k,
             request.search_mode or "hybrid",
             request.vector_weight if request.vector_weight is not None else 0.7,
             request.keyword_weight if request.keyword_weight is not None else 0.3,
-            history,
+            history, auth_context=auth_context,
         )
         self.repo.save_conversation(kb_id, "user", request.question)
         self.repo.save_conversation(kb_id, "assistant", answer.answer)
         return self._to_ask_response(answer)
 
-    def deep_research(self, kb_id, request: KbAskRequestDTO):
+    def deep_research(self, kb_id, request: KbAskRequestDTO, auth_context=None):
         kb = self.repo.find_kb_by_id(kb_id)
         if not kb:
             return KbAskResponseDTO(answer="\u77e5\u8bc6\u5e93\u4e0d\u5b58\u5728")
@@ -235,7 +222,7 @@ class KbService:
         chat_model = request.model or "gpt-4.1"
         top_k = request.top_k or 5
         max_rounds = request.max_rounds or 3
-        answer = self.rag.deep_research(kb_id, request.question, embedding_model, chat_model, top_k, max_rounds)
+        answer = self._model_operation(self.rag.deep_research, kb_id, request.question, embedding_model, chat_model, top_k, max_rounds, auth_context=auth_context)
         self.repo.save_conversation(kb_id, "user", request.question)
         self.repo.save_conversation(kb_id, "assistant", answer.answer)
         return self._to_ask_response(answer)
@@ -255,12 +242,12 @@ class KbService:
             "completedAt": entity.completed_at,
         }
 
-    def search_kb(self, kb_id, request: KbSearchRequestDTO):
+    def search_kb(self, kb_id, request: KbSearchRequestDTO, auth_context=None):
         top_k = request.top_k or 5
         search_mode = request.search_mode or "keyword"
         kb = self.repo.find_kb_by_id(kb_id)
         embedding_model = kb.embedding_model if kb else "text-embedding-3-small"
-        results = self.rag.search_by_mode(kb_id, request.query, top_k, search_mode, embedding_model)
+        results = self._model_operation(self.rag.search_by_mode, kb_id, request.query, top_k, search_mode, embedding_model, auth_context=auth_context)
         return [KbSearchResultDTO(chunk_id=r.chunk_id, doc_id=r.doc_id, filename=r.metadata.get("filePath") if r.metadata else None,
                                    content=r.content, score=r.score, metadata=r.metadata) for r in results]
 
@@ -278,9 +265,9 @@ class KbService:
         """Refresh tags by re-scanning all documents in the knowledge base."""
         return self.get_tags(kb_id, limit)
 
-    def search(self, kb_id, request: KbSearchRequestDTO):
+    def search(self, kb_id, request: KbSearchRequestDTO, auth_context=None):
         """Search KB with mode (vector/keyword/hybrid). Route entry for POST /{id}/search."""
-        return self.search_kb(kb_id, request)
+        return self.search_kb(kb_id, request, auth_context=auth_context)
 
     def stats(self, kb_id):
         """Get KB statistics. Route entry for GET /{id}/stats."""
@@ -302,10 +289,9 @@ class KbService:
         self.repo.save_task(task)
         return {"success": True, "taskId": task.id, "message": "Reindex started"}
 
-    def run_reindex_pipeline(self, kb_id, doc_id, task_id, chunks):
+    def run_reindex_pipeline(self, kb_id, doc_id, task_id, chunks, *, lease):
+        lease.check()
         try:
-            self.repo.update_task_status(task_id, "running", None)
-            self.repo.update_doc_status(doc_id, "processing", None)
             kb = self.repo.find_kb_by_id(kb_id)
             embedding_model = kb.embedding_model if kb else "text-embedding-3-small"
             from app.domain.knowledge import serialize_embedding
@@ -314,16 +300,8 @@ class KbService:
             for i, chunk in enumerate(chunks):
                 if i < len(embeddings) and embeddings[i]:
                     chunk.embedding = serialize_embedding(embeddings[i])
-                self.repo.update_task_progress(task_id, i + 1, int((i + 1) * 100.0 / len(chunks)))
-            for chunk in chunks:
-                if chunk.embedding is not None and chunk.id:
-                    self.repo.update_chunk_embedding(chunk.id, chunk.embedding)
-            self.repo.update_doc_status(doc_id, "ready", None)
-            if kb:
-                kb.index_status = "stale"
-                kb.updated_at = _now()
-                self.repo.update_kb(kb)
-            self.repo.update_task_status(task_id, "completed", None)
+                self.repo.update_task_progress(task_id, i + 1, int((i + 1) * 100.0 / len(chunks)), lease)
+            self.repo.publish_document(task_id, lease, kb_id, doc_id, chunks)
             logger.info(f"Reindex done: kbId={kb_id}, docId={doc_id}, chunks={len(chunks)}")
         except Exception as e:
             logger.error(f"Reindex failed: kbId={kb_id}, docId={doc_id}: {e}")

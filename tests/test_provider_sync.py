@@ -20,6 +20,25 @@ from app.types.provider import ProviderTokenInput
 from app.types.provider_sync import ProviderSyncSettings
 
 
+@pytest.mark.parametrize("minutes", [0, 16, 360, 720])
+@pytest.mark.parametrize("models", [["known-model"], []])
+def test_model_snapshot_age_never_turns_known_set_into_wildcard(provider_database, minutes, models):
+    service, account = provider_database
+    repo = service.repo
+    _, _, generation = repo.read_sync_credentials(account)
+    assert repo.save_snapshot(account, "models", generation, {"models": models})
+    with repo.engine.begin() as db:
+        db.execute(text("UPDATE provider_snapshots SET fetched_at=:when WHERE account_id=:id AND kind='models'"),
+                   {"id": account, "when": (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()})
+    assert service._discovered_models(account) == models
+    assert service.routing_channels("unlisted-model") == []
+    assert bool(service.routing_channels("known-model")) is bool(models)
+    # Explicit mappings remain an intentional administrator routing choice.
+    repo.update_account(account, {"model_mapping": {"explicit": "upstream"}})
+    assert service.routing_channels("explicit")[0].model_mapping == {"explicit": "upstream"}
+    assert service.routing_channels("unlisted-model") == []
+
+
 @pytest.mark.parametrize("remaining,limit,unit,status", [(1, 100, "tokens", "low"), (30, 100, "requests", "normal"), (0, 100, "credits", "exhausted"), (0, 100, "unknown", "unknown"), (1, 100, "currency", "unknown")])
 def test_quota_window_states(remaining, limit, unit, status):
     value = normalize_quota({"remaining": remaining, "limit": limit, "unit": unit})

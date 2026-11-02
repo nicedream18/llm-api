@@ -1,4 +1,5 @@
 """HNSW index service for knowledge base vector search."""
+import hashlib
 import heapq
 import json
 import logging
@@ -32,6 +33,8 @@ class HnswIndex:
             raise ValueError("Index dimension must be positive")
         if max_m <= 0 or ef_construction <= 0 or ef_search <= 0:
             raise ValueError("HNSW parameters must be positive")
+        self.chunk_map: dict[str, dict[str, str]] = {}
+        self.dataset_digest: str | None = None
         self.format_version = INDEX_FORMAT_VERSION
         self.dim = dim
         self.max_m = max_m
@@ -143,6 +146,8 @@ class HnswIndex:
                         "entry_point": self.entry_point,
                         "initialized": self.initialized,
                         "nodes": self.nodes,
+                        "chunk_map": self.chunk_map,
+                        "dataset_digest": self.dataset_digest,
                     }
                     f.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
                     f.flush()
@@ -170,6 +175,8 @@ class HnswIndex:
             index.format_version = cast(int, payload.get("format_version"))
             index.entry_point = cast(int, payload.get("entry_point"))
             index.initialized = cast(bool, payload.get("initialized"))
+            index.chunk_map = payload.get("chunk_map", {})
+            index.dataset_digest = payload.get("dataset_digest")
             index.nodes = cast(list[dict[str, Any]], payload.get("nodes"))
             if not index._valid_index():
                 raise ValueError("Invalid HNSW index format")
@@ -181,6 +188,19 @@ class HnswIndex:
 
     def _valid_index(self) -> bool:
         if type(getattr(self, "format_version", None)) is not int or self.format_version != INDEX_FORMAT_VERSION:
+            return False
+        if not isinstance(self.chunk_map, dict) or any(
+            not isinstance(key, str) or not isinstance(value, dict)
+            or not isinstance(value.get("id"), str)
+            or not isinstance(value.get("digest"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", value["digest"])
+            for key, value in self.chunk_map.items()
+        ):
+            return False
+        if self.dataset_digest is not None and (
+            not isinstance(self.dataset_digest, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", self.dataset_digest)
+        ):
             return False
         if (type(self.dim) is not int or self.dim <= 0
                 or type(self.entry_point) is not int or not self.initialized
@@ -243,6 +263,7 @@ class IndexService:
         return os.path.join(INDEX_DIR, f"{self._safe_kb_id(kb_id)}.index")
 
     def build_index(self, kb_id: str) -> dict[str, Any]:
+        self._safe_kb_id(kb_id)
         logger.info(f"Building index: kbId={kb_id}")
         chunks = self.repo.find_chunk_by_kb_id(kb_id)
         if not chunks:
@@ -268,6 +289,8 @@ class IndexService:
         dim = len(vectors[0])
         index = HnswIndex(dim, DEFAULT_MAX_M, DEFAULT_EF_CONSTRUCTION, DEFAULT_EF_SEARCH)
         index.build(ids, vectors)
+        index.chunk_map = {str(i): {"id": chunks[i].id, "digest": self._chunk_digest(chunks[i])} for i in ids}
+        index.dataset_digest = self._dataset_digest(chunks)
 
         index_path = self._index_path(kb_id)
         index.save(index_path)
@@ -330,7 +353,18 @@ class IndexService:
             return []
 
         chunks = self.repo.find_chunk_by_kb_id(kb_id)
-        chunk_map = {i: chunk for i, chunk in enumerate(chunks)}
+        if index.dataset_digest != self._dataset_digest(chunks):
+            return []
+        by_id = {chunk.id: chunk for chunk in chunks}
+        chunk_map = {}
+        for node in index.nodes:
+            saved = index.chunk_map.get(str(node["id"]))
+            if not isinstance(saved, dict):
+                return []  # Legacy index: rebuild before use.
+            chunk = by_id.get(saved.get("id"))
+            if chunk is None or self._chunk_digest(chunk) != saved.get("digest"):
+                return []  # Deleted/changed document: never return a different row.
+            chunk_map[node["id"]] = chunk
 
         results = []
         for sr in search_results:
@@ -346,6 +380,18 @@ class IndexService:
                 "metadata": self._parse_metadata(chunk.metadata),
             })
         return results
+
+    @staticmethod
+    def _dataset_digest(chunks) -> str:
+        digests = sorted(IndexService._chunk_digest(chunk) for chunk in chunks)
+        return hashlib.sha256("".join(digests).encode()).hexdigest()
+
+    @staticmethod
+    def _chunk_digest(chunk) -> str:
+        digest = hashlib.sha256()
+        digest.update(json.dumps([chunk.id, chunk.doc_id, chunk.content, chunk.metadata], ensure_ascii=False).encode())
+        digest.update(chunk.embedding or b"")
+        return digest.hexdigest()
 
     @staticmethod
     def _deserialize_vector(data: bytes) -> list[float] | None:

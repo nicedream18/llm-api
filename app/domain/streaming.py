@@ -160,6 +160,11 @@ class StreamCodec:
         self.decoder = SSEDecoder()
         self.response_id: str | None = None
         self.done = False
+        self.failed = False
+        self.output_items: dict[int, dict[str, Any]] = {}
+        self.tools: dict[int, dict[str, Any]] = {}
+        self.text_index: int | None = None
+        self.stop_reason = "stop"
         self.started = False
         self.text_started = False
         self.text_buffer = ""
@@ -168,10 +173,10 @@ class StreamCodec:
 
     def feed_line(self, line: str) -> list[str]:
         """Consume one upstream line and return zero or more complete events."""
+        if self.done:
+            return []
         raw = str(line).rstrip("\r")
-        if self.source_protocol in {"ollama", "gemini"} and not raw.startswith(("data:", "event:", "id:", "retry:", ":")):
-            if not raw:
-                return []
+        if raw and self.source_protocol in {"ollama", "gemini"} and not raw.startswith(("data:", "event:", "id:", "retry:", ":")):
             direct_event = SSEEvent(data=raw)
             return self._convert(direct_event)
         decoded_event: SSEEvent | None = self.decoder.feed_line(raw)
@@ -183,10 +188,12 @@ class StreamCodec:
         if event:
             output.extend(self._convert(event))
         if not self.done:
-            output.extend(self._finish_protocol())
+            output.extend(self._error("upstream_truncated"))
         return output
 
     def _convert(self, event: SSEEvent) -> list[str]:
+        if self.done:
+            return []
         payload = event.data.strip()
         if payload == "":
             return []
@@ -200,7 +207,7 @@ class StreamCodec:
             return self._finish_protocol()
         data = _json(payload)
         if data is None:
-            return [encode_sse(event)] if self.target_protocol == "openai" else []
+            return self._error("invalid_upstream_event")
         self.response_id = self.response_id or data.get("id")
         usage = _usage(data)
         if usage:
@@ -209,6 +216,8 @@ class StreamCodec:
 
     def _emit_openai_payload(self, payload: dict[str, Any], event_name: str | None = None, event_id: str | None = None) -> list[str]:
         """Route an OpenAI-shaped chunk to the requested public protocol."""
+        if payload.get("error") or payload.get("type") in {"error", "response.failed", "response.incomplete"}:
+            return self._error("upstream_error")
         if self.target_protocol == "openai":
             return [encode_sse(SSEEvent(data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")), event=event_name, event_id=event_id))]
         if self.target_protocol == "anthropic":
@@ -227,6 +236,8 @@ class StreamCodec:
         reported_usage = _usage(payload.get("message", {}) if event_type == "message_start" else payload)
         if reported_usage:
             self.usage = _merge_usage(self.usage, reported_usage)
+        if event_type == "error":
+            return self._error("upstream_error")
         if self.target_protocol == "anthropic":
             if event_type == "message_stop":
                 self.done = True
@@ -284,7 +295,6 @@ class StreamCodec:
         text = "".join(str(part.get("text", "")) for part in parts if isinstance(part, dict))
         output: list[str] = []
         if text:
-            self.text_buffer += text
             output.extend(self._emit_openai_payload(_openai_chunk({"content": text}, model=self.model, response_id=self.response_id)))
         reason = candidate.get("finishReason")
         if reason:
@@ -311,42 +321,85 @@ class StreamCodec:
             output.extend(self._finish_protocol())
         return output
 
-    def _openai_to_anthropic(self, payload: dict[str, Any]) -> list[str]:
+    def _new_item(self, item: dict[str, Any]) -> int:
+        index = len(self.output_items)
+        self.output_items[index] = item
+        return index
+
+    def _convert_delta(self, payload: dict[str, Any]) -> list[str]:
         output: list[str] = []
-        if not self.started:
-            self.started = True
-            output.append(_event({"type": "message_start", "message": {"id": self.response_id or f"msg_{uuid.uuid4().hex}", "type": "message", "role": "assistant", "content": [], "model": self.model, "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 0, "output_tokens": 0}}}))
+        anthropic = self.target_protocol == "anthropic"
         choices = payload.get("choices") or []
         choice = choices[0] if choices and isinstance(choices[0], dict) else {}
         delta = choice.get("delta") or {}
         content = delta.get("content")
         if content:
-            output.append(_event({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}) if not self.text_started else "")
-            self.text_started = True
+            if self.text_index is None:
+                self.text_index = self._new_item({"id": f"msg_{self.response_id}", "type": "message",
+                    "role": "assistant", "status": "in_progress", "content": []})
+                if anthropic:
+                    output.append(_event({"type": "content_block_start", "index": self.text_index,
+                        "content_block": {"type": "text", "text": ""}}, "content_block_start"))
+                else:
+                    output.append(_event({"type": "response.output_item.added", "output_index": self.text_index,
+                        "item": dict(self.output_items[self.text_index])}, "response.output_item.added"))
+                    output.append(_event({"type": "response.content_part.added", "output_index": self.text_index,
+                        "item_id": f"msg_{self.response_id}", "content_index": 0,
+                        "part": {"type": "output_text", "text": "", "annotations": []}}, "response.content_part.added"))
             self.text_buffer += content
-            output.append(_event({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": content}}))
-        finish = choice.get("finish_reason")
-        if finish:
-            stop = {"stop": "end_turn", "length": "max_tokens", "tool_calls": "tool_use"}.get(finish, finish)
-            output.append(_event({"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None}, "usage": {"output_tokens": (self.usage or {}).get("output_tokens", 0)}}))
-        return [item for item in output if item]
+            if anthropic:
+                output.append(_event({"type": "content_block_delta", "index": self.text_index,
+                    "delta": {"type": "text_delta", "text": content}}, "content_block_delta"))
+            else:
+                output.append(_event({"type": "response.output_text.delta", "response_id": self.response_id,
+                    "item_id": f"msg_{self.response_id}", "output_index": self.text_index,
+                    "content_index": 0, "delta": content}, "response.output_text.delta"))
+        for call in delta.get("tool_calls") or []:
+            key = int(call.get("index", 0))
+            function = call.get("function") or {}
+            if key not in self.tools:
+                item = {"id": f"fc_{uuid.uuid4().hex}", "type": "function_call", "call_id": call.get("id"),
+                        "name": function.get("name", ""), "arguments": "", "status": "in_progress"}
+                index = self._new_item(item)
+                self.tools[key] = {"index": index, "item": item}
+                if anthropic:
+                    output.append(_event({"type": "content_block_start", "index": index,
+                        "content_block": {"type": "tool_use", "id": item["call_id"], "name": item["name"], "input": {}}}, "content_block_start"))
+                else:
+                    output.append(_event({"type": "response.output_item.added", "output_index": index,
+                        "item": dict(item)}, "response.output_item.added"))
+            state = self.tools[key]
+            item = state["item"]
+            fragment = function.get("arguments", "")
+            item["arguments"] += fragment
+            if fragment:
+                if anthropic:
+                    output.append(_event({"type": "content_block_delta", "index": state["index"],
+                        "delta": {"type": "input_json_delta", "partial_json": fragment}}, "content_block_delta"))
+                else:
+                    output.append(_event({"type": "response.function_call_arguments.delta", "item_id": item["id"],
+                        "output_index": state["index"], "delta": fragment}, "response.function_call_arguments.delta"))
+        if choice.get("finish_reason"):
+            self.stop_reason = choice["finish_reason"]
+        return output
+
+    def _openai_to_anthropic(self, payload: dict[str, Any]) -> list[str]:
+        output: list[str] = []
+        if not self.started:
+            self.started = True
+            output.append(_event({"type": "message_start", "message": {"id": self.response_id or f"msg_{uuid.uuid4().hex}",
+                "type": "message", "role": "assistant", "content": [], "model": self.model, "stop_reason": None,
+                "stop_sequence": None, "usage": {"input_tokens": (self.usage or {}).get("input_tokens", 0), "output_tokens": 0}}}, "message_start"))
+        return output + self._convert_delta(payload)
 
     def _openai_to_responses(self, payload: dict[str, Any]) -> list[str]:
         output: list[str] = []
         if not self.started:
             self.started = True
             self.response_id = self.response_id or f"resp_{uuid.uuid4().hex}"
-            output.append(_event({"type": "response.created", "response": {"id": self.response_id, "object": "response", "status": "in_progress", "model": self.model, "output": []}}, "response.created"))
-        choices = payload.get("choices") or []
-        choice = choices[0] if choices and isinstance(choices[0], dict) else {}
-        delta = choice.get("delta") or {}
-        if delta.get("content"):
-            self.text_buffer += delta["content"]
-            output.append(_event({"type": "response.output_text.delta", "response_id": self.response_id, "item_id": f"msg_{self.response_id}", "output_index": 0, "content_index": 0, "delta": delta["content"]}, "response.output_text.delta"))
-        finish = choice.get("finish_reason")
-        if finish:
-            output.append(_event({"type": "response.output_text.done", "response_id": self.response_id, "item_id": f"msg_{self.response_id}", "output_index": 0, "content_index": 0, "text": self.text_buffer}, "response.output_text.done"))
-        return output
+            output.append(_event({"type": "response.created", "response": {"id": self.response_id, "object": "response",
+                "status": "in_progress", "model": self.model, "output": []}}, "response.created"))
+        return output + self._convert_delta(payload)
 
     def _openai_to_completions(self, payload: dict[str, Any]) -> list[str]:
         choices: list[dict[str, Any]] = []
@@ -369,15 +422,43 @@ class StreamCodec:
             result["usage"] = payload["usage"]
         return [encode_sse(SSEEvent(data=json.dumps(result, ensure_ascii=False, separators=(",", ":"))))]
 
+    def _error(self, code: str) -> list[str]:
+        self.done = self.failed = True
+        error = {"message": "Upstream stream failed", "type": "upstream_error", "code": code}
+        if self.target_protocol == "responses":
+            return [_event({"type": "response.failed", "response": {"id": self.response_id,
+                "status": "failed", "error": error}}, "response.failed")]
+        return [_event({"type": "error", "error": error}, "error" if self.target_protocol == "anthropic" else None)]
+
     def _finish_protocol(self) -> list[str]:
         if self.done:
             return []
         self.done = True
+        output: list[str] = []
+        for index, item in self.output_items.items():
+            item["status"] = "completed"
+            if self.target_protocol == "anthropic":
+                output.append(_event({"type": "content_block_stop", "index": index}, "content_block_stop"))
+            elif self.target_protocol == "responses":
+                if item["type"] == "message":
+                    part = {"type": "output_text", "text": self.text_buffer, "annotations": []}
+                    item["content"] = [part]
+                    common = {"output_index": index, "item_id": item["id"], "content_index": 0}
+                    output.append(_event({"type": "response.output_text.done", **common, "text": self.text_buffer}, "response.output_text.done"))
+                    output.append(_event({"type": "response.content_part.done", **common, "part": part}, "response.content_part.done"))
+                else:
+                    output.append(_event({"type": "response.function_call_arguments.done", "output_index": index,
+                        "item_id": item["id"], "arguments": item["arguments"]}, "response.function_call_arguments.done"))
+                output.append(_event({"type": "response.output_item.done", "output_index": index, "item": dict(item)}, "response.output_item.done"))
         if self.target_protocol == "anthropic":
-            output = []
-            if self.started:
-                output.append(_event({"type": "message_stop"}))
-            return output
-        if self.target_protocol == "responses":
-            return [_event({"type": "response.completed", "response": {"id": self.response_id or f"resp_{uuid.uuid4().hex}", "object": "response", "status": "completed", "model": self.model, "usage": self.usage}}, "response.completed")]
-        return [encode_sse(SSEEvent(data="[DONE]"))]
+            stop = {"stop": "end_turn", "length": "max_tokens", "tool_calls": "tool_use"}.get(self.stop_reason, self.stop_reason)
+            output.append(_event({"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None},
+                "usage": {"output_tokens": (self.usage or {}).get("output_tokens", 0)}}, "message_delta"))
+            output.append(_event({"type": "message_stop"}, "message_stop"))
+        elif self.target_protocol == "responses":
+            output.append(_event({"type": "response.completed", "response": {"id": self.response_id or f"resp_{uuid.uuid4().hex}",
+                "object": "response", "status": "completed", "model": self.model, "usage": self.usage,
+                "output": list(self.output_items.values())}}, "response.completed"))
+        else:
+            output.append(encode_sse(SSEEvent(data="[DONE]")))
+        return output

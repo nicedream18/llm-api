@@ -57,8 +57,8 @@ def test_index_service_skips_mixed_dimensions_and_rejects_unsafe_ids(monkeypatch
     class Repo:
         def find_chunk_by_kb_id(self, _kb_id):
             return [
-                type("Chunk", (), {"embedding": struct.pack("<2f", 1, 0)})(),
-                type("Chunk", (), {"embedding": struct.pack("<3f", 1, 0, 0)})(),
+                type("Chunk", (), {"id":"a", "doc_id":"d", "content":"text", "metadata":None, "embedding": struct.pack("<2f", 1, 0)})(),
+                type("Chunk", (), {"id":"b", "doc_id":"d", "content":"text", "metadata":None, "embedding": struct.pack("<3f", 1, 0, 0)})(),
             ]
 
         def upsert_index_meta(self, *_args):

@@ -12,6 +12,7 @@ from app.domain.entities import (
     RagAnswerEntity,
     SearchResultEntity,
 )
+from app.domain.task_lease import TaskLease
 from app.types.models import (
     CreateKbDTO,
     KbAskRequestDTO,
@@ -103,7 +104,8 @@ class FakeRepository:
         self.tasks[task_id].status = status
         self.tasks[task_id].error_message = error
 
-    def update_task_progress(self, task_id, done, progress):
+    def update_task_progress(self, task_id, done, progress, lease):
+        lease.check()
         self.progress.append((task_id, done, progress))
         self.tasks[task_id].done_items = done
         self.tasks[task_id].progress = progress
@@ -116,6 +118,13 @@ class FakeRepository:
 
     def find_chunk_by_doc_id(self, doc_id):
         return [chunk for chunk in self.chunks if chunk.doc_id == doc_id]
+
+    def publish_document(self, task_id, lease, kb_id, doc_id, chunks):
+        lease.check()
+        self.chunks = chunks
+        self.update_doc_status(doc_id, "ready", None)
+        self.kb.index_status = "stale"
+        self.update_task_status(task_id, "completed", None)
 
     def save_chunk_batch(self, chunks):
         self.chunks.extend(chunks)
@@ -324,7 +333,7 @@ def test_reindex_doc_and_pipeline_update_progress_and_mark_index_stale():
     assert service.reindex_doc("other-kb", "doc-1")["success"] is False
     assert service.reindex_doc("kb-1", "missing")["success"] is False
 
-    service.run_reindex_pipeline("kb-1", "doc-1", task_id, repository.chunks)
+    service.run_reindex_pipeline("kb-1", "doc-1", task_id, repository.chunks, lease=TaskLease("w", 1))
 
     assert embedder.calls[-1] == (["alpha beta"], "embed-model")
     assert repository.chunks[0].embedding == struct.pack("<2f", 0.0, 1.0)

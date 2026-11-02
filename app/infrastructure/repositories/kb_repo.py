@@ -7,7 +7,6 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import text
 
 from app.application.errors import ApplicationError
-from app.config import config
 from app.domain.entities import (
     KbChunkEntity,
     KbDocumentEntity,
@@ -15,7 +14,12 @@ from app.domain.entities import (
     KbStatsEntity,
     KbTaskEntity,
 )
-from app.infrastructure.database.connection import affected_rows, get_db
+from app.domain.task_lease import LostTaskLease, TaskLease
+from app.infrastructure.database.connection import (
+    affected_rows,
+    get_db,
+    row_lock_suffix,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +102,7 @@ class KbRepository:
 
     def delete_kb_by_id(self, kb_id: str):
         with get_db() as db:
-            dialect = getattr(getattr(db, "engine", None), "dialect", None)
-            lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
+            lock_suffix = row_lock_suffix(db)
             exists = db.execute(text(
                 "SELECT id FROM kb_knowledge_bases WHERE id=:kb_id" + lock_suffix
             ), {"kb_id": kb_id}).first()
@@ -169,8 +172,7 @@ class KbRepository:
             if not row:
                 return False
             kb_id = row["kb_id"]
-            dialect = getattr(getattr(db, "engine", None), "dialect", None)
-            lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
+            lock_suffix = row_lock_suffix(db)
             db.execute(text("SELECT id FROM kb_knowledge_bases WHERE id=:kb_id" + lock_suffix),
                        {"kb_id": kb_id}).first()
             running = db.execute(text(
@@ -281,8 +283,7 @@ class KbRepository:
     def claim_next_task(self, worker_id: str, lease_seconds: int):
         lease_until = (datetime.now(UTC) + timedelta(seconds=lease_seconds)).strftime("%Y-%m-%d %H:%M:%S")
         with get_db() as db:
-            dialect = getattr(getattr(db, "engine", None), "dialect", None)
-            lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
+            lock_suffix = row_lock_suffix(db)
             candidates = db.execute(text("SELECT id,kb_id,doc_id FROM kb_tasks WHERE status='pending' AND task_type IN ('import','reindex') ORDER BY created_at ASC LIMIT 50")).mappings().all()
             task_id = None
             for row in candidates:
@@ -310,7 +311,7 @@ class KbRepository:
                     break
             if not task_id:
                 return None
-            task = db.execute(text("SELECT id,kb_id,doc_id,task_type,payload FROM kb_tasks WHERE id=:id"), {"id":task_id}).mappings().first()
+            task = db.execute(text("SELECT id,kb_id,doc_id,task_type,payload,worker_id,attempt_count FROM kb_tasks WHERE id=:id"), {"id":task_id}).mappings().first()
             if not task:
                 return None
             try:
@@ -319,29 +320,78 @@ class KbRepository:
                 payload = {}
             return {**dict(task), "payload":payload}
 
-    def renew_task_lease(self, task_id: str, worker_id: str, lease_seconds: int) -> bool:
-        lease_until = (datetime.now(UTC) + timedelta(seconds=lease_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+    @staticmethod
+    def _lease_params(task_id: str, lease: TaskLease) -> dict:
+        lease.check()
+        return {"id": task_id, "worker_id": lease.worker_id, "generation": lease.generation,
+                "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")}
+
+    def renew_task_lease(self, task_id: str, lease: TaskLease, lease_seconds: int) -> bool:
+        params = self._lease_params(task_id, lease)
+        params["lease_until"] = (datetime.now(UTC) + timedelta(seconds=lease_seconds)).strftime("%Y-%m-%d %H:%M:%S")
         with get_db() as db:
-            result = db.execute(text("UPDATE kb_tasks SET lease_until=:lease_until WHERE id=:id AND worker_id=:worker_id AND status='running'"),
-                                {"lease_until": lease_until, "id": task_id, "worker_id": worker_id})
+            result = db.execute(text("UPDATE kb_tasks SET lease_until=:lease_until WHERE id=:id AND worker_id=:worker_id AND attempt_count=:generation AND status='running' AND lease_until>:now"), params)
             return affected_rows(result) == 1
 
     def recover_expired_tasks(self):
         with get_db() as db:
-            db.execute(text("UPDATE kb_tasks SET status='pending',worker_id=NULL,lease_until=NULL WHERE status='running' AND (lease_until IS NULL OR lease_until < :now)"), {"now":datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")})
+            db.execute(text("UPDATE kb_tasks SET status='pending',worker_id=NULL,lease_until=NULL WHERE status='running' AND (lease_until IS NULL OR lease_until <= :now)"), {"now":datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")})
 
-    def fail_or_retry_task(self, task_id: str, message: str, max_attempts: int):
+    def _owned_task(self, db, task_id: str, lease: TaskLease):
+        params = self._lease_params(task_id, lease)
+        suffix = row_lock_suffix(db)
+        # Same KB -> task lock order as claim and deletion.
+        task = db.execute(text("SELECT kb_id FROM kb_tasks WHERE id=:id"), params).mappings().first()
+        if task:
+            db.execute(text("SELECT id FROM kb_knowledge_bases WHERE id=:kb_id" + suffix), {"kb_id": task["kb_id"]}).first()
+        params = self._lease_params(task_id, lease)
+        row = db.execute(text("SELECT * FROM kb_tasks WHERE id=:id AND worker_id=:worker_id AND attempt_count=:generation AND status='running' AND lease_until>:now" + suffix), params).mappings().first()
+        if not row:
+            raise LostTaskLease("Knowledge task lease lost")
+        return row
+
+    def fail_or_retry_task(self, task_id: str, message: str, max_attempts: int, lease: TaskLease) -> bool:
+        try:
+            with get_db() as db:
+                row = self._owned_task(db, task_id, lease)
+                status = "failed" if int(row["attempt_count"]) >= max_attempts else "pending"
+                db.execute(text("UPDATE kb_tasks SET status=:status,error_message=:error_message,worker_id=NULL,lease_until=NULL,completed_at=CASE WHEN :status='failed' THEN :now ELSE completed_at END WHERE id=:id"), {"id":task_id,"status":status,"error_message":message[:2000],"now":_now()})
+                if status == "failed" and row["doc_id"]:
+                    # Preserve a previously published version on reindex failure.
+                    db.execute(text("UPDATE kb_documents SET status=CASE WHEN status='ready' THEN status ELSE 'error' END,error_message='Knowledge task failed',updated_at=:now WHERE id=:doc_id"), {"now":_now(),"doc_id":row["doc_id"]})
+                return True
+        except LostTaskLease:
+            return False
+
+    def publish_document(self, task_id: str, lease: TaskLease, kb_id: str, doc_id: str,
+                         chunks: list[KbChunkEntity]) -> None:
+        """Replace one document version, statistics and task outcome atomically.
+
+        Embeddings are computed outside this transaction. Replays of a completed
+        task and workers from a previous generation cannot publish anything.
+        """
         with get_db() as db:
-            dialect = getattr(getattr(db, "engine", None), "dialect", None)
-            lock_suffix = " FOR UPDATE" if getattr(dialect, "name", None) == "mysql" else ""
-            row=db.execute(text("SELECT attempt_count, doc_id FROM kb_tasks WHERE id=:id" + lock_suffix), {"id":task_id}).mappings().first()
-            if not row:
-                return False
-            status="failed" if int(row["attempt_count"] or 0)>=max_attempts else "pending"
-            db.execute(text("UPDATE kb_tasks SET status=:status,error_message=:error_message,worker_id=NULL,lease_until=NULL,completed_at=CASE WHEN :status='failed' THEN :now ELSE completed_at END WHERE id=:id"), {"id":task_id,"status":status,"error_message":message[:2000],"now":_now()})
-            if status == "failed" and row["doc_id"]:
-                db.execute(text("UPDATE kb_documents SET status='error',error_message='Knowledge task failed',updated_at=:now WHERE id=:doc_id"), {"now":_now(), "doc_id":row["doc_id"]})
-            return True
+            task = self._owned_task(db, task_id, lease)
+            if task["kb_id"] != kb_id or task["doc_id"] != doc_id:
+                raise LostTaskLease("Task document does not match execution")
+            if any(c.doc_id != doc_id or c.kb_id != kb_id for c in chunks):
+                raise ValueError("Chunk document does not match execution")
+            db.execute(text("DELETE FROM kb_chunks WHERE doc_id=:id"), {"id": doc_id})
+            for chunk in chunks:
+                chunk.id = chunk.id or str(uuid.uuid4())
+                chunk.created_at = chunk.created_at or _now()
+                db.execute(text("INSERT INTO kb_chunks (id,doc_id,kb_id,content,chunk_index,token_count,embedding,chunk_type,language,metadata,created_at) VALUES (:id,:doc_id,:kb_id,:content,:chunk_index,:token_count,:embedding,:chunk_type,:language,:metadata,:created_at)"), self._chunk_params(chunk))
+            now = _now()
+            db.execute(text("UPDATE kb_documents SET status='ready',chunk_count=:count,total_tokens=:tokens,error_message=NULL,updated_at=:now WHERE id=:id AND kb_id=:kb_id"), {"id":doc_id,"kb_id":kb_id,"count":len(chunks),"tokens":sum(c.token_count or 0 for c in chunks),"now":now})
+            db.execute(text("""UPDATE kb_knowledge_bases SET
+                doc_count=(SELECT COUNT(*) FROM kb_documents WHERE kb_id=:kb_id AND status='ready'),
+                chunk_count=(SELECT COUNT(*) FROM kb_chunks WHERE kb_id=:kb_id),
+                total_tokens=(SELECT COALESCE(SUM(total_tokens),0) FROM kb_documents WHERE kb_id=:kb_id AND status='ready'),
+                index_status='stale',updated_at=:now WHERE id=:kb_id"""), {"kb_id":kb_id,"now":now})
+            params = self._lease_params(task_id, lease)
+            result = db.execute(text("UPDATE kb_tasks SET status='completed',progress=100,done_items=:count,total_items=:count,completed_at=:completed_at,worker_id=NULL,lease_until=NULL,error_message=NULL WHERE id=:id AND status='running' AND worker_id=:worker_id AND attempt_count=:generation AND lease_until>:now"), {**params,"count":len(chunks),"completed_at":now})
+            if affected_rows(result) != 1:
+                raise LostTaskLease("Knowledge task lease expired before publication")
 
     def cancel_task(self, kb_id: str, task_id: str) -> bool:
         with get_db() as db:
@@ -357,22 +407,17 @@ class KbRepository:
             return self._to_task_entity(row) if row else None
 
     def update_task_status(self, task_id: str, status: str, error_message: str | None):
+        # Worker transitions require an execution identity via publish/fail.
+        if status != "cancelled":
+            return False
         with get_db() as db:
-            if status in ("completed", "failed", "cancelled"):
-                db.execute(text(
-                    "UPDATE kb_tasks SET status=:status, error_message=:error_message, completed_at=UTC_TIMESTAMP(), worker_id=NULL, lease_until=NULL WHERE id=:id"
-                ), {"id": task_id, "status": status, "error_message": error_message})
-            else:
-                db.execute(text(
-                    "UPDATE kb_tasks SET status=:status, error_message=:error_message WHERE id=:id"
-                ), {"id": task_id, "status": status, "error_message": error_message})
+            result = db.execute(text("UPDATE kb_tasks SET status='cancelled',error_message=:error,completed_at=:now WHERE id=:id AND status='pending'"), {"id":task_id,"error":error_message,"now":_now()})
+            return affected_rows(result) == 1
 
-    def update_task_progress(self, task_id: str, done_items: int, progress: int):
-        lease_until = (datetime.now(UTC) + timedelta(seconds=config.workers.lease_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+    def update_task_progress(self, task_id: str, done_items: int, progress: int, lease: TaskLease):
         with get_db() as db:
-            db.execute(text(
-                "UPDATE kb_tasks SET done_items=:done_items, progress=:progress, lease_until=:lease_until WHERE id=:id AND status='running'"
-            ), {"id": task_id, "done_items": done_items, "progress": progress, "lease_until": lease_until})
+            self._owned_task(db, task_id, lease)
+            db.execute(text("UPDATE kb_tasks SET done_items=:done,progress=:progress WHERE id=:id"), {"id":task_id,"done":done_items,"progress":progress})
 
     # ---- Conversation ----
 

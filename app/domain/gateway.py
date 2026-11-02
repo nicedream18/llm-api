@@ -432,16 +432,22 @@ class GatewayService:
                             if attempt.first_token_ms is None and any(marker in output for marker in ('"content":', 'output_text.delta', '"text_delta"', '"tool_calls"')):
                                 attempt.first_token_ms = int((time.monotonic() - started) * 1000)
                             if codec.done:
-                                attempt.succeeded = True
+                                attempt.succeeded = not codec.failed
+                                if codec.failed:
+                                    attempt.error_type = "upstream_stream_error"
                             for output_line in output.rstrip("\r\n").split("\n"):
                                 yield output_line
                             yield ""
-                    for output in codec.finish():
+                    final_frames = codec.finish()
+                    attempt.succeeded = not codec.failed
+                    if codec.failed:
+                        attempt.error_type = "upstream_stream_error"
+                    for output in final_frames:
                         for output_line in output.rstrip("\r\n").split("\n"):
                             yield output_line
                         yield ""
-                    attempt.succeeded = True
-                    self._provider_outcome(channel, True)
+                    attempt.succeeded = not codec.failed
+                    self._provider_outcome(channel, attempt.succeeded)
                     self._cooldown_until.pop(self._channel_key(channel), None)
                     if key_id:
                         self._key_cooldown_until.pop(key_id, None)
