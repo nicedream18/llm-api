@@ -2,6 +2,13 @@
 
 基线：`5bdad3f`，分支：`codex/part2-production-readiness`。仅提交本地 Git。
 
+## 审计修复最新状态（2026-11-02）
+
+后续以 `fcc1ae0` 为审计基线的 16 项问题已修复并补充回归：612 passed / 14 skipped，
+覆盖率 89.04%，全部关键模块维持或提高基线；Node 4 项、Vitest 36 项及静态/构建门禁通过。
+历史节点与结果保留。最新逐项验收、DevBugKB 案例、发布恢复边界和提交记录见
+[`审计修复与验收记录`](code-review/REVIEW_FIX_VERIFICATION.md)。
+
 ## 基线复测（2026-11-02）
 
 Windows / Python 3.12.10 / Node 24.21.0 / npm 11.19.0。

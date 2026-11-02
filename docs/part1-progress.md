@@ -82,3 +82,13 @@ git diff --check
 没有把外部环境缺失伪报为通过；外部验收完成后应在此文档补充实际环境、命令和结果。
 
 第二阶段的增量状态、节点提交和当前环境限制见 [`docs/part2-progress.md`](part2-progress.md)。
+
+## 审计修复增量（2026-11-02）
+
+基于 `fcc1ae0` 的 REVIEW-001 至 REVIEW-016 已实施代码修复并补充定向回归。
+本次全量自动化结果为 612 passed / 14 skipped，覆盖率 89.04%；Ruff、Mypy、
+compileall、Node 4 项、Vitest 36 项、TypeScript 和 Vite 构建通过。
+原有统计保留为历史验收记录。逐项证据、DevBugKB 对照、发布/恢复注意事项和环境限制见
+[`审计修复与验收记录`](code-review/REVIEW_FIX_VERIFICATION.md)。
+特别注意：流式响应扫描暂不支持，开启响应扫描时流式接口明确拒绝；旧 HNSW 索引需要重建，
+KB Worker 升级前需停止旧执行。MySQL、真实 Provider 和部署浏览器仍需单独验收。
