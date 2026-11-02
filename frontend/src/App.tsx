@@ -65,14 +65,29 @@ function Table({ rows, columns }: { rows: Record<string, unknown>[]; columns: st
   return <div className="table-wrap"><table><thead><tr>{columns.map(column => <th key={column}>{column}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={String(row.id ?? index)}>{columns.map(column => <td key={column}>{String(row[column] ?? "—")}</td>)}</tr>)}</tbody></table>{rows.length === 0 && <p className="muted">暂无数据。</p>}</div>;
 }
 
-function KnowledgePage({ onError }: { onError: (message: string) => void }) {
+export function KnowledgePage({ onError }: { onError: (message: string) => void }) {
   const [rows, setRows] = useState<KnowledgeBase[]>([]);
   const [name, setName] = useState("");
   const [selectedKb, setSelectedKb] = useState("");
   const load = () => get<KnowledgeBase[]>("/api/v1/kb").then(setRows).catch((error: Error) => onError(error.message));
   useEffect(() => { load(); }, []);
   const create = () => { if (!name.trim()) return; post<KnowledgeBase>("/api/v1/kb", { name: name.trim() }).then(() => { setName(""); load(); }).catch((error: Error) => onError(error.message)); };
-  const handleUpload = (event: FormEvent<HTMLInputElement>) => { const file = event.currentTarget.files?.[0]; if (!file || !selectedKb) return; upload(`/api/v1/kb/${selectedKb}/documents/upload`, file).then(() => { event.currentTarget.value = ""; load(); }).catch((error: Error) => onError(error.message)); };
+  const handleUpload = async (event: FormEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    const kbId = selectedKb;
+    if (!file || !kbId) return;
+    try {
+      await upload(`/api/v1/kb/${encodeURIComponent(kbId)}/documents/upload`, file);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "上传失败");
+      return;
+    }
+    input.value = "";
+    // load() owns refresh errors; a successful upload must not be retried as
+    // though the server had rejected the file.
+    await load();
+  };
   return <section><div className="panel"><div className="panel-head"><h2>知识库</h2><button className="primary" onClick={load}>刷新</button></div><div className="inline-form"><input placeholder="新知识库名称" value={name} onChange={event => setName(event.target.value)} /><button className="primary" onClick={create}>创建</button></div><div className="inline-form"><select value={selectedKb} onChange={event => setSelectedKb(event.target.value)}><option value="">选择上传目标</option>{rows.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select><input type="file" onChange={handleUpload} disabled={!selectedKb} /></div><div className="card-list">{rows.map(row => <article className="subcard" key={row.id}><strong>{row.name}</strong><span>{row.description || "暂无描述"}</span><small>{row.doc_count} 文档 · {row.chunk_count} 分块 · {row.index_status}</small></article>)}</div>{rows.length === 0 && <p className="muted">暂无知识库。</p>}</div></section>;
 }
 
