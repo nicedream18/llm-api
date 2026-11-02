@@ -20,6 +20,10 @@ function pageDto(form: PageForm) {
 
 export function WikiManager({ onError }: Props) {
   const [projects, setProjects] = useState<WikiProject[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState(true);
+  const [projectsError, setProjectsError] = useState("");
+  const [pagesLoading, setPagesLoading] = useState(false);
+  const [pagesError, setPagesError] = useState("");
   const [projectId, setProjectId] = useState("");
   const [projectName, setProjectName] = useState("");
   const [projectDescription, setProjectDescription] = useState("");
@@ -45,26 +49,30 @@ export function WikiManager({ onError }: Props) {
   const base = `/api/v1/wiki/projects/${encode(projectId)}`;
 
   const loadProjects = async (preferId?: string) => {
+    setProjectsLoading(true); setProjectsError("");
     try {
       const rows = await get<WikiProject[]>("/api/v1/wiki/projects");
       setProjects(rows);
       setProjectId(current => preferId && rows.some(row => row.id === preferId)
         ? preferId
         : rows.some(row => row.id === current) ? current : rows[0]?.id || "");
-    } catch (error) { onError(error instanceof Error ? error.message : "无法读取 Wiki 项目"); }
+    } catch (error) { const message = error instanceof Error ? error.message : "无法读取 Wiki 项目"; setProjectsError(message); onError(message); }
+    finally { setProjectsLoading(false); }
   };
   useEffect(() => { void loadProjects(); }, []);
 
   const loadPages = async () => {
     if (!projectId) return;
     const sequence = ++pageLoadSequence.current;
+    setPagesLoading(true); setPagesError("");
     const query = new URLSearchParams();
     if (search.trim()) query.set("query", search.trim());
     if (tagFilter) query.set("tag", tagFilter);
     try {
       const result = await get<{ items: WikiPage[]; total: number }>(`${base}/pages?${query.toString()}`);
       if (sequence === pageLoadSequence.current) setPages(result.items);
-    } catch (error) { onError(error instanceof Error ? error.message : "无法读取 Wiki 页面"); }
+    } catch (error) { if (sequence === pageLoadSequence.current) { const message = error instanceof Error ? error.message : "无法读取 Wiki 页面"; setPagesError(message); onError(message); } }
+    finally { if (sequence === pageLoadSequence.current) setPagesLoading(false); }
   };
   useEffect(() => {
     if (!projectId) return;
@@ -79,7 +87,7 @@ export function WikiManager({ onError }: Props) {
     }).catch((error: Error) => { if (current) onError(error.message); });
     return () => { current = false; };
   }, [projectId]);
-  useEffect(() => { void loadPages(); }, [projectId, search, tagFilter]);
+  useEffect(() => { void loadPages(); return () => { pageLoadSequence.current++; }; }, [projectId, search, tagFilter]);
 
   const reloadProjectData = async () => {
     if (!projectId) return;
@@ -227,6 +235,8 @@ export function WikiManager({ onError }: Props) {
     finally { setBusy(false); input.value = ""; }
   };
 
+  if (projectsLoading && !projects.length) return <div className="panel empty-state" role="status"><span className="loading-mark" /><strong>正在加载 Wiki 项目</strong></div>;
+  if (projectsError && !projects.length) return <div className="panel error inline-error" role="alert"><span>Wiki 项目加载失败：{projectsError}</span><button className="secondary" onClick={() => void loadProjects()}>重试</button></div>;
   if (!projectId) return <section><div className="panel"><h2>Wiki 项目</h2><p className="muted">创建一个项目来管理 Markdown 页面、附件与来源。</p><div className="inline-form"><input aria-label="新项目名称" placeholder="新项目名称" value={newProjectName} onChange={event => setNewProjectName(event.target.value)} /><button className="primary" onClick={createProject} disabled={busy}>创建项目</button><label className="secondary file-button">恢复备份<input type="file" accept="application/json,.json" onChange={restoreProject} /></label></div></div></section>;
 
   return <section className="wiki-manager">
@@ -242,7 +252,7 @@ export function WikiManager({ onError }: Props) {
     <div className="wiki-layout">
       <aside className="panel wiki-sidebar">
         <div className="wiki-search"><input aria-label="搜索页面" placeholder="搜索页面…" value={search} onChange={event => setSearch(event.target.value)} /><select aria-label="按标签筛选" value={tagFilter} onChange={event => setTagFilter(event.target.value)}><option value="">所有标签</option>{tags.map(item => <option key={item.tag} value={item.tag}>{item.tag} ({item.count})</option>)}</select></div>
-        <div className="wiki-page-list">{pages.map(page => <button className={`wiki-page-item ${selectedPage?.id === page.id ? "selected" : ""}`} key={page.id} onClick={() => void openPage(page)}><strong>{page.title}</strong><small>{page.path}</small><small>{page.tags?.join(" · ") || "无标签"}</small></button>)}{pages.length === 0 && <p className="muted">没有匹配页面。</p>}</div>
+        <div className="wiki-page-list">{pagesLoading && <p role="status">正在加载页面…</p>}{pagesError && <div className="error" role="alert">页面加载失败：{pagesError}<button className="secondary" onClick={() => void loadPages()}>重试页面</button></div>}{pages.map(page => <button className={`wiki-page-item ${selectedPage?.id === page.id ? "selected" : ""}`} key={page.id} onClick={() => void openPage(page)}><strong>{page.title}</strong><small>{page.path}</small><small>{page.tags?.join(" · ") || "无标签"}</small></button>)}{!pagesLoading && !pagesError && pages.length === 0 && <p className="muted">没有匹配页面。</p>}</div>
       </aside>
 
       <div className="wiki-editor-column">

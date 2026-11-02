@@ -41,13 +41,14 @@ it("probes draft and preserves one-key edit while testing selected key", async (
   await mount(<ChannelManager onError={onError} />, fetcher);
   await act(async () => button("新增渠道").click());
   await act(async () => button("测试连接").click()); expect(host.textContent).toContain("测试通过");
+  expect(host.querySelector('[role="dialog"] [role="status"]')?.textContent).toContain("草稿测试通过");
   await act(async () => labelledButton("关闭渠道编辑").click());
   await act(async () => { labelledButton("更多操作 Primary").click(); });
   await act(async () => button("管理多 Key").click());
   await act(async () => button("测试 Key Extra").click());
   expect(fetcher).toHaveBeenCalledWith("/api/v1/channels/c/api-keys/k/test", expect.anything());
   await act(async () => button("编辑 Key Extra").click());
-  await submit("section.panel form");
+  await submit(".key-manager form");
   expect(fetcher).toHaveBeenCalledWith("/api/v1/channels/c/api-keys/k", expect.objectContaining({ method: "PUT", body: expect.stringContaining('"api_key":null') }));
 });
 
@@ -55,7 +56,9 @@ it("rejects invalid import and does not delete when confirmation is cancelled", 
   vi.spyOn(window, "confirm").mockReturnValue(false);
   const fetcher = vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(payload([channel])));
   await mount(<ChannelManager onError={onError} />, fetcher);
+  await act(async () => button("导入").click());
   await act(async () => button("预览导入").click()); expect(onError).toHaveBeenCalled();
+  await act(async () => labelledButton("关闭渠道导入").click());
   await act(async () => { labelledButton("更多操作 Primary").click(); });
   await act(async () => button("删除渠道").click());
   expect(fetcher).toHaveBeenCalledTimes(1);
@@ -178,6 +181,10 @@ it("keeps hash navigation, unknown route recovery and expired-session login", as
   await mount(<App />, fetcher); expect(host.textContent).toContain("没有找到这个页面");
   await act(async () => { window.location.hash = "#/channels"; window.dispatchEvent(new Event("hashchange")); });
   expect(host.querySelector('[aria-current="page"]')?.textContent).toBe("渠道");
+  await act(async () => { window.location.hash = "#/software?view=approvals"; window.dispatchEvent(new Event("hashchange")); });
+  expect(host.textContent).toContain("待审批调用");
+  expect(host.textContent).not.toContain("没有找到这个页面");
+  expect(labelledButton("退出登录")).not.toBeNull();
   await act(async () => window.dispatchEvent(new Event("admin-session-expired")));
   expect(host.textContent).toContain("欢迎回来");
 });

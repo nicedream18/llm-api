@@ -38,3 +38,21 @@ it("reports authorization errors without rendering fabricated statistics", async
   await mount(fetcher); expect(onError).toHaveBeenCalledWith("权限不足"); expect(host.querySelectorAll("tbody tr")).toHaveLength(0);
   expect(button("查询统计").disabled).toBe(false);
 });
+
+it("retries a failed report and exposes a chart without changing currency totals", async () => {
+  let reads = 0;
+  const fetcher = vi.fn((path: string) => Promise.resolve(path.includes("/analytics?") ? ++reads === 1 ? response(null, 503) : response(report) : response([])));
+  await mount(fetcher);
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("统计加载失败");
+  expect(host.querySelector('[aria-label="统计请求分布"]')).toBeNull();
+  await act(async () => button("重试").click());
+  expect(host.querySelector('[aria-label="统计请求分布"]')).not.toBeNull();
+  expect(host.textContent).toContain("USD 0.125；EUR 0.02");
+});
+
+it("retains all table rows and explains why a dense grouping has no chart", async () => {
+  await mount(vi.fn((path: string) => Promise.resolve(response(path.includes("/analytics?") ? { ...report, items: Array.from({ length: 49 }, (_, i) => ({ ...report.items[0], group: "model-" + i })) } : []))));
+  expect(host.querySelectorAll("tbody tr")).toHaveLength(49);
+  expect(host.querySelector('[aria-label="统计请求分布"]')).toBeNull();
+  expect(host.textContent).toContain("当前分组超过 48 项");
+});

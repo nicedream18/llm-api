@@ -1,7 +1,7 @@
 import { Component, type ReactNode, useEffect, useState } from "react";
 
 export function usePage(allowed: string[]): string {
-  const read = () => window.location.hash ? window.location.hash.slice(2) : "dashboard";
+  const read = () => window.location.hash ? window.location.hash.slice(2).split("?")[0]! : "dashboard";
   const [page, setPage] = useState(read);
   useEffect(() => { const change = () => setPage(read()); window.addEventListener("hashchange", change); return () => window.removeEventListener("hashchange", change); }, []);
   return allowed.includes(page) ? page : "not-found";

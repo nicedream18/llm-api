@@ -23,11 +23,43 @@
 - 验证：44 项 React 测试通过；TypeScript 和 Vite 生产构建通过；git diff --check 通过。
 - 浏览器：实际运行编译后的管理台，在本机隔离服务中检查密钥表格与抽屉、上游账号菜单、深色路由及日志页面。演示数据为合成数据，未连接真实 Provider，不代表 OAuth/MySQL 联调验收。
 
-### 第三批：待完成
+### 第三批：代码和本机界面验收完成（2026-11-02）
 
-- 仪表盘指标、请求趋势、渠道状态、近期错误、待审批和无请求引导。
-- 运营统计图表、知识库/工具操作布局、Wiki/MCP 主题与移动布局收口。
-- 桌面及移动端浏览器回归与最终全量质量门禁。
+- 仪表盘展示请求、Token、错误率和平均延迟，明确为当前保留日志累计；趋势使用最近 7 个 UTC 日、填充无记录日期，刷新时更新时间范围。
+- 增加渠道启用状态、最近 20 条记录中的错误、待审批及首次请求引导。启用状态不作为连接测试成功的证据；审批入口直接进入队列。
+- 运营统计增加可访问图表、折叠维度筛选、加载失败重试；保留逐货币费用、未知用量及明细表。超过 48 项时提示缩小范围，表格保留全部结果。
+- 知识库拆分为列表、筛选、上传工作区与创建抽屉；保留异步上传前捕获目标和输入对象的回归保护。
+- 工具集成按工具、连接器、发现、OpenAPI、审批和记录分区；连接器使用抽屉，工具选择可通过键盘完成；审批和调用防止重复提交，编辑停用连接器保留停用状态。
+- 渠道导入移入工具栏抽屉，多 Key 使用共享焦点管理抽屉，草稿测试结果在编辑抽屉内显示。
+- Wiki、MCP 和工具页面统一浅色/深色表面；区分项目、页面和工具的加载、失败及空状态。手机导航和退出按钮保留可访问名称。
+- 生产构建随源码提交，服务端 `/admin/` 可直接使用本次资源。
+
+## 最终质量门禁
+
+在仓库根目录使用 `.venv/Scripts/python.exe`，前端使用 Node/npm：
+
+| 命令 | 2026-11-02 结果 |
+| --- | --- |
+| `python -m pytest --cov=app --cov-fail-under=85 -q -rs` | 612 passed、14 skipped，覆盖率 89.04% |
+| `python -m ruff check app tests` | 通过 |
+| `python -m mypy --follow-imports=silent app` | 115 个源文件通过；保留既有未类型化函数体提示 |
+| `python -m compileall -q app tests` | 通过 |
+| `node --test tests/frontend/*.test.cjs` | 4 项通过，含长 Markdown 性能预算和不安全 HTML/链接回归 |
+| `cd frontend; npm test` | 12 个文件、63 项通过 |
+| `cd frontend; npm run typecheck` | 通过 |
+| `cd frontend; npm run build` | 通过 |
+| `git diff --check` | 通过 |
+
+新增测试验证统计范围、空数据、部分失败和重试、图表精确数值、密钥编辑、禁用状态、OpenAPI 选择导入、审批重复点击、MCP 参数拒绝、Wiki 状态及审批直达导航。
+
+## 浏览器验收与环境边界
+
+- 实际启动并打开生产构建，在约 1280px 桌面与 390×844 手机视口检查浅色、深色、折叠导航、渠道表格和抽屉、知识库、工具、统计、Wiki 编辑/安全预览和 MCP。
+- 已检查手机仪表盘、渠道、统计、Wiki、MCP 的页面宽度，表格保留内部横向滚动。检查过焦点进入抽屉、退出后恢复、导航和主题切换。
+- 本机预览 API 使用隔离合成数据；截图是实际编译后界面，不代表真实数据库、OAuth 或上游请求验收。
+- 截图：[桌面浅色仪表盘](ui-screenshots/dashboard-desktop.jpg)、[手机深色仪表盘](ui-screenshots/dashboard-mobile-dark.jpg)。
+- 14 项跳过：10 项 MySQL（未提供隔离测试服务器）、1 项真实 Provider（未提供 URL/Token）、2 项真实部署浏览器（未提供部署 URL/管理员凭据）、1 项 Windows 符号链接（当前系统无创建权限）。
+- 真实部署浏览器测试已更新登录按钮与可访问导航选择器，须配置 `WALIAPI_BROWSER_URL`、`WALIAPI_BROWSER_USER`、`WALIAPI_BROWSER_PASSWORD` 后再验收。MySQL 使用 `WALIAPI_TEST_MYSQL_HOST` 或 `WALIAPI_TEST_MYSQL_SOCKET`；Provider 使用 `WALIAPI_PROVIDER_LIVE_URL`、`WALIAPI_PROVIDER_LIVE_TOKEN`。凭据通过环境注入。
 
 ## 失败修正记录
 
@@ -36,3 +68,5 @@
 - 浏览器发现操作菜单被表格裁切，使用共享 ActionMenu 及定向测试解决。
 - 浏览器发现抽屉焦点停留背景、侧栏账号被挤出视口，增加 DialogA11y 与固定侧栏布局。
 - DevBugKB 未在当前工作目录找到，未据此声称命中任何 verified 案例。
+- 新测试首次运行全部断言通过，但辅助函数的默认 Mock 类型导致 TypeScript 拒绝接收带参数的 fetch mock；补充显式类型后，测试、类型检查、构建均通过。
+- 后续浏览器检查发现工具/MCP/Wiki 按钮继承居中布局、折叠导航出现横向滚动、手机退出按钮没有名称，已修正并重新构建复验。
