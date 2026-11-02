@@ -15,14 +15,20 @@ const channel = { id: "c", name: "Primary", type: "openai", base_url: "https://e
 let root: Root; let host: HTMLDivElement; const onError = vi.fn();
 beforeEach(() => { vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); host = document.createElement("div"); document.body.append(host); root = createRoot(host); onError.mockClear(); window.location.hash = ""; });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
-const button = (name: string) => Array.from(host.querySelectorAll("button")).find(item => item.textContent === name)!;
+const button = (name: string) => Array.from(host.querySelectorAll("button")).find(item => item.textContent?.trim() === name)!;
+const labelledButton = (name: string) => host.querySelector<HTMLButtonElement>(`button[aria-label="${name}"]`)!;
+const setControlValue = (control: HTMLInputElement | HTMLSelectElement, value: string) => {
+  const prototype = control instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(control, value);
+  control.dispatchEvent(new Event(control instanceof HTMLSelectElement ? "change" : "input", { bubbles: true }));
+};
 const submit = async (selector: string) => act(async () => { host.querySelector(selector)!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
 async function mount(element: React.ReactNode, fetcher: ReturnType<typeof vi.fn>) { vi.stubGlobal("fetch", fetcher); await act(async () => root.render(element)); }
 
 it("edits channel without resending nested keys or masked secrets and clears capabilities", async () => {
   const fetcher = vi.fn((path: string, _init?: RequestInit) => Promise.resolve(payload(path === "/api/v1/channels" ? [channel] : { success: true })));
   await mount(<ChannelManager onError={onError} />, fetcher);
-  await act(async () => button("编辑 Primary").click());
+  await act(async () => labelledButton("编辑渠道 Primary").click());
   await act(async () => host.querySelector<HTMLInputElement>('fieldset input[type="checkbox"]')!.click());
   await submit("form.channel-form");
   const update = fetcher.mock.calls.find(call => (call[1] as RequestInit)?.method === "PUT")!;
@@ -33,8 +39,10 @@ it("edits channel without resending nested keys or masked secrets and clears cap
 it("probes draft and preserves one-key edit while testing selected key", async () => {
   const fetcher = vi.fn((path: string, _init?: RequestInit) => Promise.resolve(payload(path.endsWith("/api-keys") ? [{ id: "k", name: "Extra", api_key: "mask****", status: 1, weight: 2 }] : path === "/api/v1/channels" ? [channel] : { success: true })));
   await mount(<ChannelManager onError={onError} />, fetcher);
-  await act(async () => button("测试当前草稿").click()); expect(host.textContent).toContain("草稿测试通过");
-  await act(async () => button("管理多 Key Primary").click());
+  await act(async () => button("新增渠道").click());
+  await act(async () => button("测试连接").click()); expect(host.textContent).toContain("测试通过");
+  await act(async () => { host.querySelector<HTMLElement>('summary[aria-label="更多操作 Primary"]')!.click(); });
+  await act(async () => button("管理多 Key").click());
   await act(async () => button("测试 Key Extra").click());
   expect(fetcher).toHaveBeenCalledWith("/api/v1/channels/c/api-keys/k/test", expect.anything());
   await act(async () => button("编辑 Key Extra").click());
@@ -47,8 +55,40 @@ it("rejects invalid import and does not delete when confirmation is cancelled", 
   const fetcher = vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(payload([channel])));
   await mount(<ChannelManager onError={onError} />, fetcher);
   await act(async () => button("预览导入").click()); expect(onError).toHaveBeenCalled();
-  await act(async () => button("删除 Primary").click());
+  await act(async () => { host.querySelector<HTMLElement>('summary[aria-label="更多操作 Primary"]')!.click(); });
+  await act(async () => button("删除渠道").click());
   expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
+it("filters channel rows and opens the accessible editor drawer", async () => {
+  const paused = { ...channel, id: "paused", name: "Paused", type: "claude", status: 0, models: ["vision"] };
+  const fetcher = vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(payload([channel, paused])));
+  await mount(<ChannelManager onError={onError} />, fetcher);
+  expect(host.querySelectorAll(".channel-table tbody tr")).toHaveLength(2);
+  await act(async () => setControlValue(host.querySelector<HTMLInputElement>('input[type="search"]')!, "Primary"));
+  expect(host.querySelectorAll(".channel-table tbody tr")).toHaveLength(1);
+  expect(host.textContent).not.toContain("Paused");
+  await act(async () => setControlValue(host.querySelector<HTMLInputElement>('input[type="search"]')!, ""));
+  await act(async () => setControlValue(host.querySelector<HTMLSelectElement>('select[aria-label="状态筛选"]')!, "false"));
+  expect(host.querySelectorAll(".channel-table tbody tr")).toHaveLength(1);
+  expect(host.textContent).toContain("Paused");
+  await act(async () => button("新增渠道").click());
+  expect(host.querySelector('[role="dialog"][aria-labelledby="channel-drawer-title"]')).not.toBeNull();
+  expect(host.textContent).toContain("新增渠道");
+});
+
+it("renders grouped navigation and persists theme and sidebar preferences", async () => {
+  localStorage.clear();
+  const fetcher = vi.fn((path: string, _init?: RequestInit) => Promise.resolve(payload(path.endsWith("/auth/session") ? { authenticated: true } : {})));
+  await mount(<App />, fetcher);
+  expect(host.querySelectorAll(".nav-group")).toHaveLength(4);
+  expect(host.querySelectorAll('.app-nav a[aria-current="page"]')).toHaveLength(1);
+  await act(async () => labelledButton("切换到深色模式").click());
+  expect(document.documentElement.dataset.theme).toBe("dark");
+  expect(localStorage.getItem("waliapi-admin-theme")).toBe("dark");
+  await act(async () => labelledButton("收起侧栏").click());
+  expect(host.querySelector(".shell")?.classList.contains("sidebar-collapsed")).toBe(true);
+  expect(localStorage.getItem("waliapi-admin-sidebar")).toBe("collapsed");
 });
 
 it("does not reset quota or rotate an existing access key on ordinary edits", async () => {
@@ -86,7 +126,7 @@ it("keeps hash navigation, unknown route recovery and expired-session login", as
   await act(async () => { window.location.hash = "#/channels"; window.dispatchEvent(new Event("hashchange")); });
   expect(host.querySelector('[aria-current="page"]')?.textContent).toBe("渠道");
   await act(async () => window.dispatchEvent(new Event("admin-session-expired")));
-  expect(host.textContent).toContain("管理员登录");
+  expect(host.textContent).toContain("欢迎回来");
 });
 
 it("isolates render failures with an accessible recovery link", async () => {
