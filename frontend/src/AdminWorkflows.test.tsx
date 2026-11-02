@@ -41,7 +41,8 @@ it("probes draft and preserves one-key edit while testing selected key", async (
   await mount(<ChannelManager onError={onError} />, fetcher);
   await act(async () => button("新增渠道").click());
   await act(async () => button("测试连接").click()); expect(host.textContent).toContain("测试通过");
-  await act(async () => { host.querySelector<HTMLElement>('summary[aria-label="更多操作 Primary"]')!.click(); });
+  await act(async () => labelledButton("关闭渠道编辑").click());
+  await act(async () => { labelledButton("更多操作 Primary").click(); });
   await act(async () => button("管理多 Key").click());
   await act(async () => button("测试 Key Extra").click());
   expect(fetcher).toHaveBeenCalledWith("/api/v1/channels/c/api-keys/k/test", expect.anything());
@@ -55,7 +56,7 @@ it("rejects invalid import and does not delete when confirmation is cancelled", 
   const fetcher = vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(payload([channel])));
   await mount(<ChannelManager onError={onError} />, fetcher);
   await act(async () => button("预览导入").click()); expect(onError).toHaveBeenCalled();
-  await act(async () => { host.querySelector<HTMLElement>('summary[aria-label="更多操作 Primary"]')!.click(); });
+  await act(async () => { labelledButton("更多操作 Primary").click(); });
   await act(async () => button("删除渠道").click());
   expect(fetcher).toHaveBeenCalledTimes(1);
 });
@@ -77,6 +78,58 @@ it("filters channel rows and opens the accessible editor drawer", async () => {
   expect(host.textContent).toContain("新增渠道");
 });
 
+it("filters access keys and closes its editor drawer with Escape", async () => {
+  const rows = [
+    { id: "k1", name: "Production", key: "sk-mask1", status: 1, allowed_models: ["gpt-4o"], allowed_channels: [], quota_limit: 100, quota_used: 12, expires_at: null },
+    { id: "k2", name: "Disabled", key: "sk-mask2", status: 0, allowed_models: ["claude-sonnet"], allowed_channels: [], quota_limit: 0, quota_used: 0, expires_at: null },
+  ];
+  const fetcher = vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(payload(rows)));
+  await mount(<ApiKeyManager onError={onError} />, fetcher);
+  expect(host.querySelectorAll(".access-key-page tbody tr")).toHaveLength(2);
+  await act(async () => setControlValue(host.querySelector<HTMLInputElement>('input[type="search"]')!, "Production"));
+  expect(host.querySelectorAll(".access-key-page tbody tr")).toHaveLength(1);
+  await act(async () => setControlValue(host.querySelector<HTMLInputElement>('input[type="search"]')!, ""));
+  await act(async () => setControlValue(host.querySelector<HTMLSelectElement>('select[aria-label="访问密钥状态"]')!, "false"));
+  expect(host.querySelectorAll(".access-key-page tbody tr")).toHaveLength(1);
+  await act(async () => labelledButton("编辑密钥 Disabled").click());
+  expect(host.querySelector('[role="dialog"][aria-labelledby="key-drawer-title"]')).not.toBeNull();
+  await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  expect(host.querySelector('[role="dialog"][aria-labelledby="key-drawer-title"]')).toBeNull();
+});
+
+it("shows a list error separately from loading and retries without losing the page", async () => {
+  const fetcher = vi.fn().mockResolvedValueOnce(payload(null, 403)).mockResolvedValue(payload([]));
+  await mount(<ApiKeyManager onError={onError} />, fetcher);
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("加载失败");
+  expect(host.textContent).not.toContain("正在加载访问密钥");
+  await act(async () => button("重试").click());
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(host.textContent).toContain("还没有访问密钥");
+});
+
+it("filters route groups and saves through the route editor drawer", async () => {
+  const row = { id: "team", updated_at: "now", enabled: true, strategy: "weighted", channels: ["c1"], api_key_ids: [], models: ["gpt-4o"], endpoints: [], max_concurrent: 10, retry_budget: 2, unknown_quota: "allow" };
+  const fetcher = vi.fn((path: string, init?: RequestInit) => Promise.resolve(payload(path.endsWith("/groups") ? [row] : init?.method === "PUT" ? {} : { candidates: [], reason: "no_capacity" })));
+  await mount(<RoutingManager onError={onError} />, fetcher);
+  await act(async () => button("编辑").click());
+  expect(host.querySelector('[role="dialog"][aria-labelledby="route-drawer-title"]')).not.toBeNull();
+  await submit("form.route-editor-form");
+  expect(fetcher).toHaveBeenCalledWith("/api/v1/routing/groups/team", expect.objectContaining({ method: "PUT" }));
+  expect(host.querySelector('[role="dialog"][aria-labelledby="route-drawer-title"]')).toBeNull();
+});
+
+it("filters request logs by status and opens trace details in a drawer", async () => {
+  const fetcher = vi.fn((path: string) => Promise.resolve(payload(path.includes("logs?page") ? [{ id: "ok", model: "gpt-4o", status_code: 200, duration_ms: 20 }, { id: "bad", model: "claude", status_code: 500, duration_ms: 90 }] : path.includes("attempts") ? [{ attempt_no: 1 }] : path.includes("findings") ? [] : { request_id: "trace-ok" })));
+  await mount(<LogManager onError={onError} />, fetcher);
+  expect(host.querySelectorAll(".logs-page tbody tr")).toHaveLength(2);
+  await act(async () => setControlValue(host.querySelector<HTMLSelectElement>('select[aria-label="筛选 HTTP 状态"]')!, "500"));
+  expect(host.querySelectorAll(".logs-page tbody tr")).toHaveLength(1);
+  await act(async () => setControlValue(host.querySelector<HTMLSelectElement>('select[aria-label="筛选 HTTP 状态"]')!, ""));
+  await act(async () => labelledButton("查看日志 ok").click());
+  expect(host.querySelector('[role="dialog"][aria-labelledby="log-detail-title"]')).not.toBeNull();
+  expect(host.textContent).toContain("trace-ok");
+});
+
 it("renders grouped navigation and persists theme and sidebar preferences", async () => {
   localStorage.clear();
   const fetcher = vi.fn((path: string, _init?: RequestInit) => Promise.resolve(payload(path.endsWith("/auth/session") ? { authenticated: true } : {})));
@@ -95,7 +148,7 @@ it("does not reset quota or rotate an existing access key on ordinary edits", as
   const row = { id: "a", name: "Client", key: "mask****", status: 1, quota_limit: 100, quota_used: 90, allowed_models: ["chat"], allowed_channels: [], expires_at: null };
   const fetcher = vi.fn((_path: string, _init?: RequestInit) => Promise.resolve(payload([row])));
   await mount(<ApiKeyManager onError={onError} />, fetcher);
-  await act(async () => button("编辑密钥 Client").click()); await submit("form");
+  await act(async () => labelledButton("编辑密钥 Client").click()); await submit("form");
   const body = JSON.parse((fetcher.mock.calls.find(call => (call[1] as RequestInit)?.method === "PUT")![1] as RequestInit).body as string);
   expect(body).not.toHaveProperty("quota_used"); expect(body).not.toHaveProperty("key"); expect(body.expires_at).toBeNull();
 });
@@ -104,19 +157,19 @@ it("edits server route rows without server metadata and previews without mutatio
   const row = { id: "team", updated_at: "now", enabled: true, strategy: "weighted", channels: [], api_key_ids: [], models: [], endpoints: [], max_concurrent: 10, retry_budget: 2, unknown_quota: "allow" };
   const fetcher = vi.fn((path: string, _init?: RequestInit) => Promise.resolve(payload(path.endsWith("/groups") ? [row] : { candidates: [], reason: "no_capacity" })));
   await mount(<RoutingManager onError={onError} />, fetcher);
-  await act(async () => button("编辑路由 team").click()); await submit("form");
+  await act(async () => labelledButton("编辑路由 team").click()); await submit("form.route-editor-form");
   const body = JSON.parse((fetcher.mock.calls.find(call => (call[1] as RequestInit)?.method === "PUT")![1] as RequestInit).body as string);
   expect(body).not.toHaveProperty("updated_at"); expect(body).not.toHaveProperty("id");
-  await submit("form:last-of-type"); expect(host.textContent).toContain("no_capacity");
+  await submit("form.route-preview"); expect(host.textContent).toContain("no_capacity");
 });
 
 it("loads log detail with attempts and findings and reports forbidden reads", async () => {
   const fetcher = vi.fn((path: string, _init?: RequestInit) => Promise.resolve(payload(path.includes("logs?page") ? [{ id: "l", model: "chat" }] : path.includes("attempts") ? [{ attempt_no: 2 }] : path.includes("findings") ? [{ risk: "low" }] : { request_id: "execution" })));
   await mount(<LogManager onError={onError} />, fetcher);
-  await act(async () => button("查看日志 l").click());
+  await act(async () => labelledButton("查看日志 l").click());
   expect(host.textContent).toContain("execution"); expect(host.textContent).toContain("attempt_no"); expect(host.textContent).toContain("risk");
   fetcher.mockImplementation(() => Promise.resolve(payload(null, 403)));
-  await act(async () => button("刷新日志").click()); expect(onError).toHaveBeenCalledWith("权限不足");
+  await act(async () => button("刷新").click()); expect(onError).toHaveBeenCalledWith("权限不足");
 });
 
 it("keeps hash navigation, unknown route recovery and expired-session login", async () => {

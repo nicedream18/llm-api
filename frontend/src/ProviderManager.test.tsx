@@ -15,12 +15,13 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
 const button = (name: string) => Array.from(host.querySelectorAll("button")).find(item => item.textContent === name)!;
+const openActions = async () => act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="更多操作 Work account"]')!.click());
 async function mount(fetcher: ReturnType<typeof vi.fn>) { vi.stubGlobal("fetch", fetcher); await act(async () => { root.render(<ProviderManager onError={onError} />); }); }
 
 it("shows independent account states and requests server-side next page", async () => {
   const fetcher = vi.fn().mockImplementation(() => Promise.resolve(payload({ items: [account], total: 26, limit: 25, offset: 0 })));
   await mount(fetcher);
-  expect(host.textContent).toContain("Work account"); expect(host.textContent).toContain("已启用 · active · healthy");
+  expect(host.textContent).toContain("Work account"); expect(host.textContent).toContain("已启用"); expect(host.textContent).toContain("active"); expect(host.textContent).toContain("healthy");
   await act(async () => button("下一页").click());
   expect(fetcher).toHaveBeenLastCalledWith(expect.stringContaining("offset=25"), expect.anything());
   await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
@@ -41,10 +42,12 @@ it("cancels archive without a write and restores archived accounts explicitly", 
   const confirm = vi.fn().mockReturnValue(false); vi.spyOn(window, "confirm").mockImplementation(confirm);
   const fetcher = vi.fn().mockImplementation(() => Promise.resolve(payload({ items: [account], total: 1, limit: 25, offset: 0 })));
   await mount(fetcher);
+  await openActions();
   await act(async () => button("归档").click());
   expect(confirm).toHaveBeenCalledOnce(); expect(fetcher).toHaveBeenCalledTimes(1);
   fetcher.mockImplementation(() => Promise.resolve(payload({ items: [{ ...account, archived_at: "2026-11-02", enabled: false }], total: 1, limit: 25, offset: 0 })));
   await act(async () => button("刷新").click());
+  await openActions();
   expect(button("恢复（需重新授权）")).toBeDefined();
   await act(async () => button("恢复（需重新授权）").click());
   expect(fetcher).toHaveBeenCalledWith("/api/v1/providers/a1/operations", expect.objectContaining({ body: JSON.stringify({ operation: "restore" }) }));
@@ -60,7 +63,7 @@ it("surfaces permission errors and provides a retry", async () => {
 it("edits through structured inputs, retaining unknown connection settings", async () => {
   const existing = { ...account, client_config: { client_id: "public", timeout_seconds: 25 }, model_mapping: { chat: "upstream" } };
   const fetcher = vi.fn((path: string, init?: RequestInit) => Promise.resolve(payload(path.includes("/accounts?") ? { items: [existing], total: 1, limit: 25, offset: 0 } : init?.method === "PUT" ? existing : {})));
-  await mount(fetcher); await act(async () => button("编辑").click());
+  await mount(fetcher); await openActions(); await act(async () => button("编辑").click());
   await act(async () => host.querySelector("form.provider-form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
   expect(fetcher).toHaveBeenCalledWith("/api/v1/providers/a1", expect.objectContaining({ method: "PUT", body: expect.stringContaining('"timeout_seconds":25') }));
   expect(host.textContent).toContain("账号与分组标签已保存");
