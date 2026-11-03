@@ -101,6 +101,8 @@ class SecurityService:
             if not host or any(c in dto.pattern.removeprefix("*.") for c in "/:@?# "):
                 raise ValueError("Domain pattern must be a hostname")
         if dto.match_type == "regex":
+            if dto.category not in {None, "domain", "path", "tool", "keyword", "credentials", "unicode", "network", "tools", "tracking", "custom", "personal", "prompt", "secret"}:
+                raise ValueError("Invalid regex rule category")
             if re.search(r"\([^)]*[+*][^)]*\)[+*]", dto.pattern):
                 raise ValueError("Security rule pattern contains nested quantifiers")
             try:

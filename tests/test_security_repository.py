@@ -143,3 +143,15 @@ def test_builtin_update_rejects_detector_changes_and_invalid_enums(monkeypatch):
         with pytest.raises(ValueError):
             repo.update_builtin_rule("any", fields.pop("enabled", None), fields.pop("severity", None), **fields)
     engine.dispose()
+
+
+def test_builtin_detector_description_comes_from_catalog_for_legacy_rows(monkeypatch):
+    from app.domain.security_catalog import RULE_BY_ID
+
+    repo, engine = _repository(monkeypatch)
+    repo.seed_builtin_rules()
+    with engine.begin() as db:
+        db.execute(text("UPDATE security_builtin_rules SET pattern='old detector', toggle_key=NULL WHERE rule_id='network_external_url'"))
+    rule = next(r for r in repo.get_all_builtin_rules() if r.rule_id == "network_external_url")
+    assert rule.pattern == RULE_BY_ID[rule.rule_id].pattern and rule.toggle_key == "security.scan_network"
+    engine.dispose()

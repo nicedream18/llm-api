@@ -63,3 +63,52 @@ def test_limits_fail_explicitly_without_raw_scan_fallback():
         value = [value]
     with pytest.raises(SecurityLimitError):
         scanner.scan(json.dumps(value), "request", SecuritySettings())
+
+
+def test_truncated_private_key_body_is_not_left_after_header_redaction():
+    assert redact_string("before -----BEGIN RSA PRIVATE KEY-----\ntruncated-private-body") == "before [REDACTED]"
+
+
+def test_custom_overlapping_redactions_and_direct_tool_context():
+    rules = [SecurityCustomRuleEntity(id="first", category="keyword", pattern="abcdef", action="redact"),
+             SecurityCustomRuleEntity(id="second", category="keyword", pattern="defghi", action="redact")]
+    result, changed = redact_body('{"content":"abcdefghijk"}', rules, credentials=False)
+    assert changed and json.loads(result)["content"] == "[REDACTED]jk"
+    tool = SecurityCustomRuleEntity(id="tool", category="tool", pattern="dangerous", action="redact")
+    source = {"tools": [{"name": "dangerous", "input": "unsafe content"}], "content": "safe"}
+    result, changed = redact_body(json.dumps(source), [tool], credentials=False)
+    assert changed and json.loads(result)["tools"][0]["input"] == "[REDACTED]"
+    assert json.loads(result)["content"] == "safe"
+
+
+def test_legacy_uppercase_custom_severity_is_effective_in_policy():
+    rule = SecurityCustomRuleEntity(id="legacy", category="keyword", pattern="credential", severity="CRITICAL", action="WARN")
+    result = SecurityScanner().scan('"credential"', "request", SecuritySettings(mode="block"), [rule])
+    assert result.blocked and result.findings[0].severity == "critical"
+
+
+@pytest.mark.parametrize("rule_id,text", [
+    ("credential_aws_access", "AKIAABCDEFGHIJKLMNOP"),
+    ("credential_private_key", "-----BEGIN PRIVATE KEY-----\nsecret-body\n-----END PRIVATE KEY-----"),
+    ("credential_private_key_rsa", "-----BEGIN RSA PRIVATE KEY-----\ntruncated-private-body"),
+    ("network_external_url", "https://private.example/x"),
+    ("credential_high_entropy", "abcdefghijklmnopqrstuvwxyz0123456789"),
+])
+def test_builtin_explicit_redaction_works_with_independent_switch_off(rule_id, text):
+    from app.domain.entities import SecurityBuiltinRuleEntity
+
+    override = SecurityBuiltinRuleEntity(rule_id=rule_id, action="redact", severity="low")
+    result = SecurityScanner().scan(json.dumps({"content": text}), "request", SecuritySettings(mode="audit", redact_secrets=False), builtin_rules=[override])
+    assert result.sanitized and json.loads(result.sanitized_body)["content"] == "[REDACTED]"
+
+
+def test_builtin_explicit_redaction_respects_local_whitelist_and_sensitive_containers():
+    from app.domain.entities import SecurityBuiltinRuleEntity
+
+    allow = SecurityCustomRuleEntity(id="allow", rule_type="whitelist", category="domain", pattern="safe.example", action="allow")
+    override = SecurityBuiltinRuleEntity(rule_id="network_external_url", action="redact")
+    result = SecurityScanner().scan('{"content":"https://safe.example https://private.example"}', "request", SecuritySettings(redact_secrets=False), [allow], [override])
+    assert json.loads(result.sanitized_body)["content"] == "https://safe.example [REDACTED]"
+    override = SecurityBuiltinRuleEntity(rule_id="credential_named_secret", action="redact")
+    result = SecurityScanner().scan('{"password":["x"],"content":"safe"}', "request", SecuritySettings(redact_secrets=False), builtin_rules=[override])
+    assert json.loads(result.sanitized_body) == {"password": "[REDACTED]", "content": "safe"}

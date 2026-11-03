@@ -1,4 +1,5 @@
 """Builtin detector definitions and default policy metadata."""
+import math
 import re
 from dataclasses import dataclass
 
@@ -21,7 +22,6 @@ ENTROPY_RULE_ID = "credential_high_entropy"
 ENTROPY_THRESHOLD = 4.5
 ENTROPY_MIN_LENGTH = 20
 _ENTROPY_CANDIDATE = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{20,}(?![A-Za-z0-9+/=_-])")
-_KNOWN_CREDENTIAL_PATTERNS = tuple(re.compile(rule[3]) for rule in CREDENTIAL_RULES)
 _PEM_PRIVATE_KEY_BLOCK = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
     re.DOTALL,
@@ -77,6 +77,7 @@ CREDENTIAL_RULES.extend([
     ("credential_database_url", "Database Connection", "Database connection string.", r"(?i)\b(?:mysql|postgres(?:ql)?|mongodb(?:\+srv)?|redis|mssql)://[^\s\"'<>]+", "high"),
     ("credential_cloud_key", "Cloud Credential", "Tencent or Alibaba cloud access key identifier.", r"\b(?:AKID[A-Za-z0-9]{16,64}|LTAI[A-Za-z0-9]{12,64})\b", "high"),
 ])
+_KNOWN_CREDENTIAL_PATTERNS = tuple(re.compile(rule[3]) for rule in CREDENTIAL_RULES)
 PATH_RULES.extend([
     ("file_sensitive_path", "Sensitive File", "Environment, SSH or cloud credential file.", r"(?i)(?:^|[/\\\s\"'])\.env(?:\.[\w-]+)?\b|(?:~[/\\])?\.ssh[/\\]|\.aws[/\\]credentials\b|(?:^|[/\\\s\"'])\.(?:npmrc|pypirc)\b", "high"),
     ("file_ssh_key", "SSH Key File", "SSH private key filename.", r"\bid_(?:rsa|ed25519|ecdsa|dsa)(?![\w.])", "critical"),
@@ -148,3 +149,24 @@ BUILTIN_RULES = tuple(
 ),)
 BUILTIN_RULES += (BuiltinRule("credential_named_secret", "Sensitive Credential Field", "Value in a sensitive JSON field.", None, "high", "credentials"),)
 RULE_BY_ID = {rule.rule_id: rule for rule in BUILTIN_RULES}
+
+
+def shannon_entropy(value: str) -> float:
+    """Shannon entropy used by both detection and explicit redaction."""
+    if not value:
+        return 0.0
+    counts: dict[str, int] = {}
+    for char in value:
+        counts[char] = counts.get(char, 0) + 1
+    length = len(value)
+    return -sum((count / length) * math.log2(count / length) for count in counts.values())
+
+
+def entropy_matches(text: str):
+    known = [match.span() for pattern in _KNOWN_CREDENTIAL_PATTERNS for match in pattern.finditer(text)]
+    known.extend(match.span() for match in _PEM_PRIVATE_KEY_BLOCK.finditer(text))
+    for match in _ENTROPY_CANDIDATE.finditer(text):
+        if (ENTROPY_MIN_LENGTH <= len(match.group()) <= 256
+                and shannon_entropy(match.group()) > ENTROPY_THRESHOLD
+                and not any(match.start() < end and match.end() > start for start, end in known)):
+            yield match

@@ -162,3 +162,26 @@ async def test_policy_failure_and_stream_response_limit_do_not_contact_upstream(
         assert "security_scan_failed" in "".join(frames) and not captured
     finally:
         await gateway.aclose()
+
+
+def test_explicit_builtin_redaction_reaches_transport_with_automatic_redaction_off():
+    from app.domain.entities import SecurityBuiltinRuleEntity
+
+    policy = PolicyRepository(SecuritySettings(mode="audit", redact_secrets=False))
+    policy.value = replace(policy.value, builtin_rules=(SecurityBuiltinRuleEntity(rule_id="credential_aws_access", action="redact", severity="low"),))
+    proxy, gateway, _, captured, logs = harness(policy)
+    try:
+        status, _ = proxy.forward(json.dumps({"model": "demo", "messages": [{"role": "user", "content": SECRET}]}), {})
+        assert status == 200 and SECRET.encode() not in captured[0][1]
+        assert b"[REDACTED]" in captured[0][1] and logs.rows[0].sanitized
+    finally:
+        asyncio.run(gateway.aclose())
+
+
+def test_inspection_limit_fails_closed_before_transport():
+    proxy, gateway, _, captured, _ = harness()
+    try:
+        status, payload = proxy.forward(json.dumps({"model": "demo", "content": "a" * 1_000_001}), {})
+        assert status == 503 and payload["error"]["code"] == "security_scan_failed" and not captured
+    finally:
+        asyncio.run(gateway.aclose())

@@ -61,7 +61,7 @@ def test_custom_validation_and_partial_update(monkeypatch):
     assert current.pattern == "private" and current.name == "company" and current.enabled == 0
     assert not service.update_custom_rule("missing", SecurityCustomRuleDTO(enabled=0))
     for values in [
-        {"pattern": ""}, {"pattern": "x", "category": "unknown"},
+        {"pattern": ""}, {"pattern": "x", "category": "unknown"}, {"pattern": "x", "category": "unknown", "match_type": "regex"},
         {"pattern": "x", "category": "keyword", "rule_type": "whitelist", "action": "block"},
         {"pattern": "[", "match_type": "regex"},
         {"pattern": "(a+)+", "match_type": "regex"},
@@ -69,3 +69,14 @@ def test_custom_validation_and_partial_update(monkeypatch):
     ]:
         with pytest.raises(ValueError):
             service.create_custom_rule(SecurityCustomRuleDTO(**values))
+
+
+@pytest.mark.parametrize("call", [
+    {"type": "tool_use", "name": "read_file", "input": {"path": "/etc/passwd"}},
+    {"type": "function_call", "name": "read_file", "arguments": "{}"},
+])
+def test_anthropic_and_responses_structured_tools_match_and_redact(call):
+    rule = SecurityCustomRuleEntity(id="tool", category="tool", pattern="read_file", action="redact")
+    result = SecurityScanner().scan(json.dumps({"content": [call]}), "request", SecuritySettings(redact_secrets=False), [rule])
+    assert result.sanitized and "read_file" not in result.sanitized_body
+    assert not SecurityScanner().scan('{"name":"read_file","content":"ordinary"}', "request", SecuritySettings(), [rule]).sanitized

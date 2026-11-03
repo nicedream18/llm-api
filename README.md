@@ -230,7 +230,7 @@ WaLiAPI-Python/
 
 ### 3. 安全扫描（Security）
 
-6 个子扫描器并行扫描请求内容：
+统一规则目录递归扫描请求内容，原有六类扫描器继续保留，并补充个人信息与提示词上下文检测：
 
 | 扫描器 | 检测内容 | Java 对应 |
 |--------|----------|-----------|
@@ -242,9 +242,11 @@ WaLiAPI-Python/
 | TrackingScanner | 追踪参数、指纹 Cookie | TrackingScanner |
 
 **模式：**
-- `audit` — 仅记录安全发现，不阻止请求
-- `block` — Critical 风险时返回 403 阻止请求
-- `redact` — High/Critical 风险时净化敏感信息
+- `audit` / `warn` — 审计发现，仍执行显式规则动作和独立密钥脱敏
+- `block` — 配置允许时阻断 Critical 风险，显式阻断动作优先
+- `redact` — High/Critical 风险时清理凭证
+
+在 `/admin/#/security` 持久化管理策略、60 条内置规则及黑白名单；独立密钥脱敏在 audit 模式也生效。支持 JSON、流式请求体、multipart 文本字段及普通响应；流式响应和附件二进制扫描暂不支持。首次升级映射、接口、匹配边界和限制见 [升级说明](docs/security/upgrade.md)，教程行为见 [规则对应表](docs/security/rule-coverage.md)，验收结果见 [验证记录](docs/security/verification.md)。
 
 ### 4. 知识库 RAG（Knowledge）
 

@@ -1,0 +1,36 @@
+{
+  "global": {
+    "current": 90.29932086861743,
+    "baseline": 85.62992125984252
+  },
+  "critical": {
+    "app/application/services/auth_service.py": {
+      "current": 95.42483660130719,
+      "baseline": 95.42483660130719
+    },
+    "app/application/services/provider_service.py": {
+      "current": 86.12903225806451,
+      "baseline": 78.46153846153847
+    },
+    "app/domain/dispatcher.py": {
+      "current": 94.73684210526316,
+      "baseline": 94.73684210526316
+    },
+    "app/domain/gateway.py": {
+      "current": 87.21461187214612,
+      "baseline": 82.4074074074074
+    },
+    "app/domain/provider_adapters.py": {
+      "current": 81.87919463087249,
+      "baseline": 71.31147540983606
+    },
+    "app/domain/streaming.py": {
+      "current": 94.58689458689459,
+      "baseline": 85.0
+    },
+    "app/infrastructure/repositories/quota_repo.py": {
+      "current": 100.0,
+      "baseline": 100.0
+    }
+  }
+}

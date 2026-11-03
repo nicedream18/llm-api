@@ -203,7 +203,7 @@ async def test_lifespan_releases_partial_start_and_continues_after_stop_failure(
             calls.append("stop:" + self.name)
             raise RuntimeError("failed stop")
     async def close(): calls.append("close")
-    container = SimpleNamespace(quota_recovery_worker=Worker("quota"), kb_worker=Worker("kb"), provider_sync_worker=Worker("sync", True), operations_worker=Worker("ops"), gateway=SimpleNamespace(aclose=close))
+    container = SimpleNamespace(security_repo=SimpleNamespace(seed_builtin_rules=lambda: None, initialize_settings=lambda: None), quota_recovery_worker=Worker("quota"), kb_worker=Worker("kb"), provider_sync_worker=Worker("sync", True), operations_worker=Worker("ops"), gateway=SimpleNamespace(aclose=close))
     monkeypatch.setattr(main, "get_container", lambda: container)
     monkeypatch.setattr(main, "apply_migrations", lambda: None)
     with pytest.raises(RuntimeError, match="failed start"):

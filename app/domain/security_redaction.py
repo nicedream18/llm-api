@@ -4,8 +4,17 @@ from __future__ import annotations
 import json
 import re
 
-from app.domain.security_catalog import _PEM_PRIVATE_KEY_BLOCK, CREDENTIAL_RULES
-from app.domain.security_matching import custom_matches
+from app.domain.security_catalog import (
+    _PEM_PRIVATE_KEY_BLOCK,
+    CREDENTIAL_RULES,
+    RULE_BY_ID,
+    entropy_matches,
+)
+from app.domain.security_matching import (
+    custom_matches,
+    is_whitelisted,
+    whitelist_category,
+)
 from app.domain.security_values import is_secret_field
 
 REDACTED = "[REDACTED]"
@@ -38,20 +47,43 @@ def validate_value(value, depth=0, budget=None):
             validate_value(child, depth + 1, budget)
 
 
-def redact_string(value: str, custom_rules=(), tool_name=None) -> str:
+def redact_string(value: str, custom_rules=(), tool_name=None, builtin_rule_ids=()) -> str:
     if len(value) > MAX_TEXT_LENGTH:
         raise SecurityLimitError("Security text limit exceeded")
     result = _PEM_PRIVATE_KEY_BLOCK.sub(REDACTED, value)
+    # Handle incomplete blocks before header-only detectors consume the header.
+    result = re.sub(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*", REDACTED, result)
     for pattern in _SECRET_PATTERNS:
         result = pattern.sub(REDACTED, result)
-    # A private-key header without a terminator must not leave its body behind.
-    result = re.sub(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*", REDACTED, result)
+    return _redact_explicit(result, custom_rules, tool_name, builtin_rule_ids)
+
+
+def _redact_explicit(value, custom_rules, tool_name, builtin_rule_ids):
     spans: list[tuple[int, int]] = []
     for rule in custom_rules or []:
-        if getattr(rule, "rule_type", "blacklist") != "blacklist" or (getattr(rule, "action", None) or "").lower() not in {"sanitize", "redact"}:
+        if getattr(rule, "rule_type", "blacklist") == "blacklist" and (getattr(rule, "action", None) or "").lower() in {"sanitize", "redact"}:
+            spans.extend((m.start, m.end) for m in custom_matches(rule, value, tool_name))
+    for rule_id in builtin_rule_ids:
+        builtin = RULE_BY_ID.get(rule_id)
+        if builtin is None:
             continue
-        spans.extend((m.start, m.end) for m in custom_matches(rule, result, tool_name))
-    # Merge overlapping matches, then rewrite once to preserve span offsets.
+        if rule_id in {"credential_private_key", "credential_private_key_rsa"}:
+            matches = re.finditer(r"-----BEGIN ([A-Z ]*PRIVATE KEY)-----[\s\S]*?(?:-----END \1-----|$)", value)
+        elif builtin.pattern:
+            matches = re.finditer(builtin.pattern, value)
+        elif rule_id == "credential_high_entropy":
+            matches = entropy_matches(value)
+        else:
+            continue
+        for match in matches:
+            scope = whitelist_category(rule_id, builtin.category)
+            if not scope or not is_whitelisted(scope, value, match.start(), match.end(), custom_rules, tool_name):
+                spans.append(match.span())
+    return _replace_spans(value, spans)
+
+
+def _replace_spans(value: str, spans: list[tuple[int, int]]) -> str:
+    """Merge overlapping matches before rewriting to preserve original offsets."""
     merged: list[tuple[int, int]] = []
     for start, end in sorted(spans):
         if start == end:
@@ -61,46 +93,38 @@ def redact_string(value: str, custom_rules=(), tool_name=None) -> str:
         else:
             merged.append((start, end))
     for start, end in reversed(merged):
-        result = result[:start] + REDACTED + result[end:]
-    return result
-
-
-def redact_json(value, custom_rules=(), *, credentials=True, tool_name=None):
-    """Return a copy, preserving non-sensitive JSON types."""
-    if isinstance(value, dict):
-        function = value.get("function")
-        if isinstance(function, dict) and isinstance(function.get("name"), str):
-            tool_name = function["name"]
-        return {
-            key: REDACTED if credentials and is_secret_field(key) and child not in (None, "", REDACTED)
-            else redact_json(child, custom_rules, credentials=credentials, tool_name=tool_name)
-            for key, child in value.items()
-        }
-    if isinstance(value, list):
-        return [redact_json(child, custom_rules, credentials=credentials, tool_name=tool_name) for child in value]
-    if isinstance(value, str):
-        if credentials:
-            return redact_string(value, custom_rules, tool_name)
-        # Custom actions must work even when the automatic credential mode is off.
-        spans = [m for rule in custom_rules or []
-                 if getattr(rule, "rule_type", "blacklist") == "blacklist"
-                 and (getattr(rule, "action", None) or "").lower() in {"sanitize", "redact"}
-                 for m in custom_matches(rule, value, tool_name)]
-        result = value
-        for match in sorted(spans, key=lambda m: m.start, reverse=True):
-            result = result[:match.start] + REDACTED + result[match.end:]
-        return result
+        value = value[:start] + REDACTED + value[end:]
     return value
 
 
-def redact_body(body: str, custom_rules=(), *, credentials=True) -> tuple[str, bool]:
+def redact_json(value, custom_rules=(), *, credentials=True, tool_name=None, path="$", builtin_rule_ids=()):
+    """Return a copy, preserving non-sensitive JSON types."""
+    if isinstance(value, dict):
+        from app.domain.security_values import structured_tool_name
+        tool_name = structured_tool_name(value, path, tool_name)
+        return {
+            key: REDACTED if (credentials or "credential_named_secret" in builtin_rule_ids) and is_secret_field(key) and child not in (None, "", REDACTED)
+            else redact_json(child, custom_rules, credentials=credentials, tool_name=tool_name, path=f"{path}.{key}", builtin_rule_ids=builtin_rule_ids)
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_json(child, custom_rules, credentials=credentials, tool_name=tool_name, path=f"{path}[{i}]", builtin_rule_ids=builtin_rule_ids) for i, child in enumerate(value)]
+    if isinstance(value, str):
+        if credentials:
+            return redact_string(value, custom_rules, tool_name, builtin_rule_ids)
+        # Custom actions must work even when the automatic credential mode is off.
+        return _redact_explicit(value, custom_rules, tool_name, builtin_rule_ids)
+    return value
+
+
+def redact_body(body: str, custom_rules=(), *, credentials=True, builtin_rule_ids=()) -> tuple[str, bool]:
     try:
         value = json.loads(body)
     except json.JSONDecodeError:
-        result = redact_string(body, custom_rules) if credentials else redact_json(body, custom_rules, credentials=False)
+        result = redact_string(body, custom_rules, builtin_rule_ids=builtin_rule_ids) if credentials else redact_json(body, custom_rules, credentials=False, builtin_rule_ids=builtin_rule_ids)
         return result, result != body
     validate_value(value)
-    result = redact_json(value, custom_rules, credentials=credentials)
+    result = redact_json(value, custom_rules, credentials=credentials, builtin_rule_ids=builtin_rule_ids)
     if result == value:
         return body, False
     return json.dumps(result, ensure_ascii=False), True

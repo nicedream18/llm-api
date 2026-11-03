@@ -1,20 +1,16 @@
 """Security scanner with 6 sub-scanners: credential, path, unicode, network, tool, tracking."""
 import hashlib
 import logging
-import math
 import re
 import uuid
 from datetime import UTC, datetime
 
 from app.domain.entities import SecurityFindingEntity, SecurityScanResult
 from app.domain.security_catalog import (
-    _ENTROPY_CANDIDATE,
-    _KNOWN_CREDENTIAL_PATTERNS,
-    _PEM_PRIVATE_KEY_BLOCK,
     BUILTIN_RULES,
-    ENTROPY_MIN_LENGTH,
     ENTROPY_RULE_ID,
     ENTROPY_THRESHOLD,
+    entropy_matches,
 )
 from app.domain.security_matching import (
     custom_matches,
@@ -46,7 +42,7 @@ def _now() -> str:
 def _make_finding(rule_id, title, description, severity, category, evidence, json_path, phase, action="warn") -> SecurityFindingEntity:
     return SecurityFindingEntity(
         id=str(uuid.uuid4()), phase=phase, category=category, rule_id=rule_id,
-        severity=severity, title=title, description=description, location=json_path,
+        severity=str(severity or "medium").lower(), title=title, description=description, location=json_path,
         evidence_masked=mask_evidence(evidence), evidence_hash=hash_evidence(evidence),
         action=(action or "warn").lower(), created_at=_now(),
     )
@@ -95,17 +91,6 @@ def _run_custom_rules(rules, text, json_path, phase, findings, tool_name=None):
             logger.warning("Skipping invalid custom security pattern", extra={"rule_id": rule.id})
 
 
-def _shannon_entropy(value: str) -> float:
-    """Return Shannon entropy in bits per character for a candidate token."""
-    if not value:
-        return 0.0
-    counts: dict[str, int] = {}
-    for char in value:
-        counts[char] = counts.get(char, 0) + 1
-    length = len(value)
-    return -sum((count / length) * math.log2(count / length) for count in counts.values())
-
-
 def _run_entropy_rule(text, json_path, phase, findings, builtin_rules=None):
     overrides = {getattr(rule, "rule_id", None): rule for rule in builtin_rules or []}
     override = overrides.get(ENTROPY_RULE_ID)
@@ -115,21 +100,8 @@ def _run_entropy_rule(text, json_path, phase, findings, builtin_rules=None):
     severity = str(getattr(override, "severity", None) or "medium").lower()
     action = getattr(override, "action", None) or "warn"
     validate_value(text)
-    scan_text = text
-    known_matches = [
-        match.span()
-        for pattern in _KNOWN_CREDENTIAL_PATTERNS
-        for match in pattern.finditer(scan_text)
-    ]
-    known_matches.extend(match.span() for match in _PEM_PRIVATE_KEY_BLOCK.finditer(scan_text))
-    for match in _ENTROPY_CANDIDATE.finditer(scan_text):
+    for match in entropy_matches(text):
         candidate = match.group()
-        if len(candidate) < ENTROPY_MIN_LENGTH or len(candidate) > 256:
-            continue
-        if any(match.start() < end and match.end() > start for start, end in known_matches):
-            continue
-        if _shannon_entropy(candidate) <= ENTROPY_THRESHOLD:
-            continue
         findings.append(_make_finding(
             ENTROPY_RULE_ID,
             getattr(override, "name", None) or "High-Entropy Credential Candidate",
@@ -148,11 +120,8 @@ def _walk_json(obj, path, phase, settings, findings, custom_rules=None, builtin_
     if isinstance(obj, str):
         _run_all_scanners(obj, path, phase, settings, findings, custom_rules, builtin_rules, tool_name)
     elif isinstance(obj, dict):
-        function = obj.get("function")
-        if isinstance(function, dict) and isinstance(function.get("name"), str):
-            tool_name = function["name"]
-        elif isinstance(obj.get("name"), str) and any(part in path for part in (".tools[", ".tool_calls[", ".function")):
-            tool_name = obj["name"]
+        from app.domain.security_values import structured_tool_name
+        tool_name = structured_tool_name(obj, path, tool_name)
         for k, v in obj.items():
             from app.domain.security_values import is_secret_field
             if is_secret_field(k) and v not in (None, "", "[REDACTED]"):
@@ -243,7 +212,8 @@ class SecurityScanner:
         else:
             credentials = settings.redact_secrets or (mode == "redact" and risk_level in ("High", "Critical"))
             if explicit_sanitize or credentials:
-                sanitized_body, sanitized = redact_body(body, custom_rules, credentials=credentials)
+                selected = {f.rule_id for f in deduped if (f.action or "").lower() in {"sanitize", "redact"}}
+                sanitized_body, sanitized = redact_body(body, custom_rules, credentials=credentials, builtin_rule_ids=selected)
                 if not sanitized:
                     sanitized_body = None
 

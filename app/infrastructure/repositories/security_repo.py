@@ -14,7 +14,7 @@ from app.domain.entities import (
     SecurityCustomRuleEntity,
     SecurityFindingEntity,
 )
-from app.domain.security_catalog import BUILTIN_RULES
+from app.domain.security_catalog import BUILTIN_RULES, RULE_BY_ID
 from app.domain.security_policy import SecuritySnapshot, upgrade_settings
 from app.infrastructure.database.connection import affected_rows, get_db
 
@@ -211,9 +211,11 @@ class SecurityRepository:
         )
 
     def _to_builtin_entity(self, row) -> SecurityBuiltinRuleEntity:
+        detector = RULE_BY_ID.get(row["rule_id"])
         return SecurityBuiltinRuleEntity(
             id=row["id"], category=row["category"], rule_id=row["rule_id"], name=row["name"],
-            description=row["description"], severity=row["severity"], pattern=row["pattern"], toggle_key=row["toggle_key"],
+            description=row["description"], severity=row["severity"], pattern=detector.pattern if detector else row["pattern"],
+            toggle_key=row["toggle_key"] or (detector.toggle_key if detector else None),
             action=row["action"], enabled=row["enabled"], created_at=row["created_at"], updated_at=row["updated_at"],
         )
 

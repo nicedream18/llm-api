@@ -12,3 +12,15 @@ SECRET_FIELDS = frozenset({
 def is_secret_field(key: str) -> bool:
     normalized = re.sub(r"([a-z])([A-Z])", r"\1_\2", key).lower().replace("-", "_")
     return normalized in SECRET_FIELDS
+
+
+def structured_tool_name(value: dict, path: str, inherited=None):
+    function = value.get("function")
+    if isinstance(function, dict) and isinstance(function.get("name"), str):
+        return function["name"]
+    if isinstance(value.get("name"), str) and (
+        value.get("type") in {"tool_use", "function_call", "custom_tool_call"}
+        or any(part in path for part in (".tools[", ".tool_calls[", ".function"))
+    ):
+        return value["name"]
+    return inherited

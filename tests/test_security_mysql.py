@@ -70,3 +70,20 @@ def test_mysql_upgrade_legacy_regex_and_preserve_builtin_id(security_mysql_engin
     rule = next(r for r in repo.get_all_builtin_rules() if r.rule_id == "credential_jwt")
     assert (rule.id, rule.name, rule.enabled, rule.severity) == ("company-id", "Company JWT", 0, "critical")
     assert migrations.validate()
+
+
+def test_mysql_settings_visible_to_another_process(security_mysql_engine, monkeypatch):
+    import json
+    import subprocess
+    import sys
+
+    migrations.apply_migrations()
+    repo = repository(monkeypatch, security_mysql_engine)
+    repo.initialize_settings()
+    repo.update_settings({"mode": "audit", "redact_secrets": True})
+    url = security_mysql_engine.url
+    env = {**os.environ, "DB_NAME": url.database, "DB_USER": url.username or "root", "DB_PASSWORD": url.password or "",
+           "DB_HOST": url.host or "127.0.0.1", "DB_PORT": str(url.port or 3306), "DB_UNIX_SOCKET": url.query.get("unix_socket", "")}
+    code = "from dataclasses import asdict; import json; from app.infrastructure.repositories.security_repo import SecurityRepository; print(json.dumps(asdict(SecurityRepository().get_settings())))"
+    result = subprocess.run([sys.executable, "-c", code], env=env, text=True, capture_output=True, check=True)
+    assert json.loads(result.stdout)["redact_secrets"] is True
