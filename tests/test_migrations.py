@@ -113,3 +113,27 @@ def test_migration_files_include_mcp_session_persistence():
 
     versions = [version for version, _path, _checksum in migrations.migration_files()]
     assert "018_mcp_sessions" in versions
+
+
+def test_high_entropy_rule_migration_registers_rule_idempotently(tmp_path):
+    from sqlalchemy import create_engine, text
+
+    from app.infrastructure.database.migrations import execute_migration
+
+    migration = Path("docs/migrations/027_security_high_entropy_rule.sql")
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("""CREATE TABLE security_builtin_rules (
+            id TEXT PRIMARY KEY, rule_id TEXT UNIQUE, category TEXT, severity TEXT,
+            title TEXT, name TEXT, description TEXT, pattern TEXT, action TEXT,
+            enabled INTEGER, created_at TEXT, updated_at TEXT
+        )""")
+        connection.connection.create_function("UTC_TIMESTAMP", 0, lambda: "now")
+        execute_migration(connection, migration)
+        execute_migration(connection, migration)
+        row = connection.execute(text(
+            "SELECT rule_id, severity, action, enabled FROM security_builtin_rules"
+        )).one()
+
+    assert tuple(row) == ("credential_high_entropy", "medium", "warn", 1)
+    engine.dispose()

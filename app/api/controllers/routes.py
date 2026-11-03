@@ -717,9 +717,18 @@ async def list_builtin_rules():
 
 @security_router.put("/rules/builtin/{rule_id}")
 async def update_builtin_rule(rule_id: str, body: dict):
-    enabled = int(body["enabled"]) if body.get("enabled") is not None else None
-    severity = body.get("severity")
-    return _success(get_container().security_service.update_builtin_rule(rule_id, enabled, severity))
+    try:
+        enabled = body.get("enabled")
+        severity = body.get("severity")
+        fields = {key: value for key, value in body.items() if key not in {"enabled", "severity"}}
+        return _success(get_container().security_service.update_builtin_rule(rule_id, enabled, severity, **fields))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@security_router.post("/rules/builtin/reset")
+async def reset_builtin_rules():
+    return _success(get_container().security_service.reset_builtin_rules())
 
 
 @security_router.get("/rules/custom")

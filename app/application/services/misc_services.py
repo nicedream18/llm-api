@@ -43,8 +43,11 @@ class SecurityService:
     def list_builtin_rules(self):
         return [self._to_builtin_dto(e) for e in self.repo.get_all_builtin_rules()]
 
-    def update_builtin_rule(self, rule_id, enabled, severity):
-        return self.repo.update_builtin_rule(rule_id, enabled, severity)
+    def update_builtin_rule(self, rule_id, enabled, severity, **fields):
+        return self.repo.update_builtin_rule(rule_id, enabled, severity, **fields)
+
+    def reset_builtin_rules(self):
+        return self.repo.reset_builtin_rules()
 
     def list_custom_rules(self):
         return [self._to_custom_dto(e) for e in self.repo.get_all_custom_rules()]
@@ -88,7 +91,7 @@ class SecurityService:
         return [self._to_finding_dto(e) for e in self.repo.get_findings_by_log_id(log_id)]
 
     def _to_builtin_dto(self, e):
-        return SecurityBuiltinRuleDTO(id=e.id, category=e.category, rule_id=e.rule_id, name=e.name,
+        return SecurityBuiltinRuleDTO(toggle_key=e.toggle_key, id=e.id, category=e.category, rule_id=e.rule_id, name=e.name,
                                       description=e.description, severity=e.severity, pattern=e.pattern,
                                       action=e.action, enabled=e.enabled, created_at=e.created_at, updated_at=e.updated_at)
 

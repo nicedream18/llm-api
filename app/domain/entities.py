@@ -207,6 +207,7 @@ class SecurityBuiltinRuleEntity:
     description: str | None = None
     severity: str | None = None
     pattern: str | None = None
+    toggle_key: str | None = None
     action: str | None = None
     enabled: int = 1
     created_at: str | None = None

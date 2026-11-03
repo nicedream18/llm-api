@@ -43,6 +43,7 @@ from app.infrastructure.telemetry import configure_tracing
 async def lifespan(app):
     await asyncio.to_thread(apply_migrations)
     container = get_container()
+    await asyncio.to_thread(container.security_repo.seed_builtin_rules)
     async def close_resource(callback):
         try:
             await asyncio.wait_for(callback(), timeout=10)

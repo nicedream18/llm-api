@@ -1,6 +1,7 @@
 """Security repository for findings, builtin rules, custom rules."""
 import logging
 import uuid
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 from sqlalchemy import text
@@ -10,6 +11,7 @@ from app.domain.entities import (
     SecurityCustomRuleEntity,
     SecurityFindingEntity,
 )
+from app.domain.security_catalog import BUILTIN_RULES
 from app.infrastructure.database.connection import affected_rows, get_db
 
 logger = logging.getLogger(__name__)
@@ -72,30 +74,57 @@ class SecurityRepository:
     def get_all_builtin_rules(self) -> list[SecurityBuiltinRuleEntity]:
         with get_db() as db:
             rows = db.execute(text(
-                "SELECT id, category, rule_id, COALESCE(name, title) AS name, description, severity, pattern, action, "
+                "SELECT id, category, rule_id, COALESCE(name, title) AS name, description, severity, pattern, action, toggle_key, "
                 "enabled, created_at, updated_at FROM security_builtin_rules "
                 "ORDER BY category ASC, created_at ASC"
             )).mappings().all()
             return [self._to_builtin_entity(r) for r in rows]
 
-    def update_builtin_rule(self, rule_id: str, enabled: int | None, severity: str | None) -> bool:
+    def seed_builtin_rules(self):
         with get_db() as db:
-            updates = []
-            params: dict[str, object] = {"id": rule_id}
-            if enabled is not None:
-                updates.append("enabled=:enabled")
-                params["enabled"] = enabled
-            if severity:
-                updates.append("severity=:severity")
-                params["severity"] = severity
-            if not updates:
-                return False
-            updates.append("updated_at=:updated_at")
-            params["updated_at"] = _now()
-            result = db.execute(text(
-                f"UPDATE security_builtin_rules SET {', '.join(updates)} WHERE id=:id"
-            ), params)
-            return affected_rows(result) > 0
+            self._seed(db)
+
+    @staticmethod
+    def _seed(db):
+        for rule in BUILTIN_RULES:
+            values = {**asdict(rule), "id": rule.id, "name": rule.title, "now": _now()}
+            suffix = "ON DUPLICATE KEY UPDATE rule_id=rule_id" if db.bind.dialect.name == "mysql" else "ON CONFLICT(rule_id) DO NOTHING"
+            db.execute(text("""INSERT INTO security_builtin_rules
+                (id,rule_id,category,severity,title,name,description,pattern,action,toggle_key,enabled,created_at,updated_at)
+                VALUES (:id,:rule_id,:category,:severity,:title,:name,:description,:pattern,:action,:toggle_key,1,:now,:now) """ + suffix), values)
+
+    def reset_builtin_rules(self):
+        with get_db() as db:
+            self._seed(db)
+            for rule in BUILTIN_RULES:
+                db.execute(text("""UPDATE security_builtin_rules SET
+                    severity=:severity,title=:title,name=:title,description=:description,
+                    action=:action,toggle_key=:toggle_key,enabled=1,updated_at=:now
+                    WHERE rule_id=:rule_id"""), {**asdict(rule), "now": _now()})
+        return True
+
+    def update_builtin_rule(self, rule_id: str, enabled: int | None, severity: str | None, **fields) -> bool:
+        values = {key: value for key, value in {"enabled": enabled, "severity": severity, **fields}.items() if value is not None}
+        if not values:
+            return False
+        if set(values) - {"enabled", "severity", "name", "description", "action"}:
+            raise ValueError("Builtin identity, category and detector are read-only")
+        if "enabled" in values and values["enabled"] not in (0, 1):
+            raise ValueError("enabled must be 0 or 1")
+        if "severity" in values:
+            values["severity"] = str(values["severity"]).lower()
+            if values["severity"] not in {"info", "low", "medium", "high", "critical"}:
+                raise ValueError("Invalid severity")
+        if "action" in values:
+            values["action"] = str(values["action"]).lower()
+            if values["action"] not in {"allow", "warn", "sanitize", "redact", "block"}:
+                raise ValueError("Invalid action")
+        if "name" in values and (not str(values["name"]).strip() or len(str(values["name"])) > 256):
+            raise ValueError("Invalid rule name")
+        values["updated_at"] = _now()
+        updates = ", ".join(f"{key}=:{key}" for key in values)
+        with get_db() as db:
+            return affected_rows(db.execute(text(f"UPDATE security_builtin_rules SET {updates} WHERE id=:id"), {**values, "id": rule_id})) > 0
 
     def get_all_custom_rules(self) -> list[SecurityCustomRuleEntity]:
         with get_db() as db:
@@ -146,7 +175,7 @@ class SecurityRepository:
     def _to_builtin_entity(self, row) -> SecurityBuiltinRuleEntity:
         return SecurityBuiltinRuleEntity(
             id=row["id"], category=row["category"], rule_id=row["rule_id"], name=row["name"],
-            description=row["description"], severity=row["severity"], pattern=row["pattern"],
+            description=row["description"], severity=row["severity"], pattern=row["pattern"], toggle_key=row["toggle_key"],
             action=row["action"], enabled=row["enabled"], created_at=row["created_at"], updated_at=row["updated_at"],
         )
 

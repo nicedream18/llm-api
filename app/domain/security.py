@@ -1,11 +1,21 @@
 """Security scanner with 6 sub-scanners: credential, path, unicode, network, tool, tracking."""
 import hashlib
 import logging
+import math
 import re
 import uuid
 from datetime import UTC, datetime
 
 from app.domain.entities import SecurityFindingEntity, SecurityScanResult
+from app.domain.security_catalog import (
+    _ENTROPY_CANDIDATE,
+    _KNOWN_CREDENTIAL_PATTERNS,
+    _PEM_PRIVATE_KEY_BLOCK,
+    BUILTIN_RULES,
+    ENTROPY_MIN_LENGTH,
+    ENTROPY_RULE_ID,
+    ENTROPY_THRESHOLD,
+)
 from app.types.enums import SEVERITY_SCORES, RiskLevel
 
 logger = logging.getLogger(__name__)
@@ -48,63 +58,6 @@ def _make_finding(rule_id, title, description, severity, category, evidence, jso
 
 # ---- Sub-scanner rule definitions ----
 
-CREDENTIAL_RULES = [
-    ("credential_apikey_openai", "OpenAI API Key", "Detected OpenAI-style API key (sk-...).", r"sk-[a-zA-Z0-9]{20,}", "high"),
-    ("credential_apikey_generic", "Generic API Key", "Detected generic API key pattern (key-...).", r"key-[a-zA-Z0-9]{20,}", "high"),
-    ("credential_apikey_google", "Google API Key", "Detected Google API key (AIza...).", r"AIza[a-zA-Z0-9_-]{35}", "high"),
-    ("credential_private_key", "Private Key", "Detected PEM-encoded private key.", r"-----BEGIN.*PRIVATE KEY-----", "critical"),
-    ("credential_private_key_rsa", "RSA Private Key", "Detected PEM-encoded RSA private key.", r"-----BEGIN.*RSA.*-----", "critical"),
-    ("credential_jwt", "JWT Token", "Detected a JSON Web Token.", r"eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+", "high"),
-    ("credential_aws_access", "AWS Access Key ID", "Detected AWS access key ID (AKIA...).", r"AKIA[0-9A-Z]{16}", "critical"),
-    ("credential_github_pat", "GitHub PAT", "Detected GitHub personal access token (ghp_...).", r"ghp_[a-zA-Z0-9]{36}", "critical"),
-    ("credential_slack_token", "Slack Token", "Detected Slack token (xox...).", r"xox[baprs]-[a-zA-Z0-9-]+", "high"),
-    ("credential_password", "Password Assignment", "Detected password assignment in plaintext.", r"password\s*[=:]\s*\S+", "high"),
-    ("credential_token", "Token Assignment", "Detected token assignment in plaintext.", r"token\s*[=:]\s*\S+", "high"),
-    ("credential_secret", "Secret Assignment", "Detected secret assignment in plaintext.", r"secret\s*[=:]\s*\S+", "high"),
-]
-
-PATH_RULES = [
-    ("path_traversal_basic", "Path Traversal", "Detected directory traversal sequence (../).", r"\.\./", "high"),
-    ("path_traversal_encoded", "Encoded Path Traversal", "Detected URL-encoded path traversal.", r"%2e%2e%2f|%2e%2e/|\.\.%2f", "high"),
-    ("path_absolute_unix", "Absolute Unix Path", "Detected absolute Unix path access attempt.", r"/etc/passwd|/etc/shadow|/root/", "critical"),
-    ("path_absolute_win", "Absolute Windows Path", "Detected absolute Windows path access attempt.", r"[Cc]:\\[Ww]indows|[Cc]:\\[Uu]sers", "critical"),
-    ("path_dev_null", "Dev Null Redirect", "Detected redirect to /dev/null.", r"/dev/null", "medium"),
-]
-
-NETWORK_RULES = [
-    ("network_ssrf_localhost", "SSRF Localhost", "Detected localhost/internal IP reference — possible SSRF.", r"(localhost|127\.0\.0\.1|0\.0\.0\.0|::1)", "high"),
-    ("network_ssrf_internal", "SSRF Internal IP", "Detected internal/private IP address reference.", r"(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)\d+\.\d+", "high"),
-    ("network_ssrf_metadata", "SSRF Cloud Metadata", "Detected cloud metadata endpoint reference.", r"169\.254\.169\.254|metadata\.google\.internal", "critical"),
-    ("network_url_http", "HTTP URL", "Detected plain HTTP URL reference.", r"http://[^\s\"'<>]+", "low"),
-    ("network_url_leak", "URL with credentials", "Detected URL with embedded credentials.", r"https?://[^\s:/@]+:[^\s:/@]+@", "high"),
-]
-
-UNICODE_RULES = [
-    ("unicode_homoglyph_cyrillic", "Cyrillic Homoglyph", "Detected Cyrillic characters that mimic Latin letters — possible homograph attack.", r"[\u0400-\u04FF]", "medium"),
-    ("unicode_homoglyph_greek", "Greek Homoglyph", "Detected Greek characters that mimic Latin letters.", r"[\u0370-\u03FF]", "medium"),
-    ("unicode_zero_width", "Zero-Width Character", "Detected zero-width/invisible Unicode characters.", r"[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]", "high"),
-    ("unicode_right_to_left", "RTL Override", "Detected right-to-left override character — possible text obfuscation.", r"[\u202D\u202E]", "high"),
-    ("unicode_fullwidth", "Fullwidth Character", "Detected fullwidth Unicode characters.", r"[\uFF00-\uFFEF]", "low"),
-]
-
-TOOL_RULES = [
-    ("tool_cmd_exec", "Command Execution", "Detected system command execution function call.", r"(os\.system|subprocess\.call|subprocess\.Popen|eval\(|exec\()", "critical"),
-    ("tool_file_write", "File Write", "Detected file write operation.", r"(open\([^)]*['\"]w|writeFile|fs\.write)", "high"),
-    ("tool_file_read", "File Read", "Detected file read operation.", r"(open\([^)]*['\"]r|readFile|fs\.read|/etc/passwd)", "high"),
-    ("tool_sql_injection", "SQL Injection Pattern", "Detected potential SQL injection pattern.", r"(DROP\s+TABLE|UNION\s+SELECT|;\s*DELETE\s+FROM)", "critical"),
-    ("tool_xss", "XSS Pattern", "Detected potential XSS payload.", r"(<script|javascript:|onerror\s*=|onload\s*=)", "high"),
-    ("tool_prompt_injection", "Prompt Injection", "Detected prompt injection attempt.", r"(ignore\s+(previous|above)\s+instructions|disregard\s+(all|previous)|you\s+are\s+now\s+a)", "high"),
-]
-
-TRACKING_RULES = [
-    ("tracking_ga", "Google Analytics", "Detected Google Analytics tracking reference.", r"google-analytics\.com|googletagmanager\.com", "low"),
-    ("tracking_fb_pixel", "Facebook Pixel", "Detected Facebook Pixel tracking reference.", r"connect\.facebook\.net|fbq\(", "low"),
-    ("tracking_hotjar", "Hotjar", "Detected Hotjar tracking script.", r"hotjar\.com", "low"),
-    ("tracking_mixpanel", "Mixpanel", "Detected Mixpanel analytics tracking.", r"mixpanel\.com", "low"),
-    ("fingerprint_canvas", "Canvas Fingerprinting", "Detected canvas.toDataURL() — browser fingerprinting.", r"canvas\.toDataURL\(\)", "medium"),
-    ("fingerprint_useragent", "User-Agent Collection", "Detected navigator.userAgent access.", r"navigator\.userAgent", "medium"),
-    ("fingerprint_device", "Device Fingerprint", "Detected deviceFingerprint reference.", r"deviceFingerprint", "medium"),
-]
 
 
 def _run_rules(rules, text, json_path, phase, category, builtin_rules=None) -> list[SecurityFindingEntity]:
@@ -122,7 +75,7 @@ def _run_rules(rules, text, json_path, phase, category, builtin_rules=None) -> l
         try:
             matches = re.finditer(pattern, text)
             for m in matches:
-                findings.append(_make_finding(rule_id, title, desc, effective_severity, category, m.group(), json_path, phase, action))
+                findings.append(_make_finding(rule_id, getattr(override, "name", None) or title, getattr(override, "description", None) or desc, effective_severity, category, m.group(), json_path, phase, action))
         except (re.error, RecursionError):
             logger.warning("Skipping invalid or unsafe security pattern", extra={"rule_id": rule_id})
     return findings
@@ -143,6 +96,53 @@ def _run_custom_rules(rules, text, json_path, phase, findings):
             logger.warning("Skipping invalid custom security pattern", extra={"rule_id": rule.id})
 
 
+def _shannon_entropy(value: str) -> float:
+    """Return Shannon entropy in bits per character for a candidate token."""
+    if not value:
+        return 0.0
+    counts = {}
+    for char in value:
+        counts[char] = counts.get(char, 0) + 1
+    length = len(value)
+    return -sum((count / length) * math.log2(count / length) for count in counts.values())
+
+
+def _run_entropy_rule(text, json_path, phase, findings, builtin_rules=None):
+    overrides = {getattr(rule, "rule_id", None): rule for rule in builtin_rules or []}
+    override = overrides.get(ENTROPY_RULE_ID)
+    if override is not None and not getattr(override, "enabled", 1):
+        return
+
+    severity = str(getattr(override, "severity", None) or "medium").lower()
+    action = getattr(override, "action", None) or "warn"
+    scan_text = text[:1_000_000]
+    known_matches = [
+        match.span()
+        for pattern in _KNOWN_CREDENTIAL_PATTERNS
+        for match in pattern.finditer(scan_text)
+    ]
+    known_matches.extend(match.span() for match in _PEM_PRIVATE_KEY_BLOCK.finditer(scan_text))
+    for match in _ENTROPY_CANDIDATE.finditer(scan_text):
+        candidate = match.group()
+        if len(candidate) < ENTROPY_MIN_LENGTH or len(candidate) > 256:
+            continue
+        if any(match.start() < end and match.end() > start for start, end in known_matches):
+            continue
+        if _shannon_entropy(candidate) <= ENTROPY_THRESHOLD:
+            continue
+        findings.append(_make_finding(
+            ENTROPY_RULE_ID,
+            getattr(override, "name", None) or "High-Entropy Credential Candidate",
+            getattr(override, "description", None) or f"Detected a {len(candidate)}-character token with Shannon entropy above {ENTROPY_THRESHOLD} bits per character; review it as a possible secret.",
+            severity,
+            "credentials",
+            candidate,
+            json_path,
+            phase,
+            action,
+        ))
+
+
 def _walk_json(obj, path, phase, settings, findings, custom_rules=None, builtin_rules=None):
     """Recursively walk JSON and run scanners on string values."""
     if isinstance(obj, str):
@@ -156,15 +156,15 @@ def _walk_json(obj, path, phase, settings, findings, custom_rules=None, builtin_
 
 
 def _run_all_scanners(text, json_path, phase, settings, findings, custom_rules=None, builtin_rules=None):
-    findings.extend(_run_rules(CREDENTIAL_RULES, text, json_path, phase, "credentials", builtin_rules))
-    findings.extend(_run_rules(PATH_RULES, text, json_path, phase, "path", builtin_rules))
-    if getattr(settings, "scan_network", True):
-        findings.extend(_run_rules(NETWORK_RULES, text, json_path, phase, "network", builtin_rules))
-    if settings.scan_unicode:
-        findings.extend(_run_rules(UNICODE_RULES, text, json_path, phase, "unicode", builtin_rules))
-    if settings.scan_tools:
-        findings.extend(_run_rules(TOOL_RULES, text, json_path, phase, "tools", builtin_rules))
-    findings.extend(_run_rules(TRACKING_RULES, text, json_path, phase, "tracking", builtin_rules))
+    for rule in BUILTIN_RULES:
+        override = next((r for r in builtin_rules or [] if r.rule_id == rule.rule_id), None)
+        toggle = getattr(override, "toggle_key", None) or rule.toggle_key
+        if toggle and not getattr(settings, toggle.removeprefix("security."), True):
+            continue
+        if rule.rule_id == ENTROPY_RULE_ID:
+            _run_entropy_rule(text, json_path, phase, findings, builtin_rules)
+        else:
+            findings.extend(_run_rules([(rule.rule_id, rule.title, rule.description, rule.pattern, rule.severity)], text, json_path, phase, rule.category, builtin_rules))
     _run_custom_rules(custom_rules, text, json_path, phase, findings)
 
 

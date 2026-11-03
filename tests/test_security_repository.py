@@ -17,8 +17,8 @@ def _repository(monkeypatch):
             evidence_hash TEXT, action TEXT, created_at TEXT
         )"""))
         db.execute(text("""CREATE TABLE security_builtin_rules (
-            id TEXT PRIMARY KEY, category TEXT, rule_id TEXT, name TEXT, title TEXT,
-            description TEXT, severity TEXT, pattern TEXT, action TEXT, enabled INTEGER,
+            id TEXT PRIMARY KEY, category TEXT, rule_id TEXT UNIQUE, name TEXT, title TEXT,
+            description TEXT, severity TEXT, pattern TEXT, action TEXT, toggle_key TEXT, enabled INTEGER,
             created_at TEXT, updated_at TEXT
         )"""))
         db.execute(text("""CREATE TABLE security_custom_rules (
@@ -83,4 +83,62 @@ def test_security_findings_and_rules_persist_and_update(monkeypatch):
     assert repo.update_custom_rule(SecurityCustomRuleEntity(id="missing", name="none")) is False
     assert repo.delete_custom_rule(custom.id) is True
     assert repo.delete_custom_rule(custom.id) is False
+    engine.dispose()
+
+
+def test_catalog_seed_preserves_changes_and_reset_preserves_unmanaged_rows(monkeypatch):
+    from app.domain.security_catalog import BUILTIN_RULES
+
+    repo, engine = _repository(monkeypatch)
+    repo.seed_builtin_rules()
+    assert {r.rule_id for r in repo.get_all_builtin_rules()} == {r.rule_id for r in BUILTIN_RULES}
+    rule = repo.get_all_builtin_rules()[0]
+    repo.update_builtin_rule(rule.id, 0, "CRITICAL", name="Company name", description="Company policy", action="block")
+    with engine.begin() as db:
+        db.execute(text("INSERT INTO security_builtin_rules (id,rule_id,name,enabled) VALUES ('old','unknown','Keep me',0)"))
+        db.execute(text("DELETE FROM security_builtin_rules WHERE rule_id='credential_jwt'"))
+    repo.seed_builtin_rules()
+    changed = next(r for r in repo.get_all_builtin_rules() if r.id == rule.id)
+    assert (changed.enabled, changed.name, changed.severity, changed.action) == (0, "Company name", "critical", "block")
+    assert any(r.rule_id == "credential_jwt" for r in repo.get_all_builtin_rules())
+    repo.reset_builtin_rules()
+    restored = next(r for r in repo.get_all_builtin_rules() if r.id == rule.id)
+    assert restored.id == rule.id and restored.enabled == 1 and restored.name != "Company name"
+    assert next(r for r in repo.get_all_builtin_rules() if r.id == "old").enabled == 0
+    engine.dispose()
+
+
+def test_reset_rolls_back_if_a_rule_update_fails(monkeypatch):
+    import pytest
+    from sqlalchemy import event
+
+    repo, engine = _repository(monkeypatch)
+    repo.seed_builtin_rules()
+    before = repo.get_all_builtin_rules()
+    repo.update_builtin_rule(before[0].id, 0, "low")
+    expected = repo.get_all_builtin_rules()
+    count = 0
+
+    def fail_mid_reset(conn, cursor, statement, parameters, context, executemany):
+        nonlocal count
+        if statement.startswith("UPDATE security_builtin_rules"):
+            count += 1
+            if count == 2:
+                raise RuntimeError("synthetic database failure")
+
+    event.listen(engine, "before_cursor_execute", fail_mid_reset)
+    with pytest.raises(RuntimeError, match="synthetic"):
+        repo.reset_builtin_rules()
+    event.remove(engine, "before_cursor_execute", fail_mid_reset)
+    assert repo.get_all_builtin_rules() == expected
+    engine.dispose()
+
+
+def test_builtin_update_rejects_detector_changes_and_invalid_enums(monkeypatch):
+    import pytest
+
+    repo, engine = _repository(monkeypatch)
+    for fields in ({"pattern": ".*"}, {"action": "ignore"}, {"enabled": 9}, {"severity": "urgent"}):
+        with pytest.raises(ValueError):
+            repo.update_builtin_rule("any", fields.pop("enabled", None), fields.pop("severity", None), **fields)
     engine.dispose()
