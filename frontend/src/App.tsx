@@ -1,3 +1,4 @@
+import { SecurityPage } from "./SecurityPage";
 import { SoftwarePage } from "./SoftwarePage";
 import { KnowledgePage } from "./KnowledgePage";
 export { KnowledgePage } from "./KnowledgePage";
@@ -20,18 +21,19 @@ import "./software.css";
 import "./admin.css";
 import "./console-refresh.css";
 
-export type Page = "dashboard" | "channels" | "api-keys" | "routing" | "logs" | "software" | "providers" | "wiki" | "knowledge" | "mcp" | "operations" | "settings";
+export type Page = "dashboard" | "channels" | "api-keys" | "routing" | "logs" | "software" | "providers" | "wiki" | "knowledge" | "mcp" | "operations" | "settings" | "security";
 type IconName = "overview" | "chart" | "channels" | "key" | "route" | "logs" | "knowledge" | "wiki" | "tools" | "accounts" | "mcp" | "settings";
 type NavItem = { id: Page; label: string; icon: IconName };
 export const navigationGroups: Array<{ label: string; items: NavItem[] }> = [
   { label: "概览", items: [{ id: "dashboard", label: "仪表盘", icon: "overview" }, { id: "operations", label: "运营统计", icon: "chart" }] },
   { label: "模型网关", items: [{ id: "channels", label: "渠道", icon: "channels" }, { id: "api-keys", label: "访问密钥", icon: "key" }, { id: "routing", label: "路由", icon: "route" }, { id: "logs", label: "请求日志", icon: "logs" }] },
   { label: "知识与工具", items: [{ id: "knowledge", label: "知识库", icon: "knowledge" }, { id: "wiki", label: "Wiki", icon: "wiki" }, { id: "software", label: "工具集成", icon: "tools" }, { id: "mcp", label: "MCP 调试", icon: "mcp" }] },
-  { label: "系统管理", items: [{ id: "providers", label: "上游账号", icon: "accounts" }, { id: "settings", label: "系统设置", icon: "settings" }] },
+  { label: "系统管理", items: [{ id: "providers", label: "上游账号", icon: "accounts" }, { id: "security", label: "安全审计", icon: "key" }, { id: "settings", label: "系统设置", icon: "settings" }] },
 ];
 export const nav: Array<[Page, string]> = navigationGroups.flatMap(group => group.items.map(({ id, label }) => [id, label]));
 
 const pageDescriptions: Record<Page, string> = {
+  security: "管理安全策略、内置规则和黑白名单，查看安全发现。",
   dashboard: "查看网关运行状态与近期用量。", operations: "分析请求、费用与渠道运营表现。", channels: "管理上游供应商、模型和连接状态。",
   "api-keys": "管理下游访问密钥与使用权限。", routing: "配置渠道分组和请求路由策略。", logs: "检索请求记录、失败尝试和安全事件。",
   knowledge: "管理知识库、文档和检索索引。", wiki: "整理可链接的团队知识页面。", software: "连接本机命令、HTTP API 和 MCP 工具。",
@@ -101,6 +103,7 @@ function PageView({ page, onError }: { page: string; onError: (message: string) 
   if (page === "knowledge") return <KnowledgePage onError={onError} />;
   if (page === "wiki") return <WikiManager onError={onError} />;
   if (page === "mcp") return <McpManager onError={onError} />;
+  if (page === "security") return <SecurityPage onError={onError} />;
   if (page === "settings") return <SettingsPage onError={onError} />;
   return <div className="panel" role="alert">没有找到这个页面。<a href="#/dashboard">返回仪表盘</a></div>;
 }
