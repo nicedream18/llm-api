@@ -100,7 +100,7 @@ def _shannon_entropy(value: str) -> float:
     """Return Shannon entropy in bits per character for a candidate token."""
     if not value:
         return 0.0
-    counts = {}
+    counts: dict[str, int] = {}
     for char in value:
         counts[char] = counts.get(char, 0) + 1
     length = len(value)
@@ -149,6 +149,11 @@ def _walk_json(obj, path, phase, settings, findings, custom_rules=None, builtin_
         _run_all_scanners(obj, path, phase, settings, findings, custom_rules, builtin_rules)
     elif isinstance(obj, dict):
         for k, v in obj.items():
+            from app.domain.security_values import is_secret_field
+            if is_secret_field(k) and v not in (None, "", "[REDACTED]"):
+                override = next((r for r in builtin_rules or [] if r.rule_id == "credential_named_secret"), None)
+                if getattr(override, "enabled", 1):
+                    findings.append(_make_finding("credential_named_secret", getattr(override, "name", None) or "Sensitive Credential Field", getattr(override, "description", None) or "Value in a sensitive JSON field.", getattr(override, "severity", None) or "high", "credentials", str(v), f"{path}.{k}", phase, getattr(override, "action", None) or "warn"))
             _walk_json(v, f"{path}.{k}", phase, settings, findings, custom_rules, builtin_rules)
     elif isinstance(obj, list):
         for i, v in enumerate(obj):
@@ -163,7 +168,7 @@ def _run_all_scanners(text, json_path, phase, settings, findings, custom_rules=N
             continue
         if rule.rule_id == ENTROPY_RULE_ID:
             _run_entropy_rule(text, json_path, phase, findings, builtin_rules)
-        else:
+        elif rule.pattern is not None:
             findings.extend(_run_rules([(rule.rule_id, rule.title, rule.description, rule.pattern, rule.severity)], text, json_path, phase, rule.category, builtin_rules))
     _run_custom_rules(custom_rules, text, json_path, phase, findings)
 

@@ -71,6 +71,45 @@ TRACKING_RULES = [
 ]
 
 
+# Additional article coverage, preserving all original rule identifiers.
+CREDENTIAL_RULES.extend([
+    ("credential_bearer", "Bearer Token", "Bearer authentication value.", r"(?i)\bBearer[ \t]+[A-Za-z0-9._~+/-]+=*", "high"),
+    ("credential_database_url", "Database Connection", "Database connection string.", r"(?i)\b(?:mysql|postgres(?:ql)?|mongodb(?:\+srv)?|redis|mssql)://[^\s\"'<>]+", "high"),
+    ("credential_cloud_key", "Cloud Credential", "Tencent or Alibaba cloud access key identifier.", r"\b(?:AKID[A-Za-z0-9]{16,64}|LTAI[A-Za-z0-9]{12,64})\b", "high"),
+])
+PATH_RULES.extend([
+    ("file_sensitive_path", "Sensitive File", "Environment, SSH or cloud credential file.", r"(?i)(?:^|[/\\\s\"'])\.env(?:\.[\w-]+)?\b|(?:~[/\\])?\.ssh[/\\]|\.aws[/\\]credentials\b|(?:^|[/\\\s\"'])\.(?:npmrc|pypirc)\b", "high"),
+    ("file_ssh_key", "SSH Key File", "SSH private key filename.", r"\bid_(?:rsa|ed25519|ecdsa|dsa)(?![\w.])", "critical"),
+    ("infra_local_path", "Local User Path", "Local Unix user directory.", r"/(?:Users|home)/[^\s\"'<>]+", "medium"),
+])
+UNICODE_RULES.append(("unicode_variation_selector", "Variation Selector", "Unicode variation selector.", r"[\uFE00-\uFE0F\U000E0100-\U000E01EF]", "medium"))
+NETWORK_RULES.extend([
+    ("network_ip_probe", "Public IP Probe", "Public IP discovery service.", r"(?i)\b(?:ifconfig\.me|ipinfo\.io|api\.ipify\.org|icanhazip\.com|checkip\.amazonaws\.com)\b", "high"),
+    ("network_suspicious_domain", "Suspicious Outbound Domain", "Temporary tunnel, webhook or paste service.", r"(?i)\b(?:webhook\.site|(?:[\w-]+\.)?ngrok(?:-free)?\.(?:io|app)|pastebin\.com|requestbin\.com)\b", "high"),
+    ("network_external_url", "External URL", "External HTTPS URL.", r"https://[^\s\"'<>]+", "info"),
+    ("network_tracking_pixel", "Tracking Pixel", "Tracking pixel, beacon or one-pixel image markup.", r"(?i)<img\b[^>\n]{0,1024}\b(?:width|height)\s*=\s*[\"']?1(?:[\"'\s>])|https?://[^\s\"'<>]{1,512}/(?:track|pixel|beacon)(?:[/?#.][^\s\"'<>]*)?", "high"),
+])
+TOOL_RULES.extend([
+    ("tool_shell_network_or_exec", "Network or Shell Command", "Network utility or explicit shell execution.", r"\b(?:curl|wget|nc|netcat)\s+[^\n]{1,512}|\b(?:bash|sh)\s+-c\b", "medium"),
+    ("tool_shell_exfiltration", "Sensitive Data Exfiltration", "Sensitive file reference and outbound command on the same line.", r"(?i)(?=[^\n]{0,1024}(?:\.env\b|id_rsa\b|\.aws[/\\]credentials))(?=[^\n]{0,1024}\b(?:curl|wget|nc)\b)[^\n]{1,1024}", "critical"),
+    ("tool_remote_script_exec", "Remote Script Execution", "Downloaded content piped or chained into a shell.", r"\b(?:curl|wget)\b[^\n]{0,512}(?:\||&&)\s*(?:bash|sh|zsh)\b", "critical"),
+    ("tool_git_info", "Git Credential or Remote Information", "Git remote URL or CLI credential request.", r"\bgit\s+(?:remote(?:\s+-v)?|config\s+--get\s+remote\.[\w-]+\.url)\b|\bgh\s+auth\s+token\b", "low"),
+])
+# Extend the existing injection detector rather than creating a duplicate rule.
+TOOL_RULES[:] = [
+    (rid, title, desc, pattern + r"|忽略(?:之前|以上|所有).{0,8}(?:指令|规则)|绕过.{0,8}(?:审计|限制)|隐藏.{0,8}(?:操作|行为)|bypass\s+(?:audit|safety)", severity)
+    if rid == "tool_prompt_injection" else (rid, title, desc, pattern, severity)
+    for rid, title, desc, pattern, severity in TOOL_RULES
+]
+PERSONAL_RULES = [
+    ("personal_email", "Email Address", "Email address.", r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "low"),
+    ("personal_phone", "Mainland China Mobile", "Mainland China mobile number.", r"(?<!\d)(?:\+?86[ -]?)?1[3-9]\d{9}(?!\d)", "low"),
+]
+PROMPT_RULES = [
+    ("prompt_fingerprint_context", "Fingerprint and Risk Context", "Combined timezone and proxy, fingerprint or risk-control context.", r"(?i)(?=[\s\S]{0,8192}(?:timezone|time zone|时区))(?=[\s\S]{0,8192}(?:proxy|代理|fingerprint|指纹|风控))[\s\S]{1,8192}", "medium"),
+]
+
+
 @dataclass(frozen=True)
 class BuiltinRule:
     rule_id: str
@@ -96,6 +135,8 @@ RULE_GROUPS = (
     ("unicode", UNICODE_RULES, "security.scan_unicode"),
     ("tools", TOOL_RULES, "security.scan_tools"),
     ("tracking", TRACKING_RULES, None),
+    ("personal", PERSONAL_RULES, None),
+    ("prompt", PROMPT_RULES, None),
 )
 BUILTIN_RULES = tuple(
     BuiltinRule(*definition, category, toggle)
@@ -105,4 +146,5 @@ BUILTIN_RULES = tuple(
     "Standalone token with Shannon entropy above 4.5 bits per character; review as a possible secret.",
     None, "medium", "credentials",
 ),)
+BUILTIN_RULES += (BuiltinRule("credential_named_secret", "Sensitive Credential Field", "Value in a sensitive JSON field.", None, "high", "credentials"),)
 RULE_BY_ID = {rule.rule_id: rule for rule in BUILTIN_RULES}
