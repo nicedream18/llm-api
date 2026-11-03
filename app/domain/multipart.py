@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from email import policy
 from email.parser import BytesParser
+from itertools import pairwise
 
 _MODEL_FIELD = re.compile(
     rb"(?P<prefix>Content-Disposition:[^\r\n]*\bname=[\"']model[\"'][^\r\n]*\r\n(?:[A-Za-z-]+:[^\r\n]*\r\n)*\r\n)(?P<value>[^\r\n]*)",
@@ -61,3 +63,48 @@ def replace_model(payload: bytes, model: str, upstream_model: str) -> bytes:
     if not match:
         return payload
     return payload[: match.start("value")] + upstream_model.encode("utf-8") + payload[match.end("value") :]
+
+
+# These offsets allow text replacements without MIME re-serialization of files.
+
+
+@dataclass(frozen=True)
+class TextPart:
+    name: str
+    value: str
+    start: int
+    end: int
+    charset: str
+
+
+def multipart_text_parts(content_type: str | None, payload: bytes) -> list[TextPart]:
+    header = BytesParser(policy=policy.default).parsebytes(b"Content-Type: " + (content_type or "").encode("latin-1") + b"\r\n\r\n")
+    boundary = header.get_boundary()
+    if not boundary:
+        raise ValueError("Missing multipart boundary")
+    delimiter = re.compile(rb"(?:\A|\r\n)--" + re.escape(boundary.encode("ascii")) + rb"(?P<close>--)?(?:\r\n|\Z)")
+    markers = list(delimiter.finditer(payload))
+    if len(markers) < 2 or not markers[-1].group("close"):
+        raise ValueError("Incomplete multipart body")
+    result = []
+    for marker, following in pairwise(markers):
+        if marker.group("close"):
+            raise ValueError("Unexpected multipart terminator")
+        start = marker.end()
+        header_end = payload.find(b"\r\n\r\n", start, following.start())
+        if header_end < 0:
+            raise ValueError("Missing part headers")
+        headers = BytesParser(policy=policy.default).parsebytes(payload[start:header_end] + b"\r\n\r\n")
+        name = headers.get_param("name", header="content-disposition")
+        if headers.get_content_disposition() != "form-data" or not name or headers.get_filename() is not None:
+            continue
+        start = header_end + 4
+        charset = headers.get_content_charset() or "utf-8"
+        result.append(TextPart(str(name), payload[start:following.start()].decode(charset), start, following.start(), charset))
+    return result
+
+
+def replace_text_parts(payload: bytes, parts: list[TextPart], values: list[str]) -> bytes:
+    for part, value in reversed(list(zip(parts, values, strict=True))):
+        payload = payload[:part.start] + value.encode(part.charset) + payload[part.end:]
+    return payload

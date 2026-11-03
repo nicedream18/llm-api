@@ -44,6 +44,7 @@ async def lifespan(app):
     await asyncio.to_thread(apply_migrations)
     container = get_container()
     await asyncio.to_thread(container.security_repo.seed_builtin_rules)
+    await asyncio.to_thread(container.security_repo.initialize_settings)
     async def close_resource(callback):
         try:
             await asyncio.wait_for(callback(), timeout=10)

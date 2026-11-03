@@ -1,17 +1,21 @@
 """Security repository for findings, builtin rules, custom rules."""
+import json
 import logging
 import uuid
+from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import UTC, datetime
 
 from sqlalchemy import text
 
+from app.config import SecuritySettings, config
 from app.domain.entities import (
     SecurityBuiltinRuleEntity,
     SecurityCustomRuleEntity,
     SecurityFindingEntity,
 )
 from app.domain.security_catalog import BUILTIN_RULES
+from app.domain.security_policy import SecuritySnapshot, upgrade_settings
 from app.infrastructure.database.connection import affected_rows, get_db
 
 logger = logging.getLogger(__name__)
@@ -22,6 +26,40 @@ def _now() -> str:
 
 
 class SecurityRepository:
+
+    def initialize_settings(self, defaults=None):
+        settings = upgrade_settings(defaults or config.security)
+        with get_db() as db:
+            suffix = "ON DUPLICATE KEY UPDATE id=id" if db.bind.dialect.name == "mysql" else "ON CONFLICT(id) DO NOTHING"
+            db.execute(text("INSERT INTO security_settings (id,settings,updated_at) VALUES ('default',:settings,:now) " + suffix), {"settings": json.dumps(asdict(settings)), "now": _now()})
+
+    @staticmethod
+    def _settings(db):
+        row = db.execute(text("SELECT settings FROM security_settings WHERE id='default'")).scalar()
+        return SecuritySettings(**json.loads(row)) if row else upgrade_settings(config.security)
+
+    def snapshot(self):
+        with get_db() as db:
+            return SecuritySnapshot(self._settings(db), tuple(self.get_all_custom_rules(db)), tuple(self.get_all_builtin_rules(db)))
+
+    def get_settings(self):
+        with get_db() as db:
+            return self._settings(db)
+
+    def update_settings(self, fields):
+        if not fields or set(fields) - set(SecuritySettings.__dataclass_fields__):
+            raise ValueError("Unknown or empty security settings")
+        for key, value in fields.items():
+            if key != "mode" and type(value) is not bool:
+                raise ValueError("Security switches must be booleans")
+        with get_db() as db:
+            # Serialize updates to avoid losing another administrator's partial update.
+            if db.bind.dialect.name == "mysql":
+                db.execute(text("SELECT id FROM security_settings WHERE id='default' FOR UPDATE"))
+            settings = SecuritySettings(**{**asdict(self._settings(db)), **fields})
+            suffix = "ON DUPLICATE KEY UPDATE settings=:settings,updated_at=:now" if db.bind.dialect.name == "mysql" else "ON CONFLICT(id) DO UPDATE SET settings=:settings,updated_at=:now"
+            db.execute(text("INSERT INTO security_settings (id,settings,updated_at) VALUES ('default',:settings,:now) " + suffix), {"settings": json.dumps(asdict(settings)), "now": _now()})
+        return settings
 
     def save_findings(self, findings: list[SecurityFindingEntity]):
         if not findings:
@@ -71,8 +109,8 @@ class SecurityRepository:
             row = db.execute(text("SELECT COUNT(*) AS cnt FROM security_findings")).mappings().first()
             return int(row["cnt"]) if row else 0
 
-    def get_all_builtin_rules(self) -> list[SecurityBuiltinRuleEntity]:
-        with get_db() as db:
+    def get_all_builtin_rules(self, _db=None) -> list[SecurityBuiltinRuleEntity]:
+        with (nullcontext(_db) if _db is not None else get_db()) as db:
             rows = db.execute(text(
                 "SELECT id, category, rule_id, COALESCE(name, title) AS name, description, severity, pattern, action, toggle_key, "
                 "enabled, created_at, updated_at FROM security_builtin_rules "
@@ -126,8 +164,8 @@ class SecurityRepository:
         with get_db() as db:
             return affected_rows(db.execute(text(f"UPDATE security_builtin_rules SET {updates} WHERE id=:id"), {**values, "id": rule_id})) > 0
 
-    def get_all_custom_rules(self) -> list[SecurityCustomRuleEntity]:
-        with get_db() as db:
+    def get_all_custom_rules(self, _db=None) -> list[SecurityCustomRuleEntity]:
+        with (nullcontext(_db) if _db is not None else get_db()) as db:
             rows = db.execute(text(
                 "SELECT id, category, rule_type, match_type, name, description, severity, pattern, action, "
                 "enabled, created_at, updated_at FROM security_custom_rules ORDER BY created_at DESC"

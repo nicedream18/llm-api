@@ -40,6 +40,14 @@ class SecurityService:
     def __init__(self, security_repository):
         self.repo = security_repository
 
+    def get_settings(self):
+        from dataclasses import asdict
+        return {**asdict(self.repo.get_settings()), "capabilities": {"stream_response_scan": False, "binary_attachment_scan": False}}
+
+    def update_settings(self, fields):
+        self.repo.update_settings(fields)
+        return self.get_settings()
+
     def list_builtin_rules(self):
         return [self._to_builtin_dto(e) for e in self.repo.get_all_builtin_rules()]
 
@@ -215,20 +223,41 @@ class ProxyService:
     def _auth_context(self, headers: dict, auth_context: AuthContext | None = None):
         return auth_context or getattr(headers, "auth_context", None)
 
-    def _scan(self, body: str, phase: str):
+    def _snapshot(self):
+        from app.domain.security_policy import SecuritySnapshot
+        if self.security_repo and hasattr(self.security_repo, "snapshot"):
+            return self.security_repo.snapshot()
         custom = self.security_repo.get_all_custom_rules() if self.security_repo else []
         builtin = self.security_repo.get_all_builtin_rules() if self.security_repo else []
-        return self.scanner.scan(body, phase, self.settings, custom, builtin)
+        return SecuritySnapshot(self.settings, tuple(custom), tuple(builtin))
+
+    def _scan(self, body: str, phase: str, snapshot=None):
+        snapshot = snapshot or self._snapshot()
+        return self.scanner.scan(body, phase, snapshot.settings, snapshot.custom_rules, snapshot.builtin_rules)
 
     def forward(self, body: str | bytes, headers: dict, client_ip: str | None = None, auth_context: AuthContext | None = None, endpoint: str = "/v1/chat/completions", request_id: str | None = None, content_type: str | None = None):
+        from app.domain.security_policy import SecuritySnapshot
+        try:
+            snapshot = self._snapshot()
+        except Exception:  # noqa: BLE001 - policy failures respect fail-closed
+            if self.settings.fail_closed:
+                return 503, {"error": {"message": "Security policy unavailable", "code": "security_scan_failed"}}
+            snapshot = SecuritySnapshot(self.settings)
+        settings = snapshot.settings
         start = time.time()
         request_id = request_id or str(uuid.uuid4()).replace("-", "")
         is_multipart = isinstance(body, (bytes, bytearray)) and (content_type or "").lower().startswith("multipart/")
         raw_body = body if is_multipart and isinstance(body, bytes) else None
+        text_parts = []
         if is_multipart:
-            from app.domain.multipart import multipart_fields
-
-            fields = multipart_fields(content_type, raw_body or b"")
+            from app.domain.multipart import multipart_text_parts
+            try:
+                text_parts = multipart_text_parts(content_type, raw_body or b"")
+                if sum(part.name == "model" for part in text_parts) > 1:
+                    raise ValueError("Duplicate model field")
+                fields = {part.name: part.value for part in text_parts}
+            except (ValueError, UnicodeError, LookupError):
+                return 400, {"error": {"message": "Invalid multipart body", "code": "invalid_body"}}
             body = json.dumps(fields, ensure_ascii=False)
         body_text = body if isinstance(body, str) else body.decode("utf-8", "replace")
         protocol = ProtocolDetector.detect_endpoint(headers, body_text, endpoint)
@@ -240,14 +269,6 @@ class ProxyService:
             return 400, {"error": {"message": "JSON body must be an object", "type": "invalid_request_error", "code": "invalid_body"}}
         if "model" in body_json and (not isinstance(body_json["model"], str) or not body_json["model"].strip()):
             return 400, {"error": {"message": "Model must be a non-empty string", "type": "invalid_request_error", "code": "invalid_model"}}
-        if protocol == "responses":
-            from app.domain.responses_converter import ResponsesConverter
-            converted = ResponsesConverter.responses_to_openai(body_text)
-            body_json, body_text = json.loads(converted), converted
-        elif protocol == "completions":
-            from app.domain.completion_converter import CompletionConverter
-            converted = CompletionConverter.completions_to_chat(body_text)
-            body_json, body_text = json.loads(converted), converted
         model = body_json.get("model")
         if not model:
             return 400, {"error": {"message": "Missing 'model' field", "type": "invalid_request_error", "code": "missing_model"}}
@@ -258,12 +279,13 @@ class ProxyService:
                 and hasattr(self.gateway, "_candidates")
                 and not self.gateway._candidates(model, set(), context.allowed_channels)):
             return 403, {"error": {"message": "Channel is not allowed for this API key", "type": "permission_error", "code": "channel_forbidden"}}
+        scan_body = json.dumps([{p.name: p.value} for p in text_parts], ensure_ascii=False) if is_multipart else body_text
         scan_result = None
-        if self.settings.enabled:
+        if settings.enabled:
             try:
-                scan_result = self._scan(body_text, "request")
+                scan_result = self._scan(scan_body, "request", snapshot)
             except Exception:
-                if self.settings.fail_closed:
+                if settings.fail_closed:
                     return 503, {"error": {"message": "Security scan unavailable", "type": "security_error", "code": "security_scan_failed"}}
                 logger.exception("Request security scan failed")
             if scan_result and scan_result.blocked:
@@ -271,8 +293,23 @@ class ProxyService:
                 self._record_log(self._build_log(log_id, None, model, protocol, bool(body_json.get("stream")), 403, scan_result, client_ip, body_text, None, "Request blocked by security policy", request_id=request_id, endpoint=endpoint))
                 return 403, {"error": {"message": "Request blocked by security policy", "type": "security_error", "code": "security_blocked"}}
             if scan_result and scan_result.sanitized and getattr(scan_result, "sanitized_body", None):
-                body_text = scan_result.sanitized_body
-                body_json = json.loads(body_text)
+                if is_multipart:
+                    from app.domain.multipart import replace_text_parts
+                    values = json.loads(scan_result.sanitized_body)
+                    raw_body = replace_text_parts(raw_body or b"", text_parts, [row[p.name] for p, row in zip(text_parts, values, strict=True)])
+                    body_json = {p.name: row[p.name] for p, row in zip(text_parts, values, strict=True)}
+                    body_text = json.dumps(body_json, ensure_ascii=False)
+                else:
+                    body_text = scan_result.sanitized_body
+                    body_json = json.loads(body_text)
+        if protocol == "responses":
+            from app.domain.responses_converter import ResponsesConverter
+            converted = ResponsesConverter.responses_to_openai(body_text)
+            body_json, body_text = json.loads(converted), converted
+        elif protocol == "completions":
+            from app.domain.completion_converter import CompletionConverter
+            converted = CompletionConverter.completions_to_chat(body_text)
+            body_json, body_text = json.loads(converted), converted
         execution_id = uuid.uuid4().hex
         reservation_id = None
         if context and context.is_api_key and self.quota_repo:
@@ -322,9 +359,9 @@ class ProxyService:
             if recorder:
                 recorder.finish("error", 502, int((time.time() - start) * 1000))
             raise
-        if self.settings.enabled and self.settings.scan_response and proxy_response.body:
+        if settings.enabled and settings.scan_response and proxy_response.body:
             try:
-                response_scan = self._scan(proxy_response.body, "response")
+                response_scan = self._scan(proxy_response.body, "response", snapshot)
                 if response_scan.sanitized and response_scan.sanitized_body is not None:
                     proxy_response.body = response_scan.sanitized_body
                     if proxy_response.raw_body is not None:
@@ -337,8 +374,14 @@ class ProxyService:
                     scan_result = response_scan
                 else:
                     scan_result.findings.extend(response_scan.findings)
+                    scan_result.sanitized = scan_result.sanitized or response_scan.sanitized
+                    scan_result.blocked = scan_result.blocked or response_scan.blocked
+                    scan_result.blocked_reason = response_scan.blocked_reason or scan_result.blocked_reason
+                    from app.types.enums import RiskLevel
+                    scan_result.risk_score = min(100, scan_result.risk_score + response_scan.risk_score)
+                    scan_result.risk_level = RiskLevel.from_score(scan_result.risk_score)
             except Exception:  # noqa: BLE001 - response scanning is fail-closed when configured
-                if self.settings.fail_closed:
+                if settings.fail_closed:
                     proxy_response.success = False
                     proxy_response.status_code = 502
                     proxy_response.error_message = "Response security scan failed"
@@ -370,6 +413,14 @@ class ProxyService:
         return proxy_response.status_code or 502, {"error": {"message": proxy_response.error_message or "upstream_error", "type": "upstream_error", "code": "upstream_error"}}
 
     async def forward_stream_async(self, body: str, headers: dict, client_ip: str | None = None, auth_context: AuthContext | None = None, endpoint: str = "/v1/chat/completions", request_id: str | None = None):
+        from app.domain.security_policy import SecuritySnapshot
+        try:
+            snapshot = await run_in_threadpool(self._snapshot)
+        except Exception:  # noqa: BLE001 - policy failures respect fail-closed
+            if self.settings.fail_closed:
+                yield 'data: {"error":{"message":"Security policy unavailable","code":"security_scan_failed"}}\n\n'; return
+            snapshot = SecuritySnapshot(self.settings)
+        settings = snapshot.settings
         request_id = request_id or str(uuid.uuid4()).replace("-", "")
         protocol = ProtocolDetector.detect_endpoint(headers, body, endpoint)
         try:
@@ -380,8 +431,33 @@ class ProxyService:
             yield 'data: {"error":{"message":"Expected an object with a string model","type":"invalid_request_error"}}\n\n'; return
         # Response policies require a bounded semantic stream scanner, including
         # cross-event matches. Until available, reject before any upstream call.
-        if self.settings.enabled and self.settings.scan_response:
+        if settings.enabled and settings.scan_response:
             yield 'data: {"error":{"message":"Response scanning is not supported for streaming","type":"invalid_request_error","code":"stream_response_policy_unsupported"}}\n\n'; return
+        model = body_json.get("model")
+        if not model:
+            yield 'data: {"error":{"message":"Missing model field","type":"invalid_request_error"}}\n\n'; return
+        context = auth_context
+        if context and context.is_api_key and context.allowed_models and model not in context.allowed_models:
+            yield 'data: {"error":{"message":"Model is not allowed for this API key","type":"permission_error","code":"model_forbidden"}}\n\n'; return
+        if context and context.is_api_key and context.allowed_channels and hasattr(self.gateway, "_candidates"):
+            candidates = await run_in_threadpool(self.gateway._candidates, model, set(), context.allowed_channels)
+            if not candidates:
+                yield 'data: {"error":{"message":"Channel is not allowed for this API key","type":"permission_error","code":"channel_forbidden"}}\n\n'; return
+        scan_result = None
+        if settings.enabled:
+            try:
+                scan_result = await run_in_threadpool(self._scan, body, "request", snapshot)
+            except Exception:
+                if settings.fail_closed:
+                    yield 'data: {"error":{"message":"Security scan unavailable","type":"security_error","code":"security_scan_failed"}}\n\n'; return
+                logger.exception("Streaming request security scan failed")
+            if scan_result and scan_result.blocked:
+                entry = self._build_log(uuid.uuid4().hex, context.principal_id if context else None, model, protocol, True, 403, scan_result, client_ip, body, None, "Request blocked by security policy", request_id=request_id, endpoint=endpoint)
+                await run_in_threadpool(self._record_log, entry)
+                yield 'data: {"error":{"message":"Request blocked by security policy","type":"security_error","code":"security_blocked"}}\n\n'; return
+            if scan_result and scan_result.sanitized and scan_result.sanitized_body:
+                body = scan_result.sanitized_body
+                body_json = json.loads(body)
         if protocol == "responses":
             from app.domain.responses_converter import ResponsesConverter
             try:
@@ -396,29 +472,6 @@ class ProxyService:
                 body_json, body = json.loads(converted), converted
             except (ValueError, TypeError, json.JSONDecodeError):
                 yield 'data: {"error":{"message":"Invalid Completions request","type":"invalid_request_error"}}\n\n'; return
-        model = body_json.get("model")
-        if not model:
-            yield 'data: {"error":{"message":"Missing model field","type":"invalid_request_error"}}\n\n'; return
-        context = auth_context
-        if context and context.is_api_key and context.allowed_models and model not in context.allowed_models:
-            yield 'data: {"error":{"message":"Model is not allowed for this API key","type":"permission_error","code":"model_forbidden"}}\n\n'; return
-        if context and context.is_api_key and context.allowed_channels and hasattr(self.gateway, "_candidates"):
-            candidates = await run_in_threadpool(self.gateway._candidates, model, set(), context.allowed_channels)
-            if not candidates:
-                yield 'data: {"error":{"message":"Channel is not allowed for this API key","type":"permission_error","code":"channel_forbidden"}}\n\n'; return
-        scan_result = None
-        if self.settings.enabled:
-            try:
-                scan_result = await run_in_threadpool(self._scan, body, "request")
-            except Exception:
-                if self.settings.fail_closed:
-                    yield 'data: {"error":{"message":"Security scan unavailable","type":"security_error","code":"security_scan_failed"}}\n\n'; return
-                logger.exception("Streaming request security scan failed")
-            if scan_result and scan_result.blocked:
-                yield 'data: {"error":{"message":"Request blocked by security policy","type":"security_error","code":"security_blocked"}}\n\n'; return
-            if scan_result and scan_result.sanitized and scan_result.sanitized_body:
-                body = scan_result.sanitized_body
-                body_json = json.loads(body)
         execution_id = uuid.uuid4().hex
         reservation_id = None
         if context and context.is_api_key and self.quota_repo:
@@ -562,6 +615,16 @@ class ProxyService:
         risk_level = "Clean"
         risk_score = 0
         risk_summary = None
+        from app.domain.security_redaction import SecurityLimitError, redact_body
+        def safe_log_body(value):
+            if not value:
+                return value
+            try:
+                return redact_body(value)[0]
+            except (SecurityLimitError, RecursionError):
+                return "[OMITTED: security inspection limit]"
+        request_body = safe_log_body(request_body)
+        response_choices = safe_log_body(response_choices)
         security_action = "Allow"
         sanitized = False
         blocked_reason = None

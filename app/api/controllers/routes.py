@@ -710,6 +710,19 @@ async def agent_chat(agent_id: str, request: AgentChatRequestDTO):
 security_router = APIRouter(prefix="/api/v1/security")
 
 
+@security_router.get("/settings")
+async def get_security_settings():
+    return _success(get_container().security_service.get_settings())
+
+
+@security_router.put("/settings")
+async def update_security_settings(body: dict):
+    try:
+        return _success(get_container().security_service.update_settings(body))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @security_router.get("/rules/builtin")
 async def list_builtin_rules():
     return _success(get_container().security_service.list_builtin_rules())

@@ -9,8 +9,9 @@ from app.infrastructure.repositories.security_repo import SecurityRepository
 
 
 def _repository(monkeypatch):
-    engine = create_engine("sqlite://", poolclass=StaticPool)
+    engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
     with engine.begin() as db:
+        db.execute(text("CREATE TABLE security_settings (id TEXT PRIMARY KEY, settings TEXT, updated_at TEXT)"))
         db.execute(text("""CREATE TABLE security_findings (
             id TEXT PRIMARY KEY, log_id TEXT, phase TEXT, category TEXT, rule_id TEXT,
             severity TEXT, title TEXT, description TEXT, location TEXT, evidence_masked TEXT,

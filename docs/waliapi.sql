@@ -386,3 +386,9 @@ CREATE TABLE IF NOT EXISTS `gateway_attempts` (
   `created_at` VARCHAR(32) NOT NULL,
   KEY `idx_attempt_request` (`request_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS security_settings (
+    id VARCHAR(32) NOT NULL PRIMARY KEY,
+    settings TEXT NOT NULL,
+    updated_at VARCHAR(32) NOT NULL
+);

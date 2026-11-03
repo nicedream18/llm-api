@@ -31,7 +31,7 @@ def test_lifespan_applies_migrations_starts_worker_and_closes_resources(monkeypa
         async def aclose(self):
             calls.append("gateway-close")
 
-    container = SimpleNamespace(security_repo=SimpleNamespace(seed_builtin_rules=lambda: calls.append("seed")), quota_recovery_worker=Worker(), kb_worker=Worker(), provider_sync_worker=Worker(), operations_worker=Worker(), gateway=Gateway())
+    container = SimpleNamespace(security_repo=SimpleNamespace(seed_builtin_rules=lambda: calls.append("seed"), initialize_settings=lambda: calls.append("settings")), quota_recovery_worker=Worker(), kb_worker=Worker(), provider_sync_worker=Worker(), operations_worker=Worker(), gateway=Gateway())
     monkeypatch.setattr(main, "apply_migrations", lambda: calls.append("migrations"))
     monkeypatch.setattr(main, "get_container", lambda: container)
 
@@ -43,7 +43,7 @@ def test_lifespan_applies_migrations_starts_worker_and_closes_resources(monkeypa
 
     asyncio.run(run_lifespan())
 
-    assert calls == ["migrations", "seed", "worker-start", "worker-start", "worker-start", "worker-start", "serving", "worker-stop", "worker-stop", "worker-stop", "worker-stop", "gateway-close"]
+    assert calls == ["migrations", "seed", "settings", "worker-start", "worker-start", "worker-start", "worker-start", "serving", "worker-stop", "worker-stop", "worker-stop", "worker-stop", "gateway-close"]
 
 
 def test_lifespan_keeps_shutdown_alive_if_gateway_close_fails(monkeypatch):
@@ -62,7 +62,7 @@ def test_lifespan_keeps_shutdown_alive_if_gateway_close_fails(monkeypatch):
 
     monkeypatch.setattr(main, "apply_migrations", lambda: None)
     monkeypatch.setattr(
-        main, "get_container", lambda: SimpleNamespace(security_repo=SimpleNamespace(seed_builtin_rules=lambda: None), quota_recovery_worker=Worker(), kb_worker=Worker(), provider_sync_worker=Worker(), operations_worker=Worker(), gateway=Gateway())
+        main, "get_container", lambda: SimpleNamespace(security_repo=SimpleNamespace(seed_builtin_rules=lambda: None, initialize_settings=lambda: None), quota_recovery_worker=Worker(), kb_worker=Worker(), provider_sync_worker=Worker(), operations_worker=Worker(), gateway=Gateway())
     )
 
     async def run_lifespan():
