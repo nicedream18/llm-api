@@ -38,3 +38,15 @@
 - DevBugKB 已搜索依赖兼容、TS1005/TS1381、Chrome 截图超时。命中的 BUG-20261103-001、BUG-20261031-003、BUG-20261031-007、BUG-20261031-002 和 BUG-20261031-006 均不直接适用，没有照搬或提交知识库。
 
 参考资料：[Linear](https://linear.app/)、[Ant Design Vite 集成](https://ant.design/docs/react/use-with-vite/)、[Ant Design 主题](https://ant.design/docs/react/customize-theme/)。
+
+## 完整服务启动时的会话兼容修复
+
+在本机现有 `waliapi` 数据库启动完整服务时，实际登录后的 Cookie 请求复现 MySQL 1267：`admin_sessions.username` 为 utf8mb4_unicode_ci，`admin_users.username` 为 utf8mb4_0900_ai_ci。DevBugKB 检索命中并阅读 BUG-20261102-001（unresolved），核对本机列定义及 MySQL 官方排序规则优先级后，仅在 MySQL 会话关联比较中显式统一排序规则；SQLite 保持原查询。不修改历史迁移、业务表排序规则或认证校验。
+
+新增真实 MySQL HTTP 回归覆盖两种相反的排序规则组合，以及旧 Cookie、登录、有效会话、退出和撤销后的访问。修复前 2 项失败，修复后连同会话、启动与首页测试共 17 项通过。实际服务也已验证 Cookie 登录、安全策略、规则及渠道接口，测试会话均已退出。
+
+启动前已将原数据库备份到本地忽略目录 `data/runtime/`（仅所有者可读），应用 027–029 待执行迁移。新 worktree 通过忽略的本地链接复用原 `.env` 与已有知识索引。后台进程信息在 `data/runtime/server.json`，日志在 `data/runtime/server.log`；失败复现与修复后的测试输出均保留。
+
+本次全量本机检查 715 passed / 1 failed / 19 skipped，覆盖率 89.79%；失败仍是既有本机进程身份校验，MySQL 两项专项单独实际运行并通过。Ruff、Mypy、compileall、git diff --check 通过。未修改或推送知识库。
+
+参考：[MySQL Collation Coercibility](https://dev.mysql.com/doc/refman/8.4/en/charset-collation-coercibility.html)。
