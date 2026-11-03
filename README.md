@@ -6,6 +6,12 @@
 
 ---
 
+## macOS 桌面版（Rust 界面迁移）
+
+双击项目根目录的 [start-desktop.command](start-desktop.command) 启动原生桌面窗口。界面直接复用 Rust 项目的 React 页面、Tailwind 样式和图片，后端继续使用本项目的 Python 服务与 MySQL 数据。
+
+依赖安装、前端构建、生成本机 App 启动包以及功能差异见 [桌面版说明](desktop/README.md)。默认桌面服务端口为 9910。
+
 ## 📖 目录
 
 1. [项目简介](#项目简介)

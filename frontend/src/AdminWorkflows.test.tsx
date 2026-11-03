@@ -101,7 +101,8 @@ it("filters access keys and closes its editor drawer with Escape", async () => {
 });
 
 it("shows a list error separately from loading and retries without losing the page", async () => {
-  const fetcher = vi.fn().mockResolvedValueOnce(payload(null, 403)).mockResolvedValue(payload([]));
+  let keyReads = 0;
+  const fetcher = vi.fn((path: string) => Promise.resolve(path === "/api/v1/api-keys" && ++keyReads === 1 ? payload(null, 403) : payload([])));
   await mount(<ApiKeyManager onError={onError} />, fetcher);
   expect(host.querySelector('[role="alert"]')?.textContent).toContain("加载失败");
   expect(host.textContent).not.toContain("正在加载访问密钥");
@@ -111,13 +112,15 @@ it("shows a list error separately from loading and retries without losing the pa
 });
 
 it("filters route groups and saves through the route editor drawer", async () => {
-  const row = { id: "team", updated_at: "now", enabled: true, strategy: "weighted", channels: ["c1"], api_key_ids: [], models: ["gpt-4o"], endpoints: [], max_concurrent: 10, retry_budget: 2, unknown_quota: "allow" };
-  const fetcher = vi.fn((path: string, init?: RequestInit) => Promise.resolve(payload(path.endsWith("/groups") ? [row] : init?.method === "PUT" ? {} : { candidates: [], reason: "no_capacity" })));
+  const row = { id: "team", updated_at: "now", enabled: true, strategy: "weighted", channels: ["c"], api_key_ids: [], models: ["gpt-4o"], endpoints: [], max_concurrent: 10, retry_budget: 2, unknown_quota: "allow" };
+  const fetcher = vi.fn((path: string, init?: RequestInit) => Promise.resolve(path === "/api/v1/routing/groups" ? payload([row]) : path === "/api/v1/channels" ? payload([channel]) : path === "/api/v1/api-keys" ? payload([]) : init?.method === "PUT" ? payload({}) : payload({ candidates: [], reason: "no_capacity" })));
   await mount(<RoutingManager onError={onError} />, fetcher);
   await act(async () => button("编辑").click());
   expect(host.querySelector('[role="dialog"][aria-labelledby="route-drawer-title"]')).not.toBeNull();
+  expect(host.textContent).toContain("Primary");
   await submit("form.route-editor-form");
   expect(fetcher).toHaveBeenCalledWith("/api/v1/routing/groups/team", expect.objectContaining({ method: "PUT" }));
+  expect(JSON.parse((fetcher.mock.calls.find(call => (call[1] as RequestInit)?.method === "PUT")![1] as RequestInit).body as string).channels).toEqual(["c"]);
   expect(host.querySelector('[role="dialog"][aria-labelledby="route-drawer-title"]')).toBeNull();
 });
 
@@ -158,7 +161,7 @@ it("does not reset quota or rotate an existing access key on ordinary edits", as
 
 it("edits server route rows without server metadata and previews without mutation", async () => {
   const row = { id: "team", updated_at: "now", enabled: true, strategy: "weighted", channels: [], api_key_ids: [], models: [], endpoints: [], max_concurrent: 10, retry_budget: 2, unknown_quota: "allow" };
-  const fetcher = vi.fn((path: string, _init?: RequestInit) => Promise.resolve(payload(path.endsWith("/groups") ? [row] : { candidates: [], reason: "no_capacity" })));
+  const fetcher = vi.fn((path: string, _init?: RequestInit) => Promise.resolve(path === "/api/v1/routing/groups" ? payload([row]) : path === "/api/v1/channels" || path === "/api/v1/api-keys" ? payload([]) : payload({ candidates: [], reason: "no_capacity" })));
   await mount(<RoutingManager onError={onError} />, fetcher);
   await act(async () => labelledButton("编辑路由 team").click()); await submit("form.route-editor-form");
   const body = JSON.parse((fetcher.mock.calls.find(call => (call[1] as RequestInit)?.method === "PUT")![1] as RequestInit).body as string);

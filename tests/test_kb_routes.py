@@ -55,6 +55,7 @@ def test_kb_routes_dispatch_document_search_task_index_and_source_operations(mon
     )
     assert upload.status_code == 200
     client.get(f"{base}/documents")
+    client.post(f"{base}/documents/doc-1/retry")
     client.delete(f"{base}/documents/doc-1")
     client.post(f"{base}/ask", json={"question": "where?"})
     client.post(f"{base}/deep-research", json={"question": "why?"})
@@ -76,7 +77,7 @@ def test_kb_routes_dispatch_document_search_task_index_and_source_operations(mon
     client.delete(f"{base}/sources/source-1")
 
     calls = {name: args for name, args in service.calls}
-    assert len(service.calls) == 27
+    assert len(service.calls) == 28
     assert calls["ask"][0] == "kb-1" and calls["ask"][1].kb_id == "kb-1"
     assert calls["deep_research"][0] == "kb-1" and calls["deep_research"][1].kb_id == "kb-1"
     assert calls["search"][0] == "kb-1" and calls["search"][1].kb_id == "kb-1"
@@ -87,6 +88,7 @@ def test_kb_routes_dispatch_document_search_task_index_and_source_operations(mon
 
     assert base64.b64decode(uploaded.content) == b"hello world"
     assert calls["get_task"] == ("kb-1", "task-1")
+    assert calls["retry_doc"] == ("kb-1", "doc-1")
     assert calls["get_tags"] == ("kb-1", 4)
     assert calls["refresh_tags"] == ("kb-1", 6)
     assert calls["create_source"] == ("kb-1", {"source_type": "local_dir", "dir_path": "docs"})

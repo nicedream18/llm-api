@@ -55,10 +55,15 @@ class AdminSessionRepository:
     def verify(self, token):
         if not token or len(token) > 512:
             return None
+        username_join = "s.username = u.username"
+        if self.engine.dialect.name == "mysql":
+            # Existing admin tables can use a different utf8mb4 collation
+            # from migration-created sessions; make the comparison explicit.
+            username_join = "s.username COLLATE utf8mb4_unicode_ci = u.username COLLATE utf8mb4_unicode_ci"
         with self.engine.connect() as db:
-            row = db.execute(text("""SELECT s.username,s.credential_hash,u.password_hash,u.status FROM admin_sessions s
-                JOIN admin_users u ON s.username=u.username WHERE token_hash=:hash
-                AND revoked_at IS NULL AND expires_at>:now"""), {"hash": digest(token), "now": int(time.time())}).mappings().first()
+            row = db.execute(text(f"""SELECT s.username,s.credential_hash,u.password_hash,u.status FROM admin_sessions s
+                JOIN admin_users u ON {username_join} WHERE s.token_hash=:hash
+                AND s.revoked_at IS NULL AND s.expires_at>:now"""), {"hash": digest(token), "now": int(time.time())}).mappings().first()
             return row["username"] if row and row["status"] == 1 and secrets.compare_digest(row["credential_hash"], digest(row["password_hash"])) else None
 
     def revoke_token(self, token):

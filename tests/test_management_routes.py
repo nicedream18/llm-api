@@ -18,6 +18,11 @@ class RecordingService:
                 return SimpleNamespace(id=args[0], quota_limit=100, quota_used=25)
             return {"operation": name}
 
+        if name in {"test_channel", "test_draft_channel", "sync_models", "test_channel_api_key"}:
+            async def async_call(*args, **kwargs):
+                return call(*args, **kwargs)
+            return async_call
+
         return call
 
 
@@ -124,8 +129,10 @@ def test_management_routes_dispatch_admin_operations_and_preserve_static_paths(m
     client.post("/api/v1/agents/session?agent_id=agent-1&user_id=user-1")
     client.post("/api/v1/agents/agent-1/chat", json={"message": "hi"})
 
+    client.get("/api/v1/security/settings")
+    client.put("/api/v1/security/settings", json={"mode": "audit"})
     client.get("/api/v1/security/rules/builtin")
-    client.put("/api/v1/security/rules/builtin/rule-1", json={"enabled": 0, "severity": "low"})
+    client.put("/api/v1/security/rules/builtin/rule-1", json={"enabled": 0, "severity": "low", "name": "Rule"})
     client.get("/api/v1/security/rules/custom")
     client.post("/api/v1/security/rules/custom", json={"name": "custom"})
     client.put("/api/v1/security/rules/custom/rule-1", json={"name": "custom"})
@@ -165,7 +172,8 @@ def test_management_routes_dispatch_admin_operations_and_preserve_static_paths(m
     assert services["dashboard"].calls[-2][0] == "delete_before"
     assert services["dashboard"].calls[-1][0] == "delete_by_channel"
     assert services["agent"].calls[-1][0] == "chat"
-    assert services["security"].calls[1][1] == ("rule-1", 0, "low")
+    assert services["security"].calls[3][1] == ("rule-1", 0, "low")
+    assert services["security"].calls[3][2] == {"name": "Rule"}
     assert any(call[0] == "invoke" for call in services["software"].calls)
     assert services["audit"].calls[0][0] == "list"
     assert {call[0] for call in services["channel"].calls} == {
@@ -186,7 +194,7 @@ def test_management_routes_dispatch_admin_operations_and_preserve_static_paths(m
         "create_session", "chat",
     }
     assert {call[0] for call in services["security"].calls} == {
-        "list_builtin_rules", "update_builtin_rule", "list_custom_rules",
+        "get_settings", "update_settings", "list_builtin_rules", "update_builtin_rule", "list_custom_rules",
         "create_custom_rule", "update_custom_rule", "delete_custom_rule",
         "list_findings", "get_findings_by_log_id",
     }

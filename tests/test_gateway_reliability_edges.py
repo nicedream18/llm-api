@@ -1,5 +1,3 @@
-import asyncio
-
 import httpx
 import pytest
 
@@ -170,7 +168,8 @@ def test_gateway_token_extraction_and_response_header_filtering():
     }
 
 
-def test_sync_model_discovery_deduplicates_and_rejects_invalid_payloads():
+@pytest.mark.asyncio
+async def test_sync_model_discovery_deduplicates_and_rejects_invalid_payloads():
     channel = ChannelEntity(id="c1", name="channel", base_url="https://upstream.example", models=[])
     service = GatewayService(StaticDispatcher(), None)
 
@@ -179,9 +178,9 @@ def test_sync_model_discovery_deduplicates_and_rejects_invalid_payloads():
 
     service.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
-        assert service.sync_models(channel) == ["model-a", "model-b"]
+        assert await service.sync_models(channel) == ["model-a", "model-b"]
     finally:
-        asyncio.run(service.aclose())
+        await service.aclose()
 
     async def invalid_handler(request):
         return httpx.Response(200, json={"data": "not-a-list"}, request=request)
@@ -189,6 +188,6 @@ def test_sync_model_discovery_deduplicates_and_rejects_invalid_payloads():
     service.client = httpx.AsyncClient(transport=httpx.MockTransport(invalid_handler))
     try:
         with pytest.raises(TypeError, match="not a list"):
-            service.sync_models(channel)
+            await service.sync_models(channel)
     finally:
-        asyncio.run(service.aclose())
+        await service.aclose()

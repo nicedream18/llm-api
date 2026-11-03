@@ -26,6 +26,7 @@ def _repository(monkeypatch):
             severity TEXT, pattern TEXT, action TEXT, enabled INTEGER,
             created_at TEXT, updated_at TEXT
         )"""))
+        db.execute(text("CREATE TABLE security_settings (id TEXT PRIMARY KEY, settings TEXT, updated_at TEXT)"))
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
 
     @contextmanager
@@ -67,8 +68,10 @@ def test_security_findings_and_rules_persist_and_update(monkeypatch):
     assert (builtin.id, builtin.name, builtin.enabled) == ("builtin-1", "Credential", 1)
     assert repo.update_builtin_rule("builtin-1", None, None) is False
     assert repo.update_builtin_rule("builtin-1", 0, "critical") is True
+    assert repo.update_builtin_rule("builtin-1", None, None, name="Company credential", description="Company policy") is True
     assert repo.update_builtin_rule("missing", 1, None) is False
-    assert repo.get_all_builtin_rules()[0].severity == "critical"
+    saved_builtin = repo.get_all_builtin_rules()[0]
+    assert (saved_builtin.severity, saved_builtin.name, saved_builtin.description) == ("critical", "Company credential", "Company policy")
 
     custom = repo.create_custom_rule(SecurityCustomRuleEntity(
         category="keyword", name="custom", pattern="private", severity="medium",
@@ -83,4 +86,16 @@ def test_security_findings_and_rules_persist_and_update(monkeypatch):
     assert repo.update_custom_rule(SecurityCustomRuleEntity(id="missing", name="none")) is False
     assert repo.delete_custom_rule(custom.id) is True
     assert repo.delete_custom_rule(custom.id) is False
+    engine.dispose()
+
+
+def test_security_settings_are_persisted_and_validated(monkeypatch):
+    repo, engine = _repository(monkeypatch)
+    assert repo.get_settings().mode == "audit"
+    updated = repo.update_settings({"mode": "block", "scan_response": True})
+    assert updated.mode == "block" and updated.scan_response is True
+    assert repo.get_settings().mode == "block"
+    import pytest
+    with pytest.raises(ValueError):
+        repo.update_settings({"unknown": True})
     engine.dispose()

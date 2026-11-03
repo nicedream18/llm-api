@@ -1,12 +1,12 @@
-import asyncio
-
 import httpx
+import pytest
 
 from app.domain.entities import ChannelEntity
 from app.domain.gateway import GatewayService
 
 
-def test_gateway_sync_models_reads_openai_models_endpoint():
+@pytest.mark.asyncio
+async def test_gateway_sync_models_reads_openai_models_endpoint():
     channel = ChannelEntity(type="openai", base_url="https://provider.example/v1", api_key="secret")
     calls = []
 
@@ -17,13 +17,14 @@ def test_gateway_sync_models_reads_openai_models_endpoint():
     service = GatewayService(None, None)
     service.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
-        assert service.sync_models(channel) == ["gpt-x", "embed-x"]
+        assert await service.sync_models(channel) == ["gpt-x", "embed-x"]
     finally:
-        asyncio.run(service.aclose())
+        await service.aclose()
     assert calls == [("/v1/models", "Bearer secret")]
 
 
-def test_gateway_sync_models_accepts_plain_list_payload():
+@pytest.mark.asyncio
+async def test_gateway_sync_models_accepts_plain_list_payload():
     channel = ChannelEntity(type="openai", base_url="https://provider.example")
 
     async def handler(request):
@@ -32,6 +33,6 @@ def test_gateway_sync_models_accepts_plain_list_payload():
     service = GatewayService(None, None)
     service.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
-        assert service.sync_models(channel) == ["alpha", "beta"]
+        assert await service.sync_models(channel) == ["alpha", "beta"]
     finally:
-        asyncio.run(service.aclose())
+        await service.aclose()

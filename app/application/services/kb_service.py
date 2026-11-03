@@ -134,7 +134,7 @@ class KbService:
             status="pending", progress=0, total_items=0, done_items=0, created_at=now,
         )
         self.repo.save_task(task, {"filename": filename, "content": dto.content, "file_type": file_type, "source_type": dto.source_type})
-        return self._to_doc_dto(entity)
+        return self._to_doc_dto(entity, task)
 
     def run_import_pipeline(self, kb_id, doc_id, task_id, dto, *, lease):
         lease.check()
@@ -186,7 +186,23 @@ class KbService:
             raise
 
     def list_docs(self, kb_id):
-        return [self._to_doc_dto(e) for e in self.repo.find_doc_by_kb_id(kb_id)]
+        documents = self.repo.find_doc_by_kb_id(kb_id)
+        task_loader = getattr(self.repo, "find_latest_tasks_by_doc_ids", None)
+        tasks = task_loader(kb_id, [doc.id for doc in documents if doc.id]) if task_loader else {}
+        return [self._to_doc_dto(doc, tasks.get(doc.id)) for doc in documents]
+
+    def retry_doc(self, kb_id, doc_id):
+        document = self.repo.find_doc_by_id(doc_id)
+        if not document or document.kb_id != kb_id or document.status != "error":
+            return None
+        retry = getattr(self.repo, "retry_failed_import_task", None)
+        task = retry(kb_id, doc_id) if retry else None
+        if not task:
+            return None
+        document.status = "pending"
+        document.error_message = None
+        document.updated_at = _now()
+        return self._to_doc_dto(document, task)
 
     def delete_doc(self, kb_id, doc_id):
         document = self.repo.find_doc_by_id(doc_id)
@@ -420,11 +436,15 @@ class KbService:
                                   embedding_channel_id=e.embedding_channel_id, embedding_dim=e.embedding_dim,
                                   created_at=e.created_at, updated_at=e.updated_at)
 
-    def _to_doc_dto(self, e):
+    def _to_doc_dto(self, e, task=None):
         if not e: return None
         return KbDocumentDTO(id=e.id, kb_id=e.kb_id, name=e.name, source_type=e.source_type,
                              source_path=e.source_path, status=e.status, chunk_count=e.chunk_count,
                              total_tokens=e.total_tokens, error_message=e.error_message,
+                             task_id=task.id if task else None, task_status=task.status if task else None,
+                             task_progress=task.progress if task else 0, task_done_items=task.done_items if task else 0,
+                             task_total_items=task.total_items if task else 0,
+                             task_error_message=task.error_message if task else None,
                              created_at=e.created_at, updated_at=e.updated_at)
 
     def _to_ask_response(self, entity):

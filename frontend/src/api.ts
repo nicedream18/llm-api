@@ -30,6 +30,27 @@ export async function upload<T>(path: string, file: File): Promise<T> {
   return read<T>(response, path);
 }
 
+export function uploadWithProgress<T>(path: string, file: File, onProgress: (percent: number | null) => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const body = new FormData();
+    body.append("file", file);
+    xhr.open("POST", path);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader("Accept", "application/json");
+    xhr.upload.onprogress = event => onProgress(event.lengthComputable && event.total > 0 ? Math.round(event.loaded * 100 / event.total) : null);
+    xhr.onerror = () => reject(new Error("网络连接失败，请检查连接后重试。"));
+    xhr.onabort = () => reject(new Error("上传已取消。"));
+    xhr.onload = async () => {
+      try {
+        const response = new Response(xhr.responseText, { status: xhr.status });
+        resolve(await read<T>(response, path));
+      } catch (error) { reject(error); }
+    };
+    xhr.send(body);
+  });
+}
+
 export async function uploadRaw<T>(path: string, file: File): Promise<T> {
   const response = await fetch(path, {
     method: "POST", credentials: "include", body: file,

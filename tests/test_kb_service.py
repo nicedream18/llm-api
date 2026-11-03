@@ -148,6 +148,8 @@ def test_upload_doc_creates_pending_document_and_import_task():
     result = service.upload_doc("kb-1", UploadDocDTO(filename="guide.txt", content="hello"))
 
     assert result.status == "pending"
+    assert result.task_status == "pending" and result.task_progress == 0
+    assert result.task_id == next(iter(repo.tasks.values())).id
     assert repo.document.kb_id == "kb-1"
     task = next(iter(repo.tasks.values()))
     assert task.status == "pending"

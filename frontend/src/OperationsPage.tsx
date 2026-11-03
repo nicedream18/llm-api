@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { get, post, put } from "./api";
 import { RequestChart } from "./RequestChart";
+import { EntityPicker, type EntityOption } from "./EntityPicker";
+import type { Channel, Provider } from "./types";
 
 type Bucket = { group: string; requests: number; errors: number; attempts: number; total_tokens: number; unknown_usage: number; unknown_price: number; estimated_usage: number; costs: Record<string, string>; latency_p50: number | null; latency_p95: number | null; latency_p99: number | null; first_token_p95: number | null };
 type Report = { start: string; end: string; timezone: string; group_by: string; items: Bucket[] };
@@ -8,7 +10,7 @@ type UsageEvent = { id: string; request_id: string; kind: string; outcome: strin
 type Alert = { id: string; message: string; severity: string; status: string; last_seen_at: string };
 type Rule = { id: string; enabled: boolean; metric: string; threshold: number; min_samples: number; window_minutes: number; severity: string };
 const dimensions = ["provider", "account_id", "model", "api_key_id", "route_group", "endpoint"];
-const labels: Record<string, string> = { day: "日期", hour: "小时", provider: "供应商", account_id: "账号 ID", model: "模型", api_key_id: "访问密钥 ID", route_group: "路由组", endpoint: "Endpoint" };
+const labels: Record<string, string> = { day: "日期", hour: "小时", provider: "供应商", account_id: "上游账号", model: "模型", api_key_id: "访问密钥", route_group: "路由组", endpoint: "Endpoint" };
 const emptyFilters = Object.fromEntries(dimensions.map(name => [name, ""])) as Record<string, string>;
 
 export function OperationsPage({ onError }: { onError: (message: string) => void }) {
@@ -20,6 +22,9 @@ export function OperationsPage({ onError }: { onError: (message: string) => void
   const [events, setEvents] = useState<UsageEvent[]>([]); const [offset, setOffset] = useState(0); const [total, setTotal] = useState(0);
   const [drillFilters, setDrillFilters] = useState<Record<string, string> | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]); const [rules, setRules] = useState<Rule[]>([]);
+  const [accounts, setAccounts] = useState<Provider[]>([]); const [channels, setChannels] = useState<Channel[]>([]);
+  const [accessKeys, setAccessKeys] = useState<Array<{ id: string; name: string; key?: string | null; status: number }>>([]);
+  const [routeGroups, setRouteGroups] = useState<Array<{ id: string; enabled: boolean }>>([]);
   const [ruleId, setRuleId] = useState("failure-rate"); const [metric, setMetric] = useState("failure_rate"); const [threshold, setThreshold] = useState("0.1");
   const [busy, setBusy] = useState(false); const [message, setMessage] = useState("");
   const [loadError, setLoadError] = useState("");
@@ -27,6 +32,18 @@ export function OperationsPage({ onError }: { onError: (message: string) => void
   const query = useCallback(() => Object.fromEntries(Object.entries({ group_by: groupBy, timezone, ...filters,
     start: start ? new Date(start).toISOString() : "", end: end ? new Date(end).toISOString() : "" }).filter(([, value]) => value !== "")), [groupBy, timezone, filters, start, end]);
   const loadAlerts = useCallback(async () => { const [items, policies] = await Promise.all([get<Alert[]>("/api/v1/operations/alerts"), get<Rule[]>("/api/v1/operations/alerts/rules")]); setAlerts(items); setRules(policies); }, []);
+  const loadReferenceOptions = async () => {
+    try {
+      const [accountRows, channelRows, keys, groups] = await Promise.all([
+        get<Provider[]>("/api/v1/providers"), get<Channel[]>("/api/v1/channels"),
+        get<Array<{ id: string; name: string; key?: string | null; status: number }>>("/api/v1/api-keys"),
+        get<Array<{ id: string; enabled: boolean }>>("/api/v1/routing/groups"),
+      ]);
+      setAccounts(accountRows); setChannels(channelRows); setAccessKeys(keys); setRouteGroups(groups);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "无法加载筛选选项");
+    }
+  };
   const load = async () => {
     const version = ++requestVersion.current;
     setBusy(true); setLoadError(""); setReport(null);
@@ -34,11 +51,26 @@ export function OperationsPage({ onError }: { onError: (message: string) => void
     catch (error) { if (version === requestVersion.current) { const message = error instanceof Error ? error.message : "统计加载失败"; setLoadError(message); onError(message); } }
     finally { if (version === requestVersion.current) setBusy(false); }
   };
-  useEffect(() => { void load(); void loadAlerts().catch(error => onError(error.message)); return () => { requestVersion.current++; }; }, []);
+  useEffect(() => { void load(); void loadAlerts().catch(error => onError(error.message)); void loadReferenceOptions(); return () => { requestVersion.current++; }; }, []);
   const run = async (action: () => Promise<void>) => { setBusy(true); setMessage(""); try { await action(); } catch (error) { onError(error instanceof Error ? error.message : "操作失败"); } finally { setBusy(false); } };
   const drill = async (bucketFilters: Record<string, string>, next = 0) => {
     const data = await post<{ items: UsageEvent[]; total: number }>(`/api/v1/operations/events/query?offset=${next}&limit=25`, bucketFilters);
     setDrillFilters(bucketFilters); setEvents(data.items); setTotal(data.total); setOffset(next);
+  };
+  const accountOptions: EntityOption[] = accounts.map(account => ({ id: account.id, label: account.name, detail: `${account.provider} · ${account.status}` }));
+  const keyOptions: EntityOption[] = accessKeys.map(key => ({ id: key.id, label: key.name, detail: key.status ? "已启用" : "已停用" }));
+  const routeOptions: EntityOption[] = routeGroups.map(group => ({ id: group.id, label: group.id, detail: group.enabled ? "已启用" : "已停用" }));
+  const providerNames = Array.from(new Set([...accounts.map(account => account.provider), ...channels.map(channel => channel.type)])).sort();
+  const groupLabel = (value: string) => report?.group_by === "account_id" ? accounts.find(account => account.id === value)?.name || "不可用账号"
+    : report?.group_by === "api_key_id" ? accessKeys.find(key => key.id === value)?.name || "不可用密钥"
+      : value;
+  const setDimension = (name: string, value: string) => setFilters(current => ({ ...current, [name]: value }));
+  const dimensionFilter = (name: string) => {
+    if (name === "provider") return <label className="field-label">{labels[name]}<select value={filters[name]} onChange={event => setDimension(name, event.target.value)}><option value="">全部供应商</option>{providerNames.map(provider => <option key={provider} value={provider}>{provider}</option>)}</select></label>;
+    if (name === "account_id") return <EntityPicker label={labels[name]} value={filters[name] ? [filters[name]] : []} options={accountOptions} onChange={value => setDimension(name, value[0] || "")} multiple={false} placeholder="搜索上游账号" />;
+    if (name === "api_key_id") return <EntityPicker label={labels[name]} value={filters[name] ? [filters[name]] : []} options={keyOptions} onChange={value => setDimension(name, value[0] || "")} multiple={false} placeholder="搜索访问密钥" />;
+    if (name === "route_group") return <EntityPicker label={labels[name]} value={filters[name] ? [filters[name]] : []} options={routeOptions} onChange={value => setDimension(name, value[0] || "")} multiple={false} placeholder="搜索路由组" />;
+    return <label className="field-label">{labels[name]}<input value={filters[name]} onChange={event => setDimension(name, event.target.value)} placeholder={name === "model" ? "输入完整模型名" : "输入完整请求路径"} /></label>;
   };
   return <section className="management-page operations-page">
     {loadError && <div className="error inline-error" role="alert"><span>统计加载失败：{loadError}</span><button className="secondary" onClick={() => void load()}>重试</button></div>}
@@ -46,8 +78,8 @@ export function OperationsPage({ onError }: { onError: (message: string) => void
       <label>分组<select value={groupBy} onChange={event => setGroupBy(event.target.value)}>{["day", "hour", ...dimensions].map(value => <option key={value} value={value}>{labels[value]}</option>)}</select></label>
       <label>统计时区<input value={timezone} onChange={event => setTimezone(event.target.value)} required /></label>
       <label>开始时间<input type="datetime-local" value={start} onChange={event => setStart(event.target.value)} /></label><label>结束时间<input type="datetime-local" value={end} onChange={event => setEnd(event.target.value)} /></label>
-      <details className="advanced-filter"><summary>更多维度筛选</summary><div className="provider-filter-grid">{dimensions.map(name => <label key={name}>{labels[name]}筛选<input value={filters[name]} onChange={event => setFilters({ ...filters, [name]: event.target.value })} /></label>)}</div></details></div><button className="primary" disabled={busy}>查询统计</button></form>
-    <div className="panel"><h2>统计结果</h2>{busy && !report && <p role="status" className="muted">正在查询统计…</p>}{report && report.items.length <= 48 && <RequestChart items={report.items} label="统计请求分布" />}{report && report.items.length > 48 && <p className="muted">当前分组超过 48 项，请缩小范围以显示图表。</p>}{report && <p>{report.start} 至 {report.end} · {report.timezone}</p>}<div className="table-wrap"><table className="management-table"><thead><tr><th>分组</th><th>请求 / 错误 / 尝试</th><th>Token</th><th>未知用量 / 估算 / 未定价</th><th>费用</th><th>延迟 P50 / P95 / P99</th><th>首 Token P95</th><th>明细</th></tr></thead><tbody>{report?.items.map(row => <tr key={row.group}><td>{row.group}</td><td>{row.requests} / {row.errors} / {row.attempts}</td><td>{row.total_tokens}</td><td>{row.unknown_usage} / {row.estimated_usage} / {row.unknown_price}</td><td>{Object.entries(row.costs).map(([currency, value]) => `${currency} ${value}`).join("；") || "未知"}</td><td>{row.latency_p50 ?? "—"} / {row.latency_p95 ?? "—"} / {row.latency_p99 ?? "—"} ms</td><td>{row.first_token_p95 ?? "—"} ms</td><td><button disabled={busy} onClick={() => void run(() => drill({ ...query(), start: report.start, end: report.end, ...(dimensions.includes(report.group_by) ? { [report.group_by]: row.group } : { bucket: row.group }) }))}>查看明细 {row.group}</button></td></tr>)}</tbody></table></div></div>
+      <details className="advanced-filter"><summary>更多维度筛选{Object.values(filters).some(Boolean) ? ` · ${Object.values(filters).filter(Boolean).length} 项已设置` : ""}</summary><div className="provider-filter-grid">{dimensions.map(name => <div className="analytics-dimension-filter" key={name}>{dimensionFilter(name)}</div>)}</div><button className="secondary" type="button" onClick={() => setFilters({ ...emptyFilters })}>清空维度筛选</button></details></div><button className="primary" disabled={busy}>{busy ? "查询中…" : "查询统计"}</button></form>
+    <div className="panel"><h2>统计结果</h2>{busy && !report && <p role="status" className="muted">正在查询统计…</p>}{report && report.items.length <= 48 && <RequestChart items={report.items} label="统计请求分布" />}{report && report.items.length > 48 && <p className="muted">当前分组超过 48 项，请缩小范围以显示图表。</p>}{report && <p>{report.start} 至 {report.end} · {report.timezone}</p>}<div className="table-wrap"><table className="management-table"><thead><tr><th>分组</th><th>请求 / 错误 / 尝试</th><th>Token</th><th>未知用量 / 估算 / 未定价</th><th>费用</th><th>延迟 P50 / P95 / P99</th><th>首 Token P95</th><th>明细</th></tr></thead><tbody>{report?.items.map(row => <tr key={row.group}><td>{groupLabel(row.group)}</td><td>{row.requests} / {row.errors} / {row.attempts}</td><td>{row.total_tokens}</td><td>{row.unknown_usage} / {row.estimated_usage} / {row.unknown_price}</td><td>{Object.entries(row.costs).map(([currency, value]) => `${currency} ${value}`).join("；") || "未知"}</td><td>{row.latency_p50 ?? "—"} / {row.latency_p95 ?? "—"} / {row.latency_p99 ?? "—"} ms</td><td>{row.first_token_p95 ?? "—"} ms</td><td><button disabled={busy} onClick={() => void run(() => drill({ ...query(), start: report.start, end: report.end, ...(dimensions.includes(report.group_by) ? { [report.group_by]: row.group } : { bucket: row.group }) }))}>查看明细 {groupLabel(row.group)}</button></td></tr>)}</tbody></table></div></div>
     {drillFilters && <div className="panel"><h2>用量明细（{total} 条）</h2><div className="table-wrap"><table className="management-table"><thead><tr><th>Trace</th><th>事件</th><th>结果</th><th>Token / 来源</th><th>费用 / 定价状态</th></tr></thead><tbody>{events.map(row => <tr key={row.id}><td>{row.request_id}</td><td>{row.kind}</td><td>{row.outcome}</td><td>{row.total_tokens ?? "未知"} / {row.usage_source}</td><td>{row.cost ?? "未知"} {row.currency || ""} / {row.pricing_status}</td></tr>)}</tbody></table></div><button disabled={busy || !offset} onClick={() => void run(() => drill(drillFilters, Math.max(0, offset - 25)))}>上一页明细</button><button disabled={busy || offset + 25 >= total} onClick={() => void run(() => drill(drillFilters, offset + 25))}>下一页明细</button></div>}
     <div className="panel"><h2>站内告警</h2><p>规则默认不启用；保存新规则后每 30 秒在服务端评估，同一持续问题只保留一个告警。</p><button disabled={busy} onClick={() => void run(async () => { await post("/api/v1/operations/alerts/evaluate", {}); await loadAlerts(); })}>立即评估与刷新</button><ul>{alerts.map(alert => <li key={alert.id}>{alert.severity} · {alert.message} · {alert.status} {alert.status === "open" && <button disabled={busy} onClick={() => void run(async () => { await post(`/api/v1/operations/alerts/${alert.id}/acknowledge`, {}); await loadAlerts(); })}>确认告警</button>}</li>)}</ul>
       <form onSubmit={event => { event.preventDefault(); void run(async () => { await put(`/api/v1/operations/alerts/rules/${encodeURIComponent(ruleId)}`, { enabled: true, metric, threshold: Number(threshold), min_samples: 20, window_minutes: 10, severity: "warning" }); await loadAlerts(); setMessage("告警规则已保存并启用"); }); }}><div className="provider-filter-grid"><label>规则 ID<input value={ruleId} onChange={event => setRuleId(event.target.value)} pattern="[A-Za-z0-9-]+" required /></label><label>指标<select value={metric} onChange={event => setMetric(event.target.value)}><option value="failure_rate">失败率（0–1）</option><option value="latency_p95">延迟 P95（ms）</option><option value="unknown_price">未知费用次数</option></select></label><label>阈值<input type="number" min="0" step="any" value={threshold} onChange={event => setThreshold(event.target.value)} required /></label></div><button disabled={busy}>保存并启用规则</button></form>

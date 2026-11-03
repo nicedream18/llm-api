@@ -1,10 +1,13 @@
 """Security repository for findings, builtin rules, custom rules."""
+import json
 import logging
 import uuid
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 from sqlalchemy import text
 
+from app.config import SecuritySettings, config
 from app.domain.entities import (
     SecurityBuiltinRuleEntity,
     SecurityCustomRuleEntity,
@@ -20,6 +23,38 @@ def _now() -> str:
 
 
 class SecurityRepository:
+    def get_settings(self) -> SecuritySettings:
+        with get_db() as db:
+            row = db.execute(text("SELECT settings FROM security_settings WHERE id='default'")).scalar()
+            if not row:
+                return config.security
+            return SecuritySettings(**json.loads(row))
+
+    def update_settings(self, fields: dict) -> SecuritySettings:
+        allowed = set(SecuritySettings.__dataclass_fields__)
+        if not fields or set(fields) - allowed:
+            raise ValueError("Unknown or empty security settings")
+        for key, value in fields.items():
+            if key == "mode":
+                if value not in {"audit", "warn", "redact", "block"}:
+                    raise ValueError("Invalid security mode")
+            elif type(value) is not bool:
+                raise ValueError("Security switches must be booleans")
+        current = self.get_settings()
+        settings = SecuritySettings(**{**asdict(current), **fields})
+        payload = json.dumps(asdict(settings), ensure_ascii=False)
+        with get_db() as db:
+            dialect = db.bind.dialect.name
+            suffix = (
+                "ON DUPLICATE KEY UPDATE settings=:settings, updated_at=:updated_at"
+                if dialect == "mysql"
+                else "ON CONFLICT(id) DO UPDATE SET settings=:settings, updated_at=:updated_at"
+            )
+            db.execute(text(
+                "INSERT INTO security_settings (id, settings, updated_at) "
+                "VALUES ('default', :settings, :updated_at) " + suffix
+            ), {"settings": payload, "updated_at": _now()})
+        return settings
 
     def save_findings(self, findings: list[SecurityFindingEntity]):
         if not findings:
@@ -78,16 +113,21 @@ class SecurityRepository:
             )).mappings().all()
             return [self._to_builtin_entity(r) for r in rows]
 
-    def update_builtin_rule(self, rule_id: str, enabled: int | None, severity: str | None) -> bool:
+    def update_builtin_rule(self, rule_id: str, enabled: int | None, severity: str | None, **fields) -> bool:
         with get_db() as db:
-            updates = []
-            params: dict[str, object] = {"id": rule_id}
-            if enabled is not None:
-                updates.append("enabled=:enabled")
-                params["enabled"] = enabled
-            if severity:
-                updates.append("severity=:severity")
-                params["severity"] = severity
+            values = {key: value for key, value in {"enabled": enabled, "severity": severity, **fields}.items() if value is not None}
+            if set(values) - {"enabled", "severity", "name", "description"}:
+                raise ValueError("Builtin identity, category and detector are read-only")
+            if "enabled" in values and values["enabled"] not in (0, 1):
+                raise ValueError("enabled must be 0 or 1")
+            if "severity" in values:
+                values["severity"] = str(values["severity"]).lower()
+                if values["severity"] not in {"info", "low", "medium", "high", "critical"}:
+                    raise ValueError("Invalid severity")
+            if "name" in values and (not str(values["name"]).strip() or len(str(values["name"])) > 256):
+                raise ValueError("Invalid rule name")
+            updates = [f"{key}=:{key}" for key in values]
+            params: dict[str, object] = {"id": rule_id, **values}
             if not updates:
                 return False
             updates.append("updated_at=:updated_at")

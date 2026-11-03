@@ -40,11 +40,22 @@ class SecurityService:
     def __init__(self, security_repository):
         self.repo = security_repository
 
+    def get_settings(self):
+        from dataclasses import asdict
+        return {
+            **asdict(self.repo.get_settings()),
+            "capabilities": {"stream_response_scan": False, "binary_attachment_scan": False},
+        }
+
+    def update_settings(self, fields):
+        self.repo.update_settings(fields)
+        return self.get_settings()
+
     def list_builtin_rules(self):
         return [self._to_builtin_dto(e) for e in self.repo.get_all_builtin_rules()]
 
-    def update_builtin_rule(self, rule_id, enabled, severity):
-        return self.repo.update_builtin_rule(rule_id, enabled, severity)
+    def update_builtin_rule(self, rule_id, enabled, severity, **fields):
+        return self.repo.update_builtin_rule(rule_id, enabled, severity, **fields)
 
     def list_custom_rules(self):
         return [self._to_custom_dto(e) for e in self.repo.get_all_custom_rules()]
@@ -192,12 +203,16 @@ class ProxyService:
     def _auth_context(self, headers: dict, auth_context: AuthContext | None = None):
         return auth_context or getattr(headers, "auth_context", None)
 
-    def _scan(self, body: str, phase: str):
+    def _scan(self, body: str, phase: str, settings=None):
         custom = self.security_repo.get_all_custom_rules() if self.security_repo else []
         builtin = self.security_repo.get_all_builtin_rules() if self.security_repo else []
-        return self.scanner.scan(body, phase, self.settings, custom, builtin)
+        return self.scanner.scan(body, phase, settings or self.settings, custom, builtin)
+
+    def _current_settings(self):
+        return self.security_repo.get_settings() if self.security_repo and hasattr(self.security_repo, "get_settings") else self.settings
 
     def forward(self, body: str | bytes, headers: dict, client_ip: str | None = None, auth_context: AuthContext | None = None, endpoint: str = "/v1/chat/completions", request_id: str | None = None, content_type: str | None = None):
+        settings = self._current_settings()
         start = time.time()
         request_id = request_id or str(uuid.uuid4()).replace("-", "")
         is_multipart = isinstance(body, (bytes, bytearray)) and (content_type or "").lower().startswith("multipart/")
@@ -236,11 +251,11 @@ class ProxyService:
                 and not self.gateway._candidates(model, set(), context.allowed_channels)):
             return 403, {"error": {"message": "Channel is not allowed for this API key", "type": "permission_error", "code": "channel_forbidden"}}
         scan_result = None
-        if self.settings.enabled:
+        if settings.enabled:
             try:
-                scan_result = self._scan(body_text, "request")
+                scan_result = self._scan(body_text, "request", settings)
             except Exception:
-                if self.settings.fail_closed:
+                if settings.fail_closed:
                     return 503, {"error": {"message": "Security scan unavailable", "type": "security_error", "code": "security_scan_failed"}}
                 logger.exception("Request security scan failed")
             if scan_result and scan_result.blocked:
@@ -299,9 +314,9 @@ class ProxyService:
             if recorder:
                 recorder.finish("error", 502, int((time.time() - start) * 1000))
             raise
-        if self.settings.enabled and self.settings.scan_response and proxy_response.body:
+        if settings.enabled and settings.scan_response and proxy_response.body:
             try:
-                response_scan = self._scan(proxy_response.body, "response")
+                response_scan = self._scan(proxy_response.body, "response", settings)
                 if response_scan.sanitized and response_scan.sanitized_body is not None:
                     proxy_response.body = response_scan.sanitized_body
                     if proxy_response.raw_body is not None:
@@ -315,7 +330,7 @@ class ProxyService:
                 else:
                     scan_result.findings.extend(response_scan.findings)
             except Exception:  # noqa: BLE001 - response scanning is fail-closed when configured
-                if self.settings.fail_closed:
+                if settings.fail_closed:
                     proxy_response.success = False
                     proxy_response.status_code = 502
                     proxy_response.error_message = "Response security scan failed"
@@ -347,6 +362,7 @@ class ProxyService:
         return proxy_response.status_code or 502, {"error": {"message": proxy_response.error_message or "upstream_error", "type": "upstream_error", "code": "upstream_error"}}
 
     async def forward_stream_async(self, body: str, headers: dict, client_ip: str | None = None, auth_context: AuthContext | None = None, endpoint: str = "/v1/chat/completions", request_id: str | None = None):
+        settings = await run_in_threadpool(self._current_settings)
         request_id = request_id or str(uuid.uuid4()).replace("-", "")
         protocol = ProtocolDetector.detect_endpoint(headers, body, endpoint)
         try:
@@ -357,7 +373,7 @@ class ProxyService:
             yield 'data: {"error":{"message":"Expected an object with a string model","type":"invalid_request_error"}}\n\n'; return
         # Response policies require a bounded semantic stream scanner, including
         # cross-event matches. Until available, reject before any upstream call.
-        if self.settings.enabled and self.settings.scan_response:
+        if settings.enabled and settings.scan_response:
             yield 'data: {"error":{"message":"Response scanning is not supported for streaming","type":"invalid_request_error","code":"stream_response_policy_unsupported"}}\n\n'; return
         if protocol == "responses":
             from app.domain.responses_converter import ResponsesConverter
@@ -384,11 +400,11 @@ class ProxyService:
             if not candidates:
                 yield 'data: {"error":{"message":"Channel is not allowed for this API key","type":"permission_error","code":"channel_forbidden"}}\n\n'; return
         scan_result = None
-        if self.settings.enabled:
+        if settings.enabled:
             try:
-                scan_result = await run_in_threadpool(self._scan, body, "request")
+                scan_result = await run_in_threadpool(self._scan, body, "request", settings)
             except Exception:
-                if self.settings.fail_closed:
+                if settings.fail_closed:
                     yield 'data: {"error":{"message":"Security scan unavailable","type":"security_error","code":"security_scan_failed"}}\n\n'; return
                 logger.exception("Streaming request security scan failed")
             if scan_result and scan_result.blocked:

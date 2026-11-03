@@ -66,6 +66,10 @@ def scoped_model_call(body: dict, endpoint: str) -> dict | None:
     return operation.call(body, endpoint) if operation is not None else None
 
 
+def has_scoped_model_operation() -> bool:
+    return _operation.get() is not None
+
+
 def scoped_chat_response(body: dict) -> ProxyResponseEntity | None:
     result = scoped_model_call(body, "/v1/chat/completions")
     if result is None:

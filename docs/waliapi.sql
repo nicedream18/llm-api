@@ -157,6 +157,10 @@ CREATE TABLE IF NOT EXISTS `security_builtin_rules` (
   UNIQUE KEY `uk_rule_id` (`rule_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='内置安全规则';
 
+INSERT INTO `security_builtin_rules` (`id`, `rule_id`, `category`, `severity`, `title`, `name`, `description`, `pattern`, `action`, `enabled`, `created_at`, `updated_at`)
+SELECT 'builtin-credential-high-entropy', 'credential_high_entropy', 'credentials', 'medium', 'High-Entropy Credential Candidate', '高熵密钥候选', 'Reports standalone ASCII tokens of at least 20 characters with Shannon entropy above 4.5 bits per character. This is a review signal, not proof of a secret.', NULL, 'warn', 1, UTC_TIMESTAMP(), UTC_TIMESTAMP()
+WHERE NOT EXISTS (SELECT 1 FROM `security_builtin_rules` WHERE `rule_id` = 'credential_high_entropy');
+
 -- ============================================================
 -- 6. security_custom_rules - 自定义安全规则
 -- ============================================================
@@ -174,6 +178,13 @@ CREATE TABLE IF NOT EXISTS `security_custom_rules` (
   `updated_at` VARCHAR(32) DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='自定义安全规则';
+
+CREATE TABLE IF NOT EXISTS `security_settings` (
+  `id` VARCHAR(32) NOT NULL,
+  `settings` TEXT NOT NULL,
+  `updated_at` VARCHAR(32) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='安全策略设置';
 
 -- ============================================================
 -- 7. kb_knowledge_bases - 知识库表

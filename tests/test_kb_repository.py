@@ -185,6 +185,32 @@ def test_kb_documents_chunks_sources_stats_and_delete_lifecycle(monkeypatch, tmp
     engine.dispose()
 
 
+def test_kb_document_task_status_and_retry_preserve_uploaded_payload(monkeypatch, tmp_path):
+    repo, engine = _repository(monkeypatch, tmp_path)
+    repo.save_kb(KbKnowledgeBaseEntity(id="kb-1", name="Engineering"))
+    repo.save_doc(KbDocumentEntity(id="doc-1", kb_id="kb-1", name="guide.md", status="error", error_message="task failed"))
+    repo.save_doc(KbDocumentEntity(id="doc-2", kb_id="kb-1", name="other.md", status="pending"))
+    repo.save_task(KbTaskEntity(id="task-old", kb_id="kb-1", doc_id="doc-1", status="completed", created_at="2026-11-01T00:00:00+00:00"), {"content": "old"})
+    repo.save_task(KbTaskEntity(id="task-failed", kb_id="kb-1", doc_id="doc-1", status="failed", progress=40,
+                               done_items=2, total_items=5, error_message="embedding unavailable", created_at="2026-11-02T00:00:00+00:00"),
+                   {"filename": "guide.md", "content": "stored payload"})
+    repo.save_task(KbTaskEntity(id="task-other", kb_id="kb-1", doc_id="doc-2", status="pending"), {"content": "other"})
+
+    latest = repo.find_latest_tasks_by_doc_ids("kb-1", ["doc-1", "doc-2", "missing"])
+    assert latest["doc-1"].id == "task-failed"
+    assert latest["doc-1"].progress == 40 and latest["doc-1"].error_message == "embedding unavailable"
+    assert latest["doc-2"].id == "task-other"
+    assert "missing" not in latest
+
+    retried = repo.retry_failed_import_task("kb-1", "doc-1")
+    assert retried.id == "task-failed" and retried.status == "pending"
+    assert retried.progress == 0 and retried.error_message is None
+    assert repo.find_doc_by_id("doc-1").status == "pending"
+    assert repo.find_task_by_id("task-failed").payload == '{"filename": "guide.md", "content": "stored payload"}'
+    assert repo.retry_failed_import_task("kb-1", "missing") is None
+    engine.dispose()
+
+
 def test_kb_task_claim_lease_retry_and_terminal_updates(monkeypatch, tmp_path):
     repo, engine = _repository(monkeypatch, tmp_path)
     repo.save_kb(KbKnowledgeBaseEntity(id="kb-task", name="Tasks"))

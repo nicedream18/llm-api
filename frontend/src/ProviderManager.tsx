@@ -97,18 +97,20 @@ export function ProviderManager({ onError }: { onError: (message: string) => voi
   const filter = (event: FormEvent) => {
     event.preventDefault(); const params = new URLSearchParams();
     Object.entries(filters).forEach(([key, value]) => { if (value !== "") params.set(key, String(value)); });
-    setOffset(0); setQuery("&" + params.toString());
+    setOffset(0); setQuery(params.size ? "&" + params.toString() : "");
   };
+  const hasFilters = Boolean(filters.search || filters.provider || filters.group_name || filters.tag || filters.enabled || filters.status || filters.archived || filters.sort !== "priority");
+  const clearFilters = () => { setFilters({ search: "", provider: "", group_name: "", tag: "", enabled: "", status: "", sort: "priority", archived: false }); setOffset(0); setQuery(""); };
   return <section className="provider-manager management-page" aria-label="Provider 账号中心">
     {loadError && <div className="error inline-error" role="alert"><span>加载失败：{loadError}</span><button className="secondary" onClick={() => void load()}>重试</button></div>}
     <form className="panel provider-filter-panel" onSubmit={filter}><div className="management-toolbar"><div><h2>上游账号</h2><p>{page.total} 个账号 · 按供应商、授权状态和运行健康筛选</p></div><div className="toolbar-actions"><button type="button" className="secondary" onClick={() => void load()} disabled={loading}>刷新</button><button type="button" className="primary" onClick={create}>＋ 添加账号</button></div></div>
-      <div className="provider-filter-grid"><label>搜索账号<input aria-label="搜索账号" value={filters.search} onChange={event => setFilters({ ...filters, search: event.target.value })} /></label>
+      <div className="provider-filter-grid"><label>搜索账号<input aria-label="搜索账号" placeholder="账号名称" value={filters.search} onChange={event => setFilters({ ...filters, search: event.target.value })} /></label>
         <label>供应商<select aria-label="筛选供应商" value={filters.provider} onChange={event => setFilters({ ...filters, provider: event.target.value })}><option value="">全部</option>{providers.map(name => <option key={name}>{name}</option>)}</select></label>
-        <label>分组<input value={filters.group_name} onChange={event => setFilters({ ...filters, group_name: event.target.value })} /></label><label>标签<input value={filters.tag} onChange={event => setFilters({ ...filters, tag: event.target.value })} /></label>
+        <label>分组<input placeholder="分组名称" value={filters.group_name} onChange={event => setFilters({ ...filters, group_name: event.target.value })} /></label><label>标签<input placeholder="标签" value={filters.tag} onChange={event => setFilters({ ...filters, tag: event.target.value })} /></label>
         <label>启停<select value={filters.enabled} onChange={event => setFilters({ ...filters, enabled: event.target.value })}><option value="">全部</option><option value="true">已启用</option><option value="false">已停用</option></select></label>
         <label>授权<select value={filters.status} onChange={event => setFilters({ ...filters, status: event.target.value })}><option value="">全部</option><option value="active">已授权</option><option value="pending">待授权</option><option value="signed_out">已退出</option></select></label>
         <label>排序<select value={filters.sort} onChange={event => setFilters({ ...filters, sort: event.target.value })}><option value="priority">优先级</option><option value="name">名称</option><option value="created_at">创建时间</option></select></label>
-        <label className="checkbox-label"><input type="checkbox" checked={filters.archived} onChange={event => setFilters({ ...filters, archived: event.target.checked })} />查看已归档</label><button type="submit" className="secondary">应用筛选</button>
+        <label className="checkbox-label"><input type="checkbox" checked={filters.archived} onChange={event => setFilters({ ...filters, archived: event.target.checked })} />查看已归档</label><button type="submit" className="secondary" disabled={loading}>应用筛选</button>{hasFilters && <button type="button" className="secondary" onClick={clearFilters} disabled={loading}>清除筛选</button>}
       </div>
       <div className="bulk-toolbar"><span>已选择 {selected.length} 项</span><button type="button" className="secondary" disabled={!selected.length || busy} onClick={() => void bulk(true)}>批量启用</button><button type="button" className="secondary" disabled={!selected.length || busy} onClick={() => void bulk(false)}>批量停用</button></div>
     </form>

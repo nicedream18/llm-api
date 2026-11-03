@@ -144,6 +144,37 @@ def test_embedder_uses_anthropic_headers_and_single_text_helper(monkeypatch):
     assert calls[0][1]["headers"]["anthropic-version"] == "2023-06-01"
 
 
+def test_embedder_splits_compatible_provider_requests_into_ten_item_batches(monkeypatch):
+    import httpx
+
+    calls = []
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def post(self, url, **kwargs):
+            body = kwargs["json"]
+            calls.append((url, body))
+            rows = [
+                {"index": index, "embedding": [float(text.rsplit("-", 1)[1])]}
+                for index, text in enumerate(body["input"])
+            ]
+            return SimpleNamespace(status_code=200, json=lambda: {"data": list(reversed(rows))})
+
+    monkeypatch.setattr(httpx, "Client", Client)
+    channel = SimpleNamespace(type="openai", api_key="secret", base_url="https://embed.test/v1")
+    dispatcher = SimpleNamespace(dispatch=lambda _model: SimpleNamespace(channel=channel, upstream_model="text-embedding-v3"))
+    embedder = EmbedderService(dispatcher, None)
+    texts = [f"item-{index}" for index in range(23)]
+
+    vectors = embedder.embed_batch(texts, "text-embedding-v3")
+
+    assert [len(body["input"]) for _, body in calls] == [10, 10, 3]
+    assert all(body["model"] == "text-embedding-v3" for _, body in calls)
+    assert vectors == [[float(index)] for index in range(23)]
+
+
 class RecordingKnowledgeRepository:
     def __init__(self, chunks):
         self.chunks = chunks

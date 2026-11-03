@@ -1,6 +1,7 @@
 """Security scanner with 6 sub-scanners: credential, path, unicode, network, tool, tracking."""
 import hashlib
 import logging
+import math
 import re
 import uuid
 from datetime import UTC, datetime
@@ -62,6 +63,16 @@ CREDENTIAL_RULES = [
     ("credential_token", "Token Assignment", "Detected token assignment in plaintext.", r"token\s*[=:]\s*\S+", "high"),
     ("credential_secret", "Secret Assignment", "Detected secret assignment in plaintext.", r"secret\s*[=:]\s*\S+", "high"),
 ]
+
+ENTROPY_RULE_ID = "credential_high_entropy"
+ENTROPY_THRESHOLD = 4.5
+ENTROPY_MIN_LENGTH = 20
+_ENTROPY_CANDIDATE = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{20,}(?![A-Za-z0-9+/=_-])")
+_KNOWN_CREDENTIAL_PATTERNS = tuple(re.compile(rule[3]) for rule in CREDENTIAL_RULES)
+_PEM_PRIVATE_KEY_BLOCK = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+    re.DOTALL,
+)
 
 PATH_RULES = [
     ("path_traversal_basic", "Path Traversal", "Detected directory traversal sequence (../).", r"\.\./", "high"),
@@ -143,6 +154,53 @@ def _run_custom_rules(rules, text, json_path, phase, findings):
             logger.warning("Skipping invalid custom security pattern", extra={"rule_id": rule.id})
 
 
+def _shannon_entropy(value: str) -> float:
+    """Return Shannon entropy in bits per character for a candidate token."""
+    if not value:
+        return 0.0
+    counts = {}
+    for char in value:
+        counts[char] = counts.get(char, 0) + 1
+    length = len(value)
+    return -sum((count / length) * math.log2(count / length) for count in counts.values())
+
+
+def _run_entropy_rule(text, json_path, phase, findings, builtin_rules=None):
+    overrides = {getattr(rule, "rule_id", None): rule for rule in builtin_rules or []}
+    override = overrides.get(ENTROPY_RULE_ID)
+    if override is not None and not getattr(override, "enabled", 1):
+        return
+
+    severity = str(getattr(override, "severity", None) or "medium").lower()
+    action = getattr(override, "action", None) or "warn"
+    scan_text = text[:1_000_000]
+    known_matches = [
+        match.span()
+        for pattern in _KNOWN_CREDENTIAL_PATTERNS
+        for match in pattern.finditer(scan_text)
+    ]
+    known_matches.extend(match.span() for match in _PEM_PRIVATE_KEY_BLOCK.finditer(scan_text))
+    for match in _ENTROPY_CANDIDATE.finditer(scan_text):
+        candidate = match.group()
+        if len(candidate) < ENTROPY_MIN_LENGTH or len(candidate) > 256:
+            continue
+        if any(match.start() < end and match.end() > start for start, end in known_matches):
+            continue
+        if _shannon_entropy(candidate) <= ENTROPY_THRESHOLD:
+            continue
+        findings.append(_make_finding(
+            ENTROPY_RULE_ID,
+            "High-Entropy Credential Candidate",
+            f"Detected a {len(candidate)}-character token with Shannon entropy above {ENTROPY_THRESHOLD} bits per character; review it as a possible secret.",
+            severity,
+            "credentials",
+            candidate,
+            json_path,
+            phase,
+            action,
+        ))
+
+
 def _walk_json(obj, path, phase, settings, findings, custom_rules=None, builtin_rules=None):
     """Recursively walk JSON and run scanners on string values."""
     if isinstance(obj, str):
@@ -157,6 +215,7 @@ def _walk_json(obj, path, phase, settings, findings, custom_rules=None, builtin_
 
 def _run_all_scanners(text, json_path, phase, settings, findings, custom_rules=None, builtin_rules=None):
     findings.extend(_run_rules(CREDENTIAL_RULES, text, json_path, phase, "credentials", builtin_rules))
+    _run_entropy_rule(text, json_path, phase, findings, builtin_rules)
     findings.extend(_run_rules(PATH_RULES, text, json_path, phase, "path", builtin_rules))
     if getattr(settings, "scan_network", True):
         findings.extend(_run_rules(NETWORK_RULES, text, json_path, phase, "network", builtin_rules))

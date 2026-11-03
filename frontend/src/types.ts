@@ -11,6 +11,7 @@ export type AccessGrant = { id: string; principal_type: string; principal_id: st
 export type OpenApiToolPreview = { name: string; description: string; risk_level: string; approval_mode: string; input_schema: Record<string, unknown> };
 export type OpenApiPreview = { openapi: string; tool_count: number; tools: OpenApiToolPreview[] };
 export type KnowledgeBase = { id: string; name: string; description?: string; doc_count: number; chunk_count: number; index_status: string };
+export type KnowledgeDocument = { id: string; kb_id: string; name: string; status: string; chunk_count: number; total_tokens: number; error_message?: string | null; task_id?: string | null; task_status?: string | null; task_progress?: number; task_done_items?: number; task_total_items?: number; task_error_message?: string | null };
 export type WikiProject = { id: string; name: string; description?: string; page_count?: number };
 export type WikiPage = { id: string; project_id?: string; path: string; title: string; content?: string; revision?: number; summary?: string; tags?: string[]; updated_at?: string };
 export type WikiSource = { id: string; filename: string; status: "pending" | "ingested" | "failed"; page_id?: string | null; error_message?: string | null };

@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.controllers.access_routes import router as access_router
 from app.api.controllers.administration_routes import router as administration_router
 from app.api.controllers.auth_routes import router as auth_router
+from app.api.controllers.desktop_routes import router as desktop_router
 from app.api.controllers.mcp_routes import router as standard_mcp_router
 from app.api.controllers.operations_routes import router as operations_router
 from app.api.controllers.platform_routes import router as platform_router
@@ -93,6 +94,7 @@ app.include_router(security_router)
 app.include_router(mcp_router)
 app.include_router(standard_mcp_router)
 app.include_router(auth_router)
+app.include_router(desktop_router)
 app.include_router(administration_router)
 app.include_router(wiki_router)
 app.include_router(access_router)

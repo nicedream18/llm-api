@@ -477,7 +477,7 @@ class GatewayService:
             raise RuntimeError("upstream stream connection failed") from last_error
         raise RuntimeError("No available upstream channel")
 
-    def test_channel(self, channel) -> bool:
+    async def test_channel(self, channel) -> bool:
         """Run a minimal non-streaming request against a channel."""
         model = (channel.models or [None])[0] or next(iter((channel.model_mapping or {}).keys()), "gpt-4o-mini")
         body = {"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
@@ -487,36 +487,30 @@ class GatewayService:
         request.upstream_model = upstream_model
         request.body = adapter.prepare_body(channel, request, upstream_model)
 
-        async def send_test() -> bool:
-            try:
-                response = await self.client.post(
-                    adapter.build_url(channel, request),
-                    json=request.body,
-                    headers=adapter.build_headers(channel, request),
-                )
-                return response.is_success
-            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError):
-                return False
+        try:
+            response = await self.client.post(
+                adapter.build_url(channel, request),
+                json=request.body,
+                headers=adapter.build_headers(channel, request),
+            )
+            return response.is_success
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError):
+            return False
 
-        return asyncio.run(send_test())
-
-    def sync_models(self, channel) -> list[str]:
+    async def sync_models(self, channel) -> list[str]:
         """Fetch and validate a channel's advertised model IDs."""
-        async def fetch() -> list[str]:
-            response = await self.client.get(models_url(channel), headers=_build_headers(channel, ProxyRequestEntity(model="", body={})))
-            if not response.is_success:
-                raise RuntimeError(f"model discovery returned HTTP {response.status_code}")
-            payload = response.json()
-            rows = payload.get("data", payload.get("models", payload)) if isinstance(payload, dict) else payload
-            if not isinstance(rows, list):
-                raise TypeError("model discovery response is not a list")
-            models: list[str] = []
-            for row in rows:
-                model = row.get("id", row.get("name")) if isinstance(row, dict) else row
-                if channel.type == "gemini" and isinstance(model, str):
-                    model = model.removeprefix("models/")
-                if isinstance(model, str) and model.strip() and model.strip() not in models:
-                    models.append(model.strip())
-            return models
-
-        return asyncio.run(fetch())
+        response = await self.client.get(models_url(channel), headers=_build_headers(channel, ProxyRequestEntity(model="", body={})))
+        if not response.is_success:
+            raise RuntimeError(f"model discovery returned HTTP {response.status_code}")
+        payload = response.json()
+        rows = payload.get("data", payload.get("models", payload)) if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            raise TypeError("model discovery response is not a list")
+        models: list[str] = []
+        for row in rows:
+            model = row.get("id", row.get("name")) if isinstance(row, dict) else row
+            if channel.type == "gemini" and isinstance(model, str):
+                model = model.removeprefix("models/")
+            if isinstance(model, str) and model.strip() and model.strip() not in models:
+                models.append(model.strip())
+        return models

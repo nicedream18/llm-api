@@ -137,7 +137,7 @@ it("software rejects invalid config without a request and retains the editor", a
   await mount(<SoftwarePage onError={onError} />, fetcher);
   await act(async () => button("＋ 添加连接器").click()); await input(control("实例名称"), "New connector"); await input(control("配置 JSON"), "[]");
   await act(async () => button("创建实例").click());
-  expect(onError).toHaveBeenCalledWith("实例配置必须是 JSON 对象"); expect(fetcher).toHaveBeenCalledTimes(4);
+  expect(onError).toHaveBeenCalledWith("实例配置必须是 JSON 对象"); expect(fetcher).toHaveBeenCalledTimes(5);
   expect(host.querySelector('[role="dialog"]')).not.toBeNull();
 });
 
@@ -188,7 +188,7 @@ it("MCP rejects non-object arguments without invoking a tool", async () => {
   const fetcher = vi.fn((path: string) => Promise.resolve(response(path.endsWith("/tools") ? { tools: [{ name: "lookup" }] } : [])));
   await mount(<McpManager onError={onError} />, fetcher); await input(control("JSON 参数"), "[]");
   await act(async () => button("调用工具").click());
-  expect(onError).toHaveBeenCalledWith("参数必须是 JSON 对象"); expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(onError).toHaveBeenCalledWith("参数必须是 JSON 对象"); expect(fetcher).toHaveBeenCalledTimes(3);
 });
 
 it("Wiki distinguishes initial loading, project failure and an empty project list", async () => {

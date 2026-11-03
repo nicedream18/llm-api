@@ -1,6 +1,5 @@
 """Management workflows preserve secrets and expose real protocol behavior."""
 
-import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -16,20 +15,25 @@ from app.domain.gateway import GatewayService
 from app.types.models import ChannelApiKeyDTO, ChannelDTO
 
 
-def test_draft_and_individual_key_preserve_stored_credentials():
+@pytest.mark.asyncio
+async def test_draft_and_individual_key_preserve_stored_credentials():
     channel = ChannelEntity(id="c", api_key="primary", api_keys=[ChannelApiKeyEntity(id="k", api_key="extra")])
     calls = []
     repo = SimpleNamespace(get_channel=lambda _: channel, get_channel_api_keys=lambda _: channel.api_keys,
                            update_channel_api_key=lambda key: calls.append(key),
                            update_channel_api_key_result=lambda *args: calls.append(args))
-    gateway = SimpleNamespace(test_channel=lambda value: calls.append(value) or True)
+    async def test_channel(value):
+        calls.append(value)
+        return True
+
+    gateway = SimpleNamespace(test_channel=test_channel)
     service = ChannelService(repo, gateway)
-    assert service.test_draft_channel(ChannelDTO(id="c")).success
+    assert (await service.test_draft_channel(ChannelDTO(id="c"))).success
     assert calls[-1].api_key == "primary"
-    assert service.test_channel_api_key("c", "k").success
+    assert (await service.test_channel_api_key("c", "k")).success
     assert calls[-2].api_key == "extra" and calls[-2].api_keys == []
     assert channel.api_key == "primary"
-    assert not service.test_channel_api_key("c", "absent").success
+    assert not (await service.test_channel_api_key("c", "absent")).success
     service.update_channel_api_key("c", "k", ChannelApiKeyDTO(name="edited"))
     assert calls[-1].api_key == "extra"
 
@@ -38,36 +42,38 @@ def test_draft_and_individual_key_preserve_stored_credentials():
     ("claude", "/v1/messages", {"model": "internal", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}),
     ("gemini", "/models/internal:generateContent", {"contents": [{"role": "user", "parts": [{"text": "ping"}]}], "generationConfig": {"maxOutputTokens": 1}}),
 ])
-def test_channel_probe_uses_real_adapter(kind, path, body):
+@pytest.mark.asyncio
+async def test_channel_probe_uses_real_adapter(kind, path, body):
     channel = ChannelEntity(type=kind, base_url="https://upstream.example", models=["public"], model_mapping={"public": "internal"})
     def handler(request):
         assert request.url.path == path
         assert json.loads(request.content) == body
         return httpx.Response(200, json={})
     gateway = GatewayService(None, None)
-    asyncio.run(gateway.client.aclose())
+    await gateway.aclose()
     gateway.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
-        assert gateway.test_channel(channel)
+        assert await gateway.test_channel(channel)
     finally:
-        asyncio.run(gateway.aclose())
+        await gateway.aclose()
 
 
 @pytest.mark.parametrize(("kind", "path", "payload", "expected"), [
     ("ollama", "/api/tags", {"models": [{"name": "local"}]}, ["local"]),
     ("gemini", "/models", {"models": [{"name": "models/gemini"}]}, ["gemini"]),
 ])
-def test_vendor_model_discovery(kind, path, payload, expected):
+@pytest.mark.asyncio
+async def test_vendor_model_discovery(kind, path, payload, expected):
     def handler(request):
         assert request.url.path == path
         return httpx.Response(200, json=payload)
     gateway = GatewayService(None, None)
-    asyncio.run(gateway.client.aclose())
+    await gateway.aclose()
     gateway.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
-        assert gateway.sync_models(ChannelEntity(type=kind, base_url="https://upstream.example")) == expected
+        assert await gateway.sync_models(ChannelEntity(type=kind, base_url="https://upstream.example")) == expected
     finally:
-        asyncio.run(gateway.aclose())
+        await gateway.aclose()
 
 
 @pytest.mark.parametrize(("body", "accept", "content_type", "expected"), [

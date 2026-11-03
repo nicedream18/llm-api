@@ -13,7 +13,11 @@ from app.domain.entities import (
     RagAnswerEntity,
     SearchResultEntity,
 )
-from app.domain.model_policy import scoped_chat_response, scoped_model_call
+from app.domain.model_policy import (
+    has_scoped_model_operation,
+    scoped_chat_response,
+    scoped_model_call,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +187,10 @@ class TextSplitter:
 class EmbedderService:
     """Calls embedding API via channel dispatcher (OpenAI-compatible /embeddings)."""
 
+    # Keep batches small enough for compatible hosted embedding services,
+    # several of which cap each input array at ten texts.
+    MAX_BATCH_SIZE = 10
+
     def __init__(self, dispatcher, channel_repository):
         self.dispatcher = dispatcher
         self.channel_repository = channel_repository
@@ -192,31 +200,45 @@ class EmbedderService:
     def embed_batch(self, texts, model):
         if not texts:
             return []
-        scoped = scoped_model_call({"model": model, "input": texts}, "/v1/embeddings")
-        if scoped is not None:
-            return [item["embedding"] for item in sorted(scoped.get("data", []), key=lambda item: item.get("index", 0))]
-        dispatch_result = self.dispatcher.dispatch(model)
-        channel = dispatch_result.channel
-        upstream_model = dispatch_result.upstream_model
-        base = (channel.base_url or "").rstrip("/")
-        url = f"{base}/embeddings"
-        headers = {"Content-Type": "application/json"}
-        if channel.type == "claude":
-            headers["x-api-key"] = channel.api_key or ""
-            headers["anthropic-version"] = "2023-06-01"
-        else:
-            headers["Authorization"] = f"Bearer {channel.api_key or ''}"
-        body = {"model": upstream_model, "input": texts}
-        resp = self._client.post(url, json=body, headers=headers)
-        if resp.status_code < 200 or resp.status_code >= 300:
-            raise RuntimeError(f"Embedding API failed: HTTP {resp.status_code}: {resp.text[:200]}")
-        data = resp.json()
-        embeddings = [item["embedding"] for item in data.get("data", [])]
-        if embeddings:
-            dim = len(embeddings[0])
-            for i, e in enumerate(embeddings):
-                if len(e) != dim:
-                    raise ValueError(f"Embedding dimension mismatch at index {i}")
+        scoped_operation = has_scoped_model_operation()
+        dispatch_result = None if scoped_operation else self.dispatcher.dispatch(model)
+
+        embeddings = []
+        dimension = None
+        for offset in range(0, len(texts), self.MAX_BATCH_SIZE):
+            batch = texts[offset : offset + self.MAX_BATCH_SIZE]
+            scoped = scoped_model_call({"model": model, "input": batch}, "/v1/embeddings")
+            if scoped is not None:
+                batch_embeddings = [item["embedding"] for item in sorted(
+                    scoped.get("data", []), key=lambda item: item.get("index", 0)
+                )]
+            else:
+                channel = dispatch_result.channel
+                upstream_model = dispatch_result.upstream_model
+                base = (channel.base_url or "").rstrip("/")
+                url = f"{base}/embeddings"
+                headers = {"Content-Type": "application/json"}
+                if channel.type == "claude":
+                    headers["x-api-key"] = channel.api_key or ""
+                    headers["anthropic-version"] = "2023-06-01"
+                else:
+                    headers["Authorization"] = f"Bearer {channel.api_key or ''}"
+                resp = self._client.post(url, json={"model": upstream_model, "input": batch}, headers=headers)
+                if resp.status_code < 200 or resp.status_code >= 300:
+                    raise RuntimeError(f"Embedding API failed: HTTP {resp.status_code}: {resp.text[:200]}")
+                data = resp.json()
+                batch_embeddings = [item["embedding"] for item in sorted(
+                    data.get("data", []), key=lambda item: item.get("index", 0)
+                )]
+
+            if len(batch_embeddings) != len(batch):
+                raise ValueError(f"Embedding API returned {len(batch_embeddings)} vectors for {len(batch)} inputs")
+            for index, vector in enumerate(batch_embeddings):
+                if dimension is None:
+                    dimension = len(vector)
+                elif len(vector) != dimension:
+                    raise ValueError(f"Embedding dimension mismatch at index {offset + index}")
+            embeddings.extend(batch_embeddings)
         return embeddings
 
     def embed(self, text, model):

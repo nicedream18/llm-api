@@ -236,8 +236,10 @@ async def test_gateway_fails_over_to_second_channel_key(monkeypatch):
     assert len(attempts) == 2
 
 
-def test_channel_test_targets_the_passed_channel():
+@pytest.mark.asyncio
+async def test_channel_test_targets_the_passed_channel():
     service = GatewayService(Dispatcher(), None)
+    await service.aclose()
     calls = []
 
     async def handler(request):
@@ -248,6 +250,6 @@ def test_channel_test_targets_the_passed_channel():
     selected = ChannelEntity(
         id="selected", name="selected", base_url="http://selected", models=["demo"]
     )
-    assert service.test_channel(selected)
+    assert await service.test_channel(selected)
     assert calls == ["selected"]
-    asyncio.run(service.aclose())
+    await service.aclose()

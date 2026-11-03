@@ -212,6 +212,12 @@ class KbDocumentDTO(BaseModel):
     chunk_count: int = 0
     total_tokens: int = 0
     error_message: str | None = None
+    task_id: str | None = None
+    task_status: str | None = None
+    task_progress: int = 0
+    task_done_items: int = 0
+    task_total_items: int = 0
+    task_error_message: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
 

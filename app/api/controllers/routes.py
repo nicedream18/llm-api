@@ -230,7 +230,7 @@ async def delete_channel(channel_id: str):
 
 @channel_router.post("/{channel_id}/test")
 async def test_channel(channel_id: str):
-    return _success(await asyncio.to_thread(get_container().channel_service.test_channel, channel_id))
+    return _success(await get_container().channel_service.test_channel(channel_id))
 
 
 @channel_router.post("/{channel_id}/clone")
@@ -243,12 +243,12 @@ async def clone_channel(channel_id: str):
 
 @channel_router.post("/test-draft")
 async def test_draft_channel(dto: ChannelDTO):
-    return _success(await asyncio.to_thread(get_container().channel_service.test_draft_channel, dto))
+    return _success(await get_container().channel_service.test_draft_channel(dto))
 
 
 @channel_router.post("/{channel_id}/sync-models")
 async def sync_channel_models(channel_id: str):
-    result = await asyncio.to_thread(get_container().channel_service.sync_models, channel_id)
+    result = await get_container().channel_service.sync_models(channel_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Channel not found")
     return _success(result)
@@ -277,7 +277,7 @@ async def delete_channel_api_key(channel_id: str, key_id: str):
 
 @channel_router.post("/{channel_id}/api-keys/{key_id}/test")
 async def test_channel_api_key(channel_id: str, key_id: str):
-    return _success(await asyncio.to_thread(get_container().channel_service.test_channel_api_key, channel_id, key_id))
+    return _success(await get_container().channel_service.test_channel_api_key(channel_id, key_id))
 
 
 # ==================== ApiKey Controller ====================
@@ -566,6 +566,14 @@ async def delete_doc(kb_id: str, doc_id: str):
     return _success(get_container().kb_service.delete_doc(kb_id, doc_id))
 
 
+@kb_router.post("/{kb_id}/documents/{doc_id}/retry")
+async def retry_doc(kb_id: str, doc_id: str):
+    result = await asyncio.to_thread(get_container().kb_service.retry_doc, kb_id, doc_id)
+    if result is None:
+        raise HTTPException(status_code=409, detail="文档没有可重试的失败导入任务")
+    return _success(result)
+
+
 @kb_router.post("/{kb_id}/ask")
 async def ask(kb_id: str, request: KbAskRequestDTO, http_request: Request):
     if not request.kb_id:
@@ -709,6 +717,18 @@ async def agent_chat(agent_id: str, request: AgentChatRequestDTO):
 
 security_router = APIRouter(prefix="/api/v1/security")
 
+@security_router.get("/settings")
+async def get_security_settings():
+    return _success(get_container().security_service.get_settings())
+
+
+@security_router.put("/settings")
+async def update_security_settings(body: dict):
+    try:
+        return _success(get_container().security_service.update_settings(body))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
 
 @security_router.get("/rules/builtin")
 async def list_builtin_rules():
@@ -717,9 +737,13 @@ async def list_builtin_rules():
 
 @security_router.put("/rules/builtin/{rule_id}")
 async def update_builtin_rule(rule_id: str, body: dict):
-    enabled = int(body["enabled"]) if body.get("enabled") is not None else None
-    severity = body.get("severity")
-    return _success(get_container().security_service.update_builtin_rule(rule_id, enabled, severity))
+    try:
+        enabled = int(body["enabled"]) if body.get("enabled") is not None else None
+        severity = body.get("severity")
+        fields = {key: value for key, value in body.items() if key not in {"enabled", "severity"}}
+        return _success(get_container().security_service.update_builtin_rule(rule_id, enabled, severity, **fields))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @security_router.get("/rules/custom")

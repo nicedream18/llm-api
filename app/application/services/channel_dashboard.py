@@ -1,4 +1,5 @@
 """Application services orchestrating domain services and repositories."""
+import asyncio
 import logging
 import uuid
 from dataclasses import replace
@@ -120,12 +121,12 @@ class ChannelService:
     def delete_channel(self, channel_id):
         return self.repo.delete_channel(channel_id)
 
-    def test_channel(self, channel_id):
-        entity = self.repo.get_channel(channel_id)
+    async def test_channel(self, channel_id):
+        entity = await asyncio.to_thread(self.repo.get_channel, channel_id)
         if not entity:
             return TestChannelResultDTO(channel_id=channel_id, success=False, message="Channel not found")
-        success = self.gateway.test_channel(entity)
-        self.repo.update_test_result(channel_id, success)
+        success = await self.gateway.test_channel(entity)
+        await asyncio.to_thread(self.repo.update_test_result, channel_id, success)
         return TestChannelResultDTO(channel_id=channel_id, success=success,
                                     message="OK" if success else "Test failed", duration_ms=0)
 
@@ -143,20 +144,20 @@ class ChannelService:
         )
         return self._to_dto(self.repo.create_channel(clone))
 
-    def test_draft_channel(self, dto: ChannelDTO):
-        existing = self.repo.get_channel(dto.id) if dto.id else None
+    async def test_draft_channel(self, dto: ChannelDTO):
+        existing = await asyncio.to_thread(self.repo.get_channel, dto.id) if dto.id else None
         entity = self._to_entity(dto, existing)
-        success = self.gateway.test_channel(entity)
+        success = await self.gateway.test_channel(entity)
         return TestChannelResultDTO(channel_id="draft", success=success,
                                     message="OK" if success else "Test failed", duration_ms=0)
 
-    def sync_models(self, channel_id):
-        entity = self.repo.get_channel(channel_id)
+    async def sync_models(self, channel_id):
+        entity = await asyncio.to_thread(self.repo.get_channel, channel_id)
         if not entity:
             return None
-        models = self.gateway.sync_models(entity)
+        models = await self.gateway.sync_models(entity)
         entity.models = models
-        self.repo.update_channel(entity)
+        await asyncio.to_thread(self.repo.update_channel, entity)
         return self._to_dto(entity)
 
     def list_channel_api_keys(self, channel_id):
@@ -175,13 +176,13 @@ class ChannelService:
     def delete_channel_api_key(self, channel_id, key_id):
         return self.repo.delete_channel_api_key(channel_id, key_id)
 
-    def test_channel_api_key(self, channel_id, key_id):
-        channel = self.repo.get_channel(channel_id)
+    async def test_channel_api_key(self, channel_id, key_id):
+        channel = await asyncio.to_thread(self.repo.get_channel, channel_id)
         key = next((key for key in (channel.api_keys or []) if key.id == key_id), None) if channel else None
         if not key:
             return TestChannelResultDTO(channel_id=channel_id, success=False, message="Key not found")
-        success = self.gateway.test_channel(replace(channel, api_key=key.api_key, api_keys=[]))
-        self.repo.update_channel_api_key_result(key_id, success, None if success else "Test failed")
+        success = await self.gateway.test_channel(replace(channel, api_key=key.api_key, api_keys=[]))
+        await asyncio.to_thread(self.repo.update_channel_api_key_result, key_id, success, None if success else "Test failed")
         return TestChannelResultDTO(channel_id=channel_id, success=success, message="OK" if success else "Test failed")
 
     def list_api_keys(self):

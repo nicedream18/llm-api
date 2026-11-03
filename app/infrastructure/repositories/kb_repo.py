@@ -166,6 +166,58 @@ class KbRepository:
             ), {"kb_id": kb_id}).mappings().all()
             return [self._to_doc_entity(r) for r in rows]
 
+    def find_latest_tasks_by_doc_ids(self, kb_id: str, doc_ids: list[str]) -> dict[str, KbTaskEntity]:
+        """Read the latest import/reindex task for each document in bounded batches."""
+        tasks: dict[str, KbTaskEntity] = {}
+        for start in range(0, len(doc_ids), 500):
+            batch = doc_ids[start : start + 500]
+            if not batch:
+                continue
+            params = {"kb_id": kb_id}
+            placeholders = []
+            for index, doc_id in enumerate(batch):
+                name = f"doc_{index}"
+                params[name] = doc_id
+                placeholders.append(f":{name}")
+            with get_db() as db:
+                rows = db.execute(text(
+                    "SELECT id,kb_id,doc_id,task_type,status,progress,total_items,done_items,error_message,"
+                    "created_at,completed_at,payload,worker_id,lease_until,attempt_count,started_at "
+                    "FROM kb_tasks WHERE kb_id=:kb_id AND task_type IN ('import','reindex') "
+                    f"AND doc_id IN ({','.join(placeholders)}) ORDER BY created_at DESC"
+                ), params).mappings().all()
+            for row in rows:
+                if row["doc_id"] not in tasks:
+                    tasks[row["doc_id"]] = self._to_task_entity(row)
+        return tasks
+
+    def retry_failed_import_task(self, kb_id: str, doc_id: str) -> KbTaskEntity | None:
+        """Requeue a failed import while preserving its stored upload payload."""
+        now = _now()
+        with get_db() as db:
+            row = db.execute(text(
+                "SELECT id FROM kb_tasks WHERE kb_id=:kb_id AND doc_id=:doc_id "
+                "AND task_type='import' AND status='failed' ORDER BY created_at DESC,id DESC LIMIT 1"
+            ), {"kb_id": kb_id, "doc_id": doc_id}).mappings().first()
+            if not row:
+                return None
+            changed = db.execute(text(
+                "UPDATE kb_tasks SET status='pending',progress=0,total_items=0,done_items=0,error_message=NULL,"
+                "worker_id=NULL,lease_until=NULL,attempt_count=0,started_at=NULL,completed_at=NULL "
+                "WHERE id=:id AND status='failed'"
+            ), {"id": row["id"]})
+            if affected_rows(changed) != 1:
+                return None
+            db.execute(text(
+                "UPDATE kb_documents SET status='pending',error_message=NULL,updated_at=:now "
+                "WHERE id=:doc_id AND kb_id=:kb_id AND status='error'"
+            ), {"now": now, "doc_id": doc_id, "kb_id": kb_id})
+            result = db.execute(text(
+                "SELECT id,kb_id,doc_id,task_type,status,progress,total_items,done_items,error_message,"
+                "created_at,completed_at,payload,worker_id,lease_until,attempt_count,started_at FROM kb_tasks WHERE id=:id"
+            ), {"id": row["id"]}).mappings().first()
+            return self._to_task_entity(result) if result else None
+
     def delete_doc_by_id(self, doc_id: str) -> bool:
         with get_db() as db:
             row = db.execute(text("SELECT kb_id FROM kb_documents WHERE id=:id"), {"id": doc_id}).mappings().first()

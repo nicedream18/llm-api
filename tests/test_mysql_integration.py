@@ -92,6 +92,64 @@ def test_mysql_full_migration_upgrade_is_idempotent(mysql_engine):
         migrations.apply_migrations()
 
 
+@pytest.mark.parametrize("user_collation,session_collation", [
+    ("utf8mb4_0900_ai_ci", "utf8mb4_unicode_ci"),
+    ("utf8mb4_unicode_ci", "utf8mb4_0900_ai_ci"),
+])
+def test_mysql_admin_page_with_mixed_session_collations(mysql_engine, monkeypatch, user_collation, session_collation):
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.testclient import TestClient
+
+    from app.api.controllers import auth_routes
+    from app.api.middleware.auth import ApiKeyAuthMiddleware
+    from app.application.services.admin_service import AdminService
+    from app.application.services.auth_service import hash_password
+    from app.config import config
+    from app.infrastructure.repositories.admin_session_repo import (
+        AdminSessionRepository,
+    )
+
+    migrations.apply_migrations()
+    username = config.auth.admin_username
+    with mysql_engine.begin() as db:
+        # Reproduce installations whose existing tables use server defaults
+        # that differ from the migration-created session tables.
+        db.execute(text(f"ALTER TABLE admin_users CONVERT TO CHARACTER SET utf8mb4 COLLATE {user_collation}"))
+        db.execute(text(f"ALTER TABLE admin_sessions CONVERT TO CHARACTER SET utf8mb4 COLLATE {session_collation}"))
+        db.execute(text("""INSERT INTO admin_users (id,username,password_hash,status,created_at,updated_at)
+            VALUES ('test-admin',:username,:hash,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())"""),
+                   {"username": username, "hash": hash_password("test-admin-password")})
+    sessions = AdminSessionRepository(mysql_engine)
+    service = AdminService(SimpleNamespace(write_audit=lambda *args: None), sessions)
+    container = SimpleNamespace(admin_service=service, channel_repo=None)
+    monkeypatch.setattr("app.api.middleware.auth.get_container", lambda: container)
+    monkeypatch.setattr(auth_routes, "get_container", lambda: container)
+    app = FastAPI()
+    app.include_router(auth_routes.router)
+    app.add_middleware(ApiKeyAuthMiddleware)
+    app.mount("/", StaticFiles(directory="app/static", html=True))
+    with TestClient(app) as client:
+        assert client.get("/admin/").status_code == 200
+        client.cookies.set("waliapi_admin_session", "legacy.signed-cookie")
+        assert client.get("/admin/").status_code == 200
+        assert client.get("/api/v1/auth/session").status_code == 401
+        login = client.post("/api/v1/auth/login", json={"username": username, "password": "test-admin-password"})
+        assert login.status_code == 200
+        token = login.cookies["waliapi_admin_session"]
+        client.cookies.clear()
+        client.cookies.set("waliapi_admin_session", token)
+        assert client.get("/admin/").status_code == 200
+        assert client.get("/api/v1/auth/session").json()["data"]["authenticated"]
+        assert client.post("/api/v1/auth/logout").status_code == 200
+        client.cookies.clear()
+        client.cookies.set("waliapi_admin_session", token)
+        assert client.get("/admin/").status_code == 200
+        assert client.get("/api/v1/auth/session").status_code == 401
+
+
 def test_mysql_wiki_transactions_cascade_and_backup(mysql_engine):
     migrations.apply_migrations()
     service = WikiService(WikiRepository(mysql_engine))
