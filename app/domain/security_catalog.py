@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass
 
 CREDENTIAL_RULES = [
-    ("credential_apikey_openai", "OpenAI API Key", "Detected OpenAI-style API key (sk-...).", r"sk-[a-zA-Z0-9]{20,}", "high"),
+    ("credential_apikey_openai", "OpenAI API Key", "Detected OpenAI-style API key (sk-...).", r"sk-(?:ant-|proj-|svcacct-)?[a-zA-Z0-9_-]{20,}", "high"),
     ("credential_apikey_generic", "Generic API Key", "Detected generic API key pattern (key-...).", r"key-[a-zA-Z0-9]{20,}", "high"),
     ("credential_apikey_google", "Google API Key", "Detected Google API key (AIza...).", r"AIza[a-zA-Z0-9_-]{35}", "high"),
     ("credential_private_key", "Private Key", "Detected PEM-encoded private key.", r"-----BEGIN.*PRIVATE KEY-----", "critical"),
@@ -91,7 +91,7 @@ NETWORK_RULES.extend([
 ])
 TOOL_RULES.extend([
     ("tool_shell_network_or_exec", "Network or Shell Command", "Network utility or explicit shell execution.", r"\b(?:curl|wget|nc|netcat)\s+[^\n]{1,512}|\b(?:bash|sh)\s+-c\b", "medium"),
-    ("tool_shell_exfiltration", "Sensitive Data Exfiltration", "Sensitive file reference and outbound command on the same line.", r"(?i)(?=[^\n]{0,1024}(?:\.env\b|id_rsa\b|\.aws[/\\]credentials))(?=[^\n]{0,1024}\b(?:curl|wget|nc)\b)[^\n]{1,1024}", "critical"),
+    ("tool_shell_exfiltration", "Sensitive Data Exfiltration", "Sensitive file reference and outbound command on the same line.", r"(?im)^(?=[^\n]{0,1024}(?:\.env\b|id_rsa\b|\.aws[/\\]credentials))(?=[^\n]{0,1024}\b(?:curl|wget|nc)\b)[^\n]{1,1024}", "critical"),
     ("tool_remote_script_exec", "Remote Script Execution", "Downloaded content piped or chained into a shell.", r"\b(?:curl|wget)\b[^\n]{0,512}(?:\||&&)\s*(?:bash|sh|zsh)\b", "critical"),
     ("tool_git_info", "Git Credential or Remote Information", "Git remote URL or CLI credential request.", r"\bgit\s+(?:remote(?:\s+-v)?|config\s+--get\s+remote\.[\w-]+\.url)\b|\bgh\s+auth\s+token\b", "low"),
 ])
@@ -106,7 +106,7 @@ PERSONAL_RULES = [
     ("personal_phone", "Mainland China Mobile", "Mainland China mobile number.", r"(?<!\d)(?:\+?86[ -]?)?1[3-9]\d{9}(?!\d)", "low"),
 ]
 PROMPT_RULES = [
-    ("prompt_fingerprint_context", "Fingerprint and Risk Context", "Combined timezone and proxy, fingerprint or risk-control context.", r"(?i)(?=[\s\S]{0,8192}(?:timezone|time zone|时区))(?=[\s\S]{0,8192}(?:proxy|代理|fingerprint|指纹|风控))[\s\S]{1,8192}", "medium"),
+    ("prompt_fingerprint_context", "Fingerprint and Risk Context", "Combined timezone and proxy, fingerprint or risk-control context.", r"(?i)\A(?=[\s\S]{0,8192}(?:timezone|time zone|时区))(?=[\s\S]{0,8192}(?:proxy|代理|fingerprint|指纹|风控))[\s\S]{1,8192}", "medium"),
 ]
 
 

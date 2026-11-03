@@ -21,6 +21,7 @@ from app.domain.security_matching import (
     is_whitelisted,
     whitelist_category,
 )
+from app.domain.security_redaction import redact_body, validate_value
 from app.types.enums import SEVERITY_SCORES, RiskLevel
 
 logger = logging.getLogger(__name__)
@@ -29,17 +30,7 @@ logger = logging.getLogger(__name__)
 def mask_evidence(evidence: str) -> str:
     if not evidence:
         return ""
-    if "-----BEGIN" in evidence and "PRIVATE KEY" in evidence:
-        return "-----BEGIN PRIVATE KEY----- [REDACTED]"
-    prefixes = ["sk-", "key-", "AIza", "AKIA", "ghp_", "xox"]
-    for p in prefixes:
-        if evidence.startswith(p) and len(evidence) > 8:
-            return evidence[:4] + "***" + evidence[-4:]
-    if evidence.startswith("eyJ") and len(evidence) > 10:
-        return evidence[:10] + "***"
-    if len(evidence) > 20:
-        return evidence[:20] + "***"
-    return evidence
+    return "[REDACTED]"
 
 
 def hash_evidence(evidence: str) -> str:
@@ -69,7 +60,7 @@ def _run_rules(rules, text, json_path, phase, category, builtin_rules=None, cust
     findings: list[SecurityFindingEntity] = []
     if not text:
         return findings
-    text = text[:1_000_000]
+    validate_value(text)
     overrides = {getattr(rule, "rule_id", None): rule for rule in builtin_rules or []}
     for rule_id, title, desc, pattern, severity in rules:
         override = overrides.get(rule_id)
@@ -123,7 +114,8 @@ def _run_entropy_rule(text, json_path, phase, findings, builtin_rules=None):
 
     severity = str(getattr(override, "severity", None) or "medium").lower()
     action = getattr(override, "action", None) or "warn"
-    scan_text = text[:1_000_000]
+    validate_value(text)
+    scan_text = text
     known_matches = [
         match.span()
         for pattern in _KNOWN_CREDENTIAL_PATTERNS
@@ -226,12 +218,12 @@ class SecurityScanner:
         import json
         try:
             parsed = json.loads(body)
+        except json.JSONDecodeError:
+            validate_value(body)
+            _run_all_scanners(body, "$raw", phase, settings, findings, custom_rules, builtin_rules)
+        else:
+            validate_value(parsed)
             _walk_json(parsed, "$", phase, settings, findings, custom_rules, builtin_rules)
-        except Exception:  # noqa: BLE001 - raw scanner fallback handles malformed JSON
-            _run_all_scanners(body, "$raw", phase, settings, findings, custom_rules, builtin_rules)
-
-        if not findings:
-            _run_all_scanners(body, "$raw", phase, settings, findings, custom_rules, builtin_rules)
 
         deduped = _deduplicate(findings)
         risk_score = _calculate_risk_score(deduped)
@@ -248,15 +240,12 @@ class SecurityScanner:
         if explicit_block or (mode == "block" and risk_level == "Critical" and settings.block_on_critical):
             blocked = True
             blocked_reason = f"Critical security finding detected: {risk_level}"
-        elif explicit_sanitize or (mode == "redact" and settings.redact_secrets and risk_level in ("High", "Critical")):
-            sanitized = True
-            sanitized_body = re.sub(r"(?i)(sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|AIza[a-zA-Z0-9_-]{35}|eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)", "[REDACTED]", body)
-            for rule in custom_rules or []:
-                if (getattr(rule, "action", None) or "").lower() in {"sanitize", "redact"}:
-                    try:
-                        sanitized_body = re.sub(rule.pattern, "[REDACTED]", sanitized_body)
-                    except (re.error, TypeError):
-                        logger.warning("Skipping invalid sanitization pattern", extra={"rule_id": getattr(rule, "id", None)})
+        else:
+            credentials = settings.redact_secrets or (mode == "redact" and risk_level in ("High", "Critical"))
+            if explicit_sanitize or credentials:
+                sanitized_body, sanitized = redact_body(body, custom_rules, credentials=credentials)
+                if not sanitized:
+                    sanitized_body = None
 
         return SecurityScanResult(
             risk_level=risk_level, risk_score=risk_score,
