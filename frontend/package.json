@@ -6,12 +6,15 @@
   "engines": { "node": ">=22.12.0 <23 || >=24 <25" },
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && vite build --mode landing",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev:landing": "vite --mode landing"
   },
   "dependencies": {
+    "@ant-design/icons": "6.3.4",
     "@vitejs/plugin-react": "6.1.2",
+    "antd": "6.6.8",
     "vite": "8.3.5",
     "typescript": "7.0.2",
     "react": "19.3.1",

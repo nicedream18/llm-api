@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.controllers.access_routes import router as access_router
@@ -124,6 +124,13 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # Static files (frontend)
 static_dir = Path(__file__).parent / "static"
+
+
+@app.get("/", include_in_schema=False)
+async def landing_page():
+    return FileResponse(static_dir / "landing" / "index.html")
+
+
 if static_dir.exists():
     app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
 

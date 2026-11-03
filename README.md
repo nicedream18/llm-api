@@ -403,6 +403,20 @@ SECURITY_MODE=audit
 LOG_LEVEL=info
 ```
 
+### 前端页面
+
+服务首页 `/` 为 Ant Design 深色产品落地页，`/admin/` 为现有 React 管理台，旧版管理页保留在 `/index.html`。落地页采用独立入口和样式，产品演示使用明确标记的示例数据，不发送真实模型请求。
+
+```sh
+cd frontend
+npm ci
+npm run dev:landing  # http://localhost:9902/landing/
+npm run dev         # 管理台开发入口 http://localhost:9901/admin/
+npm run build       # 同时生成管理台与落地页
+```
+
+落地页开发模式下的控制台链接指向本机 9900 端口的后端；完整部署后通过同一服务的 `/admin/` 进入。页面的代码复制需要 HTTPS 或 localhost 安全上下文；复制权限被拒绝时会提示手动选择。实现及验收见 [落地页交付记录](docs/landing-ui.md)。
+
 ### 5. 启动
 
 ```bash

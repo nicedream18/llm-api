@@ -22,7 +22,7 @@ from app.types.auth import AuthContext
 
 logger = logging.getLogger(__name__)
 
-PUBLIC_PATHS = {"/health", "/api/v1/health", "/api/v1/auth/login", "/docs", "/openapi.json", "/redoc"}
+PUBLIC_PATHS = {"/", "/health", "/api/v1/health", "/api/v1/auth/login", "/docs", "/openapi.json", "/redoc"}
 GATEWAY_PREFIXES = ("/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/embeddings", "/v1/images/", "/v1/audio/", "/v1/messages")
 ADMIN_PREFIXES = ("/api/v1/channels", "/api/v1/api-keys", "/api/v1/logs", "/api/v1/security", "/api/v1/agents", "/api/v1/software", "/api/v1/providers", "/api/v1/platform")
 KB_PREFIX = "/api/v1/kb"
@@ -83,7 +83,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         candidate = request.headers.get("x-request-id", "").strip()
         request_id = candidate[:128] if candidate and all(c.isalnum() or c in "-_." for c in candidate) else uuid.uuid4().hex
         request.state.request_id = request_id
-        if path in PUBLIC_PATHS or _under(path, "/static"):
+        if path in PUBLIC_PATHS or _under(path, "/static") or _under(path, "/landing"):
             return await call_next(request)
 
         container = get_container()

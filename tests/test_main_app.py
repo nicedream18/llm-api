@@ -1,8 +1,30 @@
 from types import SimpleNamespace
 
 from fastapi import Request
+from fastapi.testclient import TestClient
 
 from app import main
+
+
+def test_public_landing_and_assets_do_not_require_admin_or_database(monkeypatch):
+    def unexpected_container():
+        raise AssertionError("Public landing must not initialize the database container")
+
+    monkeypatch.setattr("app.api.middleware.auth.get_container", unexpected_container)
+    client = TestClient(main.app)
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "让灵感，快一步成为产品" in response.text
+    assert 'content="WaLiAPI，为独立开发者准备的 AI 工作台' in response.text
+    response = client.get("/landing/favicon.svg")
+    assert response.status_code == 200 and "<svg" in response.text
+
+
+def test_public_landing_does_not_make_admin_api_public(monkeypatch):
+    container = SimpleNamespace(channel_repo=None, admin_service=SimpleNamespace(auth=SimpleNamespace(verify_admin_token=lambda token: None)))
+    monkeypatch.setattr("app.api.middleware.auth.get_container", lambda: container)
+    client = TestClient(main.app)
+    assert client.get("/api/v1/security/settings").status_code == 401
 
 
 def test_main_app_registers_expected_platform_routes():
