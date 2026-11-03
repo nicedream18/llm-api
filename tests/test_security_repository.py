@@ -22,7 +22,7 @@ def _repository(monkeypatch):
             created_at TEXT, updated_at TEXT
         )"""))
         db.execute(text("""CREATE TABLE security_custom_rules (
-            id TEXT PRIMARY KEY, category TEXT, name TEXT, description TEXT,
+            id TEXT PRIMARY KEY, category TEXT, rule_type TEXT, match_type TEXT, name TEXT, description TEXT,
             severity TEXT, pattern TEXT, action TEXT, enabled INTEGER,
             created_at TEXT, updated_at TEXT
         )"""))

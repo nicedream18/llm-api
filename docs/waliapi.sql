@@ -166,7 +166,8 @@ WHERE NOT EXISTS (SELECT 1 FROM `security_builtin_rules` WHERE `rule_id` = 'cred
 -- ============================================================
 CREATE TABLE IF NOT EXISTS `security_custom_rules` (
   `id` VARCHAR(64) NOT NULL COMMENT '规则ID',
-  `rule_type` VARCHAR(32) DEFAULT NULL COMMENT '规则类型(regex/keyword/semantic)',
+  `rule_type` VARCHAR(32) NOT NULL DEFAULT 'blacklist' COMMENT 'blacklist/whitelist',
+  `match_type` VARCHAR(16) NOT NULL DEFAULT 'literal' COMMENT 'literal/regex',
   `category` VARCHAR(64) DEFAULT NULL COMMENT '安全分类',
   `name` VARCHAR(256) DEFAULT NULL COMMENT '规则名称',
   `pattern` TEXT COMMENT '匹配模式/正则表达式',

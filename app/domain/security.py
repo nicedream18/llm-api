@@ -16,6 +16,11 @@ from app.domain.security_catalog import (
     ENTROPY_RULE_ID,
     ENTROPY_THRESHOLD,
 )
+from app.domain.security_matching import (
+    custom_matches,
+    is_whitelisted,
+    whitelist_category,
+)
 from app.types.enums import SEVERITY_SCORES, RiskLevel
 
 logger = logging.getLogger(__name__)
@@ -60,7 +65,7 @@ def _make_finding(rule_id, title, description, severity, category, evidence, jso
 
 
 
-def _run_rules(rules, text, json_path, phase, category, builtin_rules=None) -> list[SecurityFindingEntity]:
+def _run_rules(rules, text, json_path, phase, category, builtin_rules=None, custom_rules=None, tool_name=None) -> list[SecurityFindingEntity]:
     findings: list[SecurityFindingEntity] = []
     if not text:
         return findings
@@ -75,22 +80,25 @@ def _run_rules(rules, text, json_path, phase, category, builtin_rules=None) -> l
         try:
             matches = re.finditer(pattern, text)
             for m in matches:
+                scope = whitelist_category(rule_id, category)
+                if scope and is_whitelisted(scope, text, m.start(), m.end(), custom_rules, tool_name):
+                    continue
                 findings.append(_make_finding(rule_id, getattr(override, "name", None) or title, getattr(override, "description", None) or desc, effective_severity, category, m.group(), json_path, phase, action))
         except (re.error, RecursionError):
             logger.warning("Skipping invalid or unsafe security pattern", extra={"rule_id": rule_id})
     return findings
 
 
-def _run_custom_rules(rules, text, json_path, phase, findings):
+def _run_custom_rules(rules, text, json_path, phase, findings, tool_name=None):
     for rule in rules or []:
-        if not getattr(rule, "enabled", 1) or not rule.pattern:
+        if getattr(rule, "rule_type", "blacklist") == "whitelist":
             continue
         try:
-            for match in re.finditer(rule.pattern, text[:1_000_000]):
+            for match in custom_matches(rule, text, tool_name):
                 findings.append(_make_finding(
                     rule.id or "custom", rule.name or "Custom security rule",
                     rule.description or "Custom security rule matched", rule.severity or "medium",
-                    rule.category or "custom", match.group(), json_path, phase,
+                    rule.category or "custom", match.value, json_path, phase,
                     getattr(rule, "action", None) or "warn"))
         except (re.error, RecursionError):
             logger.warning("Skipping invalid custom security pattern", extra={"rule_id": rule.id})
@@ -143,24 +151,29 @@ def _run_entropy_rule(text, json_path, phase, findings, builtin_rules=None):
         ))
 
 
-def _walk_json(obj, path, phase, settings, findings, custom_rules=None, builtin_rules=None):
+def _walk_json(obj, path, phase, settings, findings, custom_rules=None, builtin_rules=None, tool_name=None):
     """Recursively walk JSON and run scanners on string values."""
     if isinstance(obj, str):
-        _run_all_scanners(obj, path, phase, settings, findings, custom_rules, builtin_rules)
+        _run_all_scanners(obj, path, phase, settings, findings, custom_rules, builtin_rules, tool_name)
     elif isinstance(obj, dict):
+        function = obj.get("function")
+        if isinstance(function, dict) and isinstance(function.get("name"), str):
+            tool_name = function["name"]
+        elif isinstance(obj.get("name"), str) and any(part in path for part in (".tools[", ".tool_calls[", ".function")):
+            tool_name = obj["name"]
         for k, v in obj.items():
             from app.domain.security_values import is_secret_field
             if is_secret_field(k) and v not in (None, "", "[REDACTED]"):
                 override = next((r for r in builtin_rules or [] if r.rule_id == "credential_named_secret"), None)
                 if getattr(override, "enabled", 1):
                     findings.append(_make_finding("credential_named_secret", getattr(override, "name", None) or "Sensitive Credential Field", getattr(override, "description", None) or "Value in a sensitive JSON field.", getattr(override, "severity", None) or "high", "credentials", str(v), f"{path}.{k}", phase, getattr(override, "action", None) or "warn"))
-            _walk_json(v, f"{path}.{k}", phase, settings, findings, custom_rules, builtin_rules)
+            _walk_json(v, f"{path}.{k}", phase, settings, findings, custom_rules, builtin_rules, tool_name)
     elif isinstance(obj, list):
         for i, v in enumerate(obj):
-            _walk_json(v, f"{path}[{i}]", phase, settings, findings, custom_rules, builtin_rules)
+            _walk_json(v, f"{path}[{i}]", phase, settings, findings, custom_rules, builtin_rules, tool_name)
 
 
-def _run_all_scanners(text, json_path, phase, settings, findings, custom_rules=None, builtin_rules=None):
+def _run_all_scanners(text, json_path, phase, settings, findings, custom_rules=None, builtin_rules=None, tool_name=None):
     for rule in BUILTIN_RULES:
         override = next((r for r in builtin_rules or [] if r.rule_id == rule.rule_id), None)
         toggle = getattr(override, "toggle_key", None) or rule.toggle_key
@@ -169,8 +182,8 @@ def _run_all_scanners(text, json_path, phase, settings, findings, custom_rules=N
         if rule.rule_id == ENTROPY_RULE_ID:
             _run_entropy_rule(text, json_path, phase, findings, builtin_rules)
         elif rule.pattern is not None:
-            findings.extend(_run_rules([(rule.rule_id, rule.title, rule.description, rule.pattern, rule.severity)], text, json_path, phase, rule.category, builtin_rules))
-    _run_custom_rules(custom_rules, text, json_path, phase, findings)
+            findings.extend(_run_rules([(rule.rule_id, rule.title, rule.description, rule.pattern, rule.severity)], text, json_path, phase, rule.category, builtin_rules, custom_rules, tool_name))
+    _run_custom_rules(custom_rules, text, json_path, phase, findings, tool_name)
 
 
 def _deduplicate(findings):

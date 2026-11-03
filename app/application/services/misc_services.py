@@ -59,6 +59,12 @@ class SecurityService:
         return self._to_custom_dto(created)
 
     def update_custom_rule(self, rule_id, dto: SecurityCustomRuleDTO):
+        current = next((e for e in self.repo.get_all_custom_rules() if e.id == rule_id), None)
+        if current is None:
+            return False
+        merged = self._to_custom_dto(current).model_dump()
+        merged.update(dto.model_dump(exclude_unset=True))
+        dto = SecurityCustomRuleDTO(**merged)
         self._validate_rule(dto)
         entity = self._to_custom_entity(dto)
         entity.id = rule_id
@@ -67,18 +73,32 @@ class SecurityService:
     @staticmethod
     def _validate_rule(dto: SecurityCustomRuleDTO) -> None:
         import re
-        if not dto.pattern or len(dto.pattern) > 4096:
+        if not dto.pattern or not dto.pattern.strip() or len(dto.pattern) > 4096:
             raise ValueError("Security rule pattern must be between 1 and 4096 characters")
-        if dto.action and dto.action.lower() not in {"allow", "warn", "sanitize", "redact", "block"}:
-            raise ValueError("Security rule action must be allow, warn, sanitize, redact, or block")
-        # Reject the most common catastrophic-backtracking shapes when the
-        # optional timeout-capable regex package is unavailable.
-        if re.search(r"\([^)]*[+*][^)]*\)[+*]", dto.pattern):
-            raise ValueError("Security rule pattern contains nested quantifiers")
-        try:
-            re.compile(dto.pattern)
-        except re.error as exc:
-            raise ValueError("Invalid security rule pattern") from exc
+        if dto.rule_type not in {"blacklist", "whitelist"} or dto.match_type not in {"literal", "regex"}:
+            raise ValueError("Invalid rule or match type")
+        if dto.match_type == "literal" and dto.category not in {"domain", "path", "tool", "keyword"}:
+            raise ValueError("Literal category must be domain, path, tool, or keyword")
+        dto.severity = (dto.severity or "medium").lower()
+        dto.action = (dto.action or ("allow" if dto.rule_type == "whitelist" else "warn")).lower()
+        if dto.severity not in {"info", "low", "medium", "high", "critical"} or dto.action not in {"allow", "warn", "sanitize", "redact", "block"}:
+            raise ValueError("Invalid severity or action")
+        if dto.rule_type == "whitelist" and (dto.match_type != "literal" or dto.action != "allow"):
+            raise ValueError("Whitelist requires literal matching and allow action")
+        if dto.enabled not in (0, 1):
+            raise ValueError("enabled must be 0 or 1")
+        if dto.category == "domain" and dto.match_type == "literal":
+            from app.domain.security_matching import normalize_host
+            host = normalize_host(dto.pattern.removeprefix("*."))
+            if not host or any(c in dto.pattern.removeprefix("*.") for c in "/:@?# "):
+                raise ValueError("Domain pattern must be a hostname")
+        if dto.match_type == "regex":
+            if re.search(r"\([^)]*[+*][^)]*\)[+*]", dto.pattern):
+                raise ValueError("Security rule pattern contains nested quantifiers")
+            try:
+                re.compile(dto.pattern)
+            except re.error as exc:
+                raise ValueError("Invalid security rule pattern") from exc
 
     def delete_custom_rule(self, rule_id):
         return self.repo.delete_custom_rule(rule_id)
@@ -96,12 +116,12 @@ class SecurityService:
                                       action=e.action, enabled=e.enabled, created_at=e.created_at, updated_at=e.updated_at)
 
     def _to_custom_dto(self, e):
-        return SecurityCustomRuleDTO(id=e.id, category=e.category, name=e.name, description=e.description,
+        return SecurityCustomRuleDTO(rule_type=e.rule_type, match_type=e.match_type, id=e.id, category=e.category, name=e.name, description=e.description,
                                      severity=e.severity, pattern=e.pattern, action=e.action, enabled=e.enabled,
                                      created_at=e.created_at, updated_at=e.updated_at)
 
     def _to_custom_entity(self, dto):
-        return SecurityCustomRuleEntity(id=dto.id, category=dto.category, name=dto.name, description=dto.description,
+        return SecurityCustomRuleEntity(rule_type=dto.rule_type, match_type=dto.match_type, id=dto.id, category=dto.category, name=dto.name, description=dto.description,
                                         severity=dto.severity, pattern=dto.pattern, action=dto.action, enabled=dto.enabled,
                                         created_at=dto.created_at, updated_at=dto.updated_at)
 

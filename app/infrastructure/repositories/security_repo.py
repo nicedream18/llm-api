@@ -129,7 +129,7 @@ class SecurityRepository:
     def get_all_custom_rules(self) -> list[SecurityCustomRuleEntity]:
         with get_db() as db:
             rows = db.execute(text(
-                "SELECT id, category, name, description, severity, pattern, action, "
+                "SELECT id, category, rule_type, match_type, name, description, severity, pattern, action, "
                 "enabled, created_at, updated_at FROM security_custom_rules ORDER BY created_at DESC"
             )).mappings().all()
             return [self._to_custom_entity(r) for r in rows]
@@ -143,9 +143,9 @@ class SecurityRepository:
         entity.updated_at = now
         with get_db() as db:
             db.execute(text(
-                "INSERT INTO security_custom_rules (id, category, name, description, severity, "
+                "INSERT INTO security_custom_rules (id, category, rule_type, match_type, name, description, severity, "
                 "pattern, action, enabled, created_at, updated_at) "
-                "VALUES (:id, :category, :name, :description, :severity, :pattern, :action, :enabled, :created_at, :updated_at)"
+                "VALUES (:id, :category, :rule_type, :match_type, :name, :description, :severity, :pattern, :action, :enabled, :created_at, :updated_at)"
             ), self._to_custom_params(entity))
         return entity
 
@@ -153,7 +153,7 @@ class SecurityRepository:
         entity.updated_at = _now()
         with get_db() as db:
             result = db.execute(text(
-                "UPDATE security_custom_rules SET category=:category, name=:name, description=:description, "
+                "UPDATE security_custom_rules SET category=:category, rule_type=:rule_type, match_type=:match_type, name=:name, description=:description, "
                 "severity=:severity, pattern=:pattern, action=:action, enabled=:enabled, updated_at=:updated_at WHERE id=:id"
             ), self._to_custom_params(entity))
             return affected_rows(result) > 0
@@ -181,14 +181,14 @@ class SecurityRepository:
 
     def _to_custom_entity(self, row) -> SecurityCustomRuleEntity:
         return SecurityCustomRuleEntity(
-            id=row["id"], category=row["category"], name=row["name"], description=row["description"],
+            id=row["id"], category=row["category"], rule_type=row["rule_type"], match_type=row["match_type"], name=row["name"], description=row["description"],
             severity=row["severity"], pattern=row["pattern"], action=row["action"],
             enabled=row["enabled"], created_at=row["created_at"], updated_at=row["updated_at"],
         )
 
     def _to_custom_params(self, e: SecurityCustomRuleEntity) -> dict:
         return {
-            "id": e.id, "category": e.category, "name": e.name, "description": e.description,
+            "id": e.id, "category": e.category, "rule_type": e.rule_type, "match_type": e.match_type, "name": e.name, "description": e.description,
             "severity": e.severity, "pattern": e.pattern, "action": e.action,
             "enabled": e.enabled, "created_at": e.created_at, "updated_at": e.updated_at,
         }

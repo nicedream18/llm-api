@@ -308,6 +308,8 @@ class SecurityBuiltinRuleDTO(BaseModel):
 
 
 class SecurityCustomRuleDTO(BaseModel):
+    rule_type: str = "blacklist"
+    match_type: str = "literal"
     id: str | None = None
     category: str | None = None
     name: str = ""

@@ -198,6 +198,7 @@ def _apply_compatibility_ddl(db) -> None:
     for column, definition in {
         "name": "VARCHAR(256) NULL",
         "updated_at": "VARCHAR(32) NULL",
+        "match_type": "VARCHAR(16) NOT NULL DEFAULT 'regex'",
     }.items():
         _ensure_column(db, "security_custom_rules", column, definition)
 
